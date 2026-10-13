@@ -7,11 +7,9 @@ import json
 import os
 import time
 import hashlib
-import random
 from supabase import create_client, Client
-
 # -----------------------------------------------------------------------------
-# 1. Configuração da Página & Tema Visual Verde Oliva / EsPCEx
+# Configuração da Página, Proteção Contra Tradução e Tema EsPCEx / EFA
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="QG EsPCEx - Preparação de Cadetes",
@@ -20,10 +18,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Proteção contra erros do DOM decorrentes de tradução automática do Google Translate
+# Proteção contra erros de remoção de nós do DOM causados por tradução automática
 st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
 
-# Customização CSS Tática Verde Oliva / Exército
+# Estilização CSS Verde Oliva / Exército / EFA
 st.markdown("""
     <style>
     .main { background-color: #0f140d; color: #e0e6ed; }
@@ -32,7 +30,6 @@ st.markdown("""
         padding: 14px;
         border-radius: 8px;
         border-left: 5px solid #4caf50;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.3);
     }
     .espcex-badge {
         background-color: #2e4d25;
@@ -56,31 +53,26 @@ st.markdown("""
         border: 1px solid #4caf50;
         border-radius: 6px;
         font-weight: bold;
-        transition: all 0.2s ease-in-out;
     }
     .stButton>button:hover {
         background-color: #3e6832;
         border-color: #d4af37;
-        color: #ffffff;
     }
     </style>
 """, unsafe_allow_html=True)
-
-# -----------------------------------------------------------------------------
-# 2. Inicialização Global e Variáveis de Ambiente (Supabase)
-# -----------------------------------------------------------------------------
+# --- Inicialização Global do Supabase ---
 @st.cache_resource
 def init_supabase():
-    url = st.secrets.get("SUPABASE_URL", "https://xnihuagckdimywmujtrt.supabase.co")
-    key = st.secrets.get("SUPABASE_KEY", "sb_publishable_P_JcgLMuU9kbClJjBDN3Jg_HSLkE_cA")
+    url = "https://agckdimywmujrtr.supabase.co"
+    key = "sb_publishable_P_JcgLMuU9kbC1JjBDN3Jg_HSLkE_cA"
     if not url or not key:
         return None
-    try:
-        return create_client(url, key)
-    except Exception:
-        return None
+    return create_client(url, key)
 
 supabase = init_supabase()
+
+
+USERS_FILE = "usuarios.json"
 
 # Listagem oficial de disciplinas da EFA (Escola Família Agrícola)
 MATERIAS_TECNICAS_EFA = [
@@ -111,7 +103,7 @@ MATERIAS_TECNICAS_EFA = [
 ]
 
 # -----------------------------------------------------------------------------
-# 3. Funções Utilitárias e Persistência de Dados (Supabase / Nuvem)
+# Função para Tocar Alarme Sonoro no Navegador (Web Audio API)
 # -----------------------------------------------------------------------------
 def tocar_alarme_sonoro():
     components.html("""
@@ -134,93 +126,103 @@ def tocar_alarme_sonoro():
         </script>
     """, height=0)
 
+# -----------------------------------------------------------------------------
+# Autenticação e Gestão de Ficheiros
+# -----------------------------------------------------------------------------
 def hash_senha(senha):
     return hashlib.sha256(senha.encode('utf-8')).hexdigest()
 
 def carregar_usuarios():
-    if not supabase:
-        return {}
-    try:
-        res = supabase.table("usuarios").select("*").execute()
-        users_dict = {}
-        for row in res.data:
-            users_dict[row["username"]] = {
-                "nome": row["nome"],
-                "senha": row["senha"],
-                "criado_em": row.get("criado_em", "")
-            }
-        return users_dict
-    except Exception as e:
-        st.error(f"Erro ao carregar usuários do Supabase: {e}")
-        return {}
+    if os.path.exists(USERS_FILE):
+        try:
+            with open(USERS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
 
 def salvar_usuarios(usuarios):
-    if not supabase:
-        return
-    try:
-        data_to_upsert = []
-        for u, v in usuarios.items():
-            data_to_upsert.append({
-                "username": u,
-                "nome": v.get("nome", u),
-                "senha": v.get("senha", ""),
-                "criado_em": v.get("criado_em", str(datetime.date.today()))
-            })
-        if data_to_upsert:
-            supabase.table("usuarios").upsert(data_to_upsert).execute()
-    except Exception as e:
-        st.error(f"Erro ao salvar usuário no Supabase: {e}")
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(usuarios, f, ensure_ascii=False, indent=4)
 
+def get_data_file(username):
+    return f"dados_espcex_{username.lower().strip()}.json"
+
+# -----------------------------------------------------------------------------
+# Edital Oficial EsPCEx
+# -----------------------------------------------------------------------------
 def get_edital_espcex():
     return [
         # --- 1º DIA DE PROVA ---
         {"Dia": "1º Dia", "Matéria": "Português", "Tópico": "Compreensão e Interpretação de Texto", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "1º Dia", "Matéria": "Português", "Tópico": "Morfologia e Classes Gramaticais", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "1º Dia", "Matéria": "Português", "Tópico": "Sintaxe da Oração e do Período", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "1º Dia", "Matéria": "Português", "Tópico": "Concordância, Regência e Crase", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "1º Dia", "Matéria": "Português", "Tópico": "Pontuação e Ortografia Oficial", "Status": "Não Iniciado", "Prioridade": "Média"},
-        {"Dia": "1º Dia", "Matéria": "Português", "Tópico": "Literatura Brasileira (Barroco ao Modernismo)", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Português", "Dia": "1º Dia", "Tópico": "Morfologia e Classes Gramaticais", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Português", "Dia": "1º Dia", "Tópico": "Sintaxe da Oração e do Período", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Português", "Dia": "1º Dia", "Tópico": "Concordância, Regência e Crase", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Português", "Dia": "1º Dia", "Tópico": "Pontuação e Ortografia Oficial", "Status": "Não Iniciado", "Prioridade": "Média"},
+        {"Matéria": "Português", "Dia": "1º Dia", "Tópico": "Literatura Brasileira (Barroco ao Modernismo)", "Status": "Não Iniciado", "Prioridade": "Alta"},
         
-        {"Dia": "1º Dia", "Matéria": "Redação", "Tópico": "Estrutura Dissertativo-Argumentativa Modelo EsPCEx", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "1º Dia", "Matéria": "Redação", "Tópico": "Elaboração de Tese e Projeto de Texto", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "1º Dia", "Matéria": "Redação", "Tópico": "Desenvolvimento e Argumentação Lógica", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "1º Dia", "Matéria": "Redação", "Tópico": "Conclusão e Fechamento das Ideias", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        # Redação
+        {"Matéria": "Redação", "Dia": "1º Dia", "Tópico": "Estrutura Dissertativo-Argumentativa Modelo EsPCEx", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Redação", "Dia": "1º Dia", "Tópico": "Elaboração de Tese e Projeto de Texto", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Redação", "Dia": "1º Dia", "Tópico": "Desenvolvimento e Argumentação Lógica", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Redação", "Dia": "1º Dia", "Tópico": "Conclusão e Fechamento das Ideias", "Status": "Não Iniciado", "Prioridade": "Alta"},
 
-        {"Dia": "1º Dia", "Matéria": "Física", "Tópico": "Cinemática Escalar e Vetorial", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "1º Dia", "Matéria": "Física", "Tópico": "Leis de Newton e Dinâmica", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "1º Dia", "Matéria": "Física", "Tópico": "Trabalho, Energia e Potência", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "1º Dia", "Matéria": "Física", "Tópico": "Termologia, Calorimetria e Gases", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "1º Dia", "Matéria": "Física", "Tópico": "Eletrostática e Eletrodinâmica", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        # Física
+        {"Matéria": "Física", "Dia": "1º Dia", "Tópico": "Cinemática Escalar e Vetorial", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Física", "Dia": "1º Dia", "Tópico": "Leis de Newton e Dinâmica", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Física", "Dia": "1º Dia", "Tópico": "Trabalho, Energia e Potência", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Física", "Dia": "1º Dia", "Tópico": "Termologia, Calorimetria e Gases", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Física", "Dia": "1º Dia", "Tópico": "Eletrostática e Eletrodinâmica", "Status": "Não Iniciado", "Prioridade": "Alta"},
 
-        {"Dia": "1º Dia", "Matéria": "Química", "Tópico": "Estrutura Atômica e Tabela Periódica", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "1º Dia", "Matéria": "Química", "Tópico": "Ligações Químicas e Funções Inorgânicas", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "1º Dia", "Matéria": "Química", "Tópico": "Reações Químicas e Estequiometria", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "1º Dia", "Matéria": "Química", "Tópico": "Química Orgânica", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        # Química
+        {"Matéria": "Química", "Dia": "1º Dia", "Tópico": "Estrutura Atômica e Tabela Periódica", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Química", "Dia": "1º Dia", "Tópico": "Ligações Químicas e Funções Inorgânicas", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Química", "Dia": "1º Dia", "Tópico": "Reações Químicas e Estequiometria", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Química", "Dia": "1º Dia", "Tópico": "Química Orgânica", "Status": "Não Iniciado", "Prioridade": "Alta"},
 
         # --- 2º DIA DE PROVA ---
-        {"Dia": "2º Dia", "Matéria": "Matemática", "Tópico": "Conjuntos, Relações e Funções", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "2º Dia", "Matéria": "Matemática", "Tópico": "Função Exponencial e Logarítmica", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "2º Dia", "Matéria": "Matemática", "Tópico": "Trigonometria", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "2º Dia", "Matéria": "Matemática", "Tópico": "Geometria Plana", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "2º Dia", "Matéria": "Matemática", "Tópico": "Geometria Espacial", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "2º Dia", "Matéria": "Matemática", "Tópico": "Geometria Analítica", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        # Matemática
+        {"Matéria": "Matemática", "Dia": "2º Dia", "Tópico": "Conjuntos, Relações e Funções", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Matemática", "Dia": "2º Dia", "Tópico": "Função Exponencial e Logarítmica", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Matemática", "Dia": "2º Dia", "Tópico": "Trigonometria", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Matemática", "Dia": "2º Dia", "Tópico": "Geometria Plana", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Matemática", "Dia": "2º Dia", "Tópico": "Geometria Espacial", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Matemática", "Dia": "2º Dia", "Tópico": "Geometria Analítica", "Status": "Não Iniciado", "Prioridade": "Alta"},
 
-        {"Dia": "2º Dia", "Matéria": "Geografia", "Tópico": "Geografia Física do Brasil", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "2º Dia", "Matéria": "Geografia", "Tópico": "Demografia e População", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "2º Dia", "Matéria": "Geografia", "Tópico": "Espaço Agropecuário e Questão Agrária", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "2º Dia", "Matéria": "Geografia", "Tópico": "Geopolítica Global", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        # Geografia
+        {"Matéria": "Geografia", "Dia": "2º Dia", "Tópico": "Geografia Física do Brasil", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Geografia", "Dia": "2º Dia", "Tópico": "Demografia e População", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Geografia", "Dia": "2º Dia", "Tópico": "Espaço Agropecuário e Questão Agrária", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Geografia", "Dia": "2º Dia", "Tópico": "Geopolítica Global", "Status": "Não Iniciado", "Prioridade": "Alta"},
 
-        {"Dia": "2º Dia", "Matéria": "História", "Tópico": "Brasil Colônia e Império", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "2º Dia", "Matéria": "História", "Tópico": "República e Era Vargas", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "2º Dia", "Matéria": "História", "Tópico": "História Geral: Guerras Mundiais e Guerra Fria", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        # História
+        {"Matéria": "História", "Dia": "2º Dia", "Tópico": "Brasil Colônia e Império", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "História", "Dia": "2º Dia", "Tópico": "República e Era Vargas", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "História", "Dia": "2º Dia", "Tópico": "História Geral: Guerras Mundiais e Guerra Fria", "Status": "Não Iniciado", "Prioridade": "Alta"},
 
-        {"Dia": "2º Dia", "Matéria": "Inglês", "Tópico": "Compreensão de Textos Táticos", "Status": "Não Iniciado", "Prioridade": "Alta"},
-        {"Dia": "2º Dia", "Matéria": "Inglês", "Tópico": "Gramática Aplicada", "Status": "Não Iniciado", "Prioridade": "Alta"}
+        # Inglês
+        {"Matéria": "Inglês", "Dia": "2º Dia", "Tópico": "Compreensão de Textos Táticos", "Status": "Não Iniciado", "Prioridade": "Alta"},
+        {"Matéria": "Inglês", "Dia": "2º Dia", "Tópico": "Gramática Aplicada", "Status": "Não Iniciado", "Prioridade": "Alta"}
     ]
 
 def carregar_dados_usuario(username):
-    u_clean = username.lower().strip()
-    padrao = {
+    data_file = get_data_file(username)
+    if os.path.exists(data_file):
+        try:
+            with open(data_file, "r", encoding="utf-8") as f:
+                dados = json.load(f)
+                if "redacoes" not in dados: dados["redacoes"] = []
+                if "taf" not in dados: dados["taf"] = []
+                if "tarefas_casa" not in dados: dados["tarefas_casa"] = []
+                if "efa_ciclo" not in dados:
+                    dados["efa_ciclo"] = {
+                        "modo": "Em Casa",
+                        "inicio_ciclo": str(datetime.date.today())
+                    }
+                return dados
+        except Exception:
+            pass
+    return {
         "sessoes": [],
         "erros": [],
         "redacoes": [],
@@ -233,45 +235,16 @@ def carregar_dados_usuario(username):
         "edital": get_edital_espcex(),
         "simulados": [],
         "pomodoro_ciclos_totais": 0,
-        "data_prova": str(datetime.date.today() + datetime.timedelta(days=320)),
-        "kanban": [
-            {"id": 1, "titulo": "Relatório de Solo e Adubação", "status": "A Fazer"},
-            {"id": 2, "titulo": "Pesquisa sobre Cooperativismo", "status": "Em Andamento"},
-            {"id": 3, "titulo": "Apresentação AMSP 01", "status": "Entregue"}
-        ],
-        "diario_bordo": [],
-        "habits": {"streak": 12, "historico": {}},
-        "temas_custom": []
+        "data_prova": str(datetime.date.today() + datetime.timedelta(days=320))
     }
-    
-    if supabase:
-        try:
-            res = supabase.table("dados_usuario").select("dados").eq("username", u_clean).execute()
-            if res.data and len(res.data) > 0:
-                dados = res.data[0]["dados"]
-                for k, v in padrao.items():
-                    if k not in dados:
-                        dados[k] = v
-                return dados
-        except Exception as e:
-            st.warning(f"Erro ao carregar dados do Supabase: {e}")
-            
-    return padrao
 
 def salvar_dados_usuario(username, dados):
-    u_clean = username.lower().strip()
-    if supabase:
-        try:
-            payload = {
-                "username": u_clean,
-                "dados": dados
-            }
-            supabase.table("dados_usuario").upsert(payload).execute()
-        except Exception as e:
-            st.error(f"Erro ao salvar na nuvem (Supabase): {e}")
+    data_file = get_data_file(username)
+    with open(data_file, "w", encoding="utf-8") as f:
+        json.dump(dados, f, ensure_ascii=False, indent=4)
 
 # -----------------------------------------------------------------------------
-# 4. Controle de Autenticação / Login
+# Autenticação de Utilizador
 # -----------------------------------------------------------------------------
 if "usuario_logado" not in st.session_state:
     st.session_state.usuario_logado = None
@@ -326,12 +299,15 @@ if st.session_state.usuario_logado is None:
     st.stop()
 
 # -----------------------------------------------------------------------------
-# 5. Carregamento do Usuário Logado & Barra Lateral (Sidebar)
+# Carregamento do Utilizador Logado
 # -----------------------------------------------------------------------------
 user_atual = st.session_state.usuario_logado
 db = carregar_dados_usuario(user_atual)
 nome_cadete = st.session_state.get("nome_exibicao", user_atual)
 
+# -----------------------------------------------------------------------------
+# Barra Lateral
+# -----------------------------------------------------------------------------
 st.sidebar.title("⚔️ QG ESPCEX")
 st.sidebar.markdown(f"**Cadete:** `{nome_cadete}`")
 
@@ -360,11 +336,11 @@ menu = st.sidebar.radio(
         "🥗 Nutrição & Calorias",
         "🌾 Calc. Agropecuária",
         "📌 Kanban EFA",
-        "🔥 Habit Tracker",
-        "📅 Cronograma Dinâmico",
-        "🔗 Hub de Links",
-        "📖 Diário de Bordo",
-        "🎧 Player de Áudio"
+       "🔥 Habit Tracker",
+      "📅 Cronograma Dinâmico",
+      "🔗 Hub de Links",
+      "📖 Diário de Bordo",
+      "🎧 Player de Áudio"
     ]
 )
 
@@ -507,7 +483,7 @@ if menu == "📊 Painel & Rotina Diária":
         st.subheader("📈 Rendimento em Questões")
         if not df_sessoes.empty:
             df_mat = df_sessoes.groupby("Matéria")[["Acertos", "Questões"]].sum().reset_index()
-            df_mat["Erros"] = (df_mat["Questões"] - df_mat["Acertos"]).clip(lower=0)
+            df_mat["Erros"] = df_mat["Questões"] - df_mat["Acertos"]
             fig_mat = px.bar(df_mat, x="Matéria", y=["Acertos", "Erros"], barmode="stack", color_discrete_sequence=["#2e7d32", "#c62828"])
             fig_mat.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e0e6ed")
             st.plotly_chart(fig_mat, use_container_width=True)
@@ -928,7 +904,7 @@ elif menu == "✍️ Módulo de Redação":
         """)
 
 # -----------------------------------------------------------------------------
-# MÓDULO 7: Edital Verticalizado
+# MÓDULO 7: Edital Verticalizado (com Chave Dinâmica)
 # -----------------------------------------------------------------------------
 elif menu == "📋 Edital Verticalizado EsPCEx":
     st.title("📋 Edital Verticalizado EsPCEx")
@@ -951,19 +927,14 @@ elif menu == "📋 Edital Verticalizado EsPCEx":
             "Prioridade": st.column_config.SelectboxColumn("Relevância", options=["Baixa", "Média", "Alta"], required=True)
         },
         use_container_width=True,
-        key=f"edital_edit_{dia_f}_{mat_f}"
+        key=f"edital_edit_{dia_f}_{mat_f}"  # Key dinâmica previne erros no DOM ao filtrar
     )
 
     if st.button("💾 Salvar Edital"):
         novos = edited_df.to_dict("records")
-        dict_editados = {x["Tópico"]: x for x in novos}
-        edital_atualizado = []
-        for item in db["edital"]:
-            if item["Tópico"] in dict_editados:
-                edital_atualizado.append(dict_editados[item["Tópico"]])
-            else:
-                edital_atualizado.append(item)
-        db["edital"] = edital_atualizado
+        topicos_editados = [x["Tópico"] for x in novos]
+        preservados = [item for item in db["edital"] if item["Tópico"] not in topicos_editados]
+        db["edital"] = preservados + novos
         salvar_dados_usuario(user_atual, db)
         st.success("Edital atualizado com sucesso!")
 
@@ -1096,138 +1067,302 @@ elif menu == "🎯 Simulados (1º e 2º Dia)":
     st.markdown("---")
     if db["simulados"]:
         st.dataframe(pd.DataFrame(db["simulados"]), use_container_width=True)
-
-# -----------------------------------------------------------------------------
+        # -----------------------------------------------------------------------------
 # MÓDULO 11: Cronograma Integrado EFA & EsPCEx
 # -----------------------------------------------------------------------------
 elif menu == "📊 Visualizador de Planilhas":
     st.title("📊 Cronograma Integrado EFA, AMSP & EsPCEx")
-    st.caption("Planilha oficial de planeamento carregada diretamente do repositório ou por upload.")
+    st.caption("Planilha oficial de planeamento carregada diretamente do repositório.")
 
     NOME_DO_ARQUIVO = "Plano_de_Estudos_EFA_Status_Automatico.xlsx"
-    uploaded_file = st.file_uploader("Enviar Planilha Personalizada (.xlsx)", type=["xlsx"])
 
-    arquivo_usar = uploaded_file if uploaded_file else (NOME_DO_ARQUIVO if os.path.exists(NOME_DO_ARQUIVO) else None)
+    try:
+        # Lê a planilha ignorando o cabeçalho decorativo superior (skiprows=3)
+        df_plano = pd.read_excel(NOME_DO_ARQUIVO, skiprows=3)
+        df_plano = df_plano.dropna(how='all')
 
-    if arquivo_usar is not None:
-        try:
-            df_plano = pd.read_excel(arquivo_usar, skiprows=3)
-            df_plano = df_plano.dropna(how='all')
+        # Resumo e Métricas das Atividades
+        total_atividades = len(df_plano)
+        concluidas = len(df_plano[df_plano["Status"] == "Concluído"])
+        em_andamento = len(df_plano[df_plano["Status"] == "Em Andamento"])
+        pendentes = len(df_plano[df_plano["Status"] == "Pendente"])
 
-            total_atividades = len(df_plano)
-            concluidas = len(df_plano[df_plano["Status"] == "Concluído"]) if "Status" in df_plano.columns else 0
-            em_andamento = len(df_plano[df_plano["Status"] == "Em Andamento"]) if "Status" in df_plano.columns else 0
-            pendentes = len(df_plano[df_plano["Status"] == "Pendente"]) if "Status" in df_plano.columns else 0
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total de Blocos", total_atividades)
+        m2.metric("Concluídos ✅", concluidas)
+        m3.metric("Em Andamento ⏳", em_andamento)
+        m4.metric("Pendentes 📌", pendentes)
 
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Total de Blocos", total_atividades)
-            m2.metric("Concluídos ✅", concluidas)
-            m3.metric("Em Andamento ⏳", em_andamento)
-            m4.metric("Pendentes 📌", pendentes)
+        st.markdown("---")
 
-            st.markdown("---")
+        # Filtro de navegação por Semana (Escola EFA vs Propriedade/Casa)
+        semanas_opcoes = ["Todas as Semanas"] + list(df_plano["Semana"].dropna().unique())
+        semana_selecionada = st.selectbox("🔍 Filtrar por Período da Alternância:", semanas_opcoes)
 
-            if "Semana" in df_plano.columns:
-                semanas_opcoes = ["Todas as Semanas"] + list(df_plano["Semana"].dropna().unique())
-                semana_selecionada = st.selectbox("🔍 Filtrar por Período da Alternância:", semanas_opcoes)
+        if semana_selecionada != "Todas as Semanas":
+            df_exibicao = df_plano[df_plano["Semana"] == semana_selecionada]
+        else:
+            df_exibicao = df_plano
 
-                if semana_selecionada != "Todas as Semanas":
-                    df_exibicao = df_plano[df_plano["Semana"] == semana_selecionada]
-                else:
-                    df_exibicao = df_plano
-            else:
-                df_exibicao = df_plano
+        # Exibição da Tabela
+        st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
 
-            st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
-
-        except Exception as e:
-            st.error(f"Erro ao carregar a planilha: {e}")
-    else:
-        st.info("Envie um arquivo `.xlsx` acima ou adicione `Plano_de_Estudos_EFA_Status_Automatico.xlsx` à pasta da aplicação.")
-
-# -----------------------------------------------------------------------------
-# MÓDULO 12: SORTEADOR DE TEMAS & TEXTOS BASE
-# -----------------------------------------------------------------------------
+    except FileNotFoundError:
+        st.error(f"O ficheiro '{NOME_DO_ARQUIVO}' não foi encontrado no GitHub. Confirme se enviou o ficheiro com este nome exato.")
+    except Exception as e:
+        st.error(f"Erro ao carregar a planilha: {e}")
+     # ====================================================
+# MÓDULO 12: SORTEADOR DE TEMAS & TEXTOS BASE (DUPLO)
+# ====================================================
 elif menu == "🎲 Sorteador de Temas & Textos Base":
+    import random
+
     st.header("🎲 Módulo 12: Sorteador Tático de Temas & Textos Motivadores")
     st.markdown("Sorteie propostas completas de redação com **Textos Base Motivadores (Texto I e Texto II)**, eixos temáticos e repertórios para treino.")
 
-    temas_padrao = [
-        {
-            "id": 1,
-            "tema": "O impacto da inteligência artificial e da automação na segurança e soberania nacional",
-            "eixo": "Defesa Nacional & Estado",
-            "origem": "Simulado EsPCEx",
-            "texto_base_1": "TEXTO I: A transformação digital redefiniu o conceito de defesa estratégica. Drones autônomos, guerra cibernética e processamento de dados em massa tornaram-se pilares do poder militar moderno. O controle sobre tecnologias críticas não é apenas uma questão comercial, mas de sobrevivência e autonomia das Forças Armadas frente às ameaças externas.",
-            "texto_base_2": "TEXTO II: Segundo a Estratégia Nacional de Defesa, a independência tecnológica é pressuposto para a garantia da soberania. Países que dependem exclusivamente de insumos e softwares estrangeiros para seus sistemas de controle e comando ficam suscetíveis a bloqueios e vulnerabilidades em cenários de conflito internacional.",
-            "repertorios": ["Art. 142 da Constituição Federal", "Conceito de Guerra Híbrida", "Thomas Hobbes (O Leviatã)"]
-        },
-        {
-            "id": 2,
-            "tema": "A importância do controle de fronteiras no combate ao crime organizado transnacional",
-            "eixo": "Defesa Nacional & Estado",
-            "origem": "Prova EsPCEx",
-            "texto_base_1": "TEXTO I: O Brasil possui mais de 16 mil quilômetros de fronteira terrestre com dez países. A vastidão do território impõe desafios monumentais no combate ao tráfico de armas, drogas e ao contrabando. A atuação conjunta entre o Exército, a Polícia Federal e agências internacionais é indispensável para conter a expansão de facções criminosas.",
-            "texto_base_2": "TEXTO II: Operações interagências em zonas fronteiriças demonstram que a presença ostensiva do Estado inibe a instalação de ilícitos e protege a economia nacional. A integração de dados de inteligência e o monitoramento por radar são vetores indispensáveis nessa salvaguarda.",
-            "repertorios": ["Max Weber (Monopólio da Violência Legítima)", "Operações Interagências", "Estratégia Nacional de Defesa"]
-        },
-        {
-            "id": 3,
-            "tema": "A atuação das Forças Armadas em missões de garantia da lei e da ordem (GLO) e ajuda humanitária",
-            "eixo": "Defesa Nacional & Estado",
-            "origem": "Simulado EsPCEx",
-            "texto_base_1": "TEXTO I: Para além da defesa contra agressões estrangeiras, o Exército Brasileiro é frequentemente acionado em operações de apoio à população vulnerável, socorro em desastres naturais e apoio suplementar à segurança pública. Essa dupla vocação reforça a integração entre a caserna e a sociedade civil.",
-            "texto_base_2": "TEXTO II: O emprego de tropas federais em missões de paz ou socorro humanitário exige preparo técnico, neutralidade e respeito rigoroso aos Direitos Humanos, consolidando a imagem do Exército como instituição de Estado garantidora da estabilidade e do bem-estar social.",
-            "repertorios": ["Princípio da Dignidade da Pessoa Humana", "Art. 144 da CF/88", "Ação Própria de Estado"]
-        },
-        {
-            "id": 4,
-            "tema": "O papel da indústria nacional de defesa no desenvolvimento tecnológico e econômico do país",
-            "eixo": "Defesa Nacional & Estado",
-            "origem": "Simulado EsPCEx",
-            "texto_base_1": "TEXTO I: A Base Industrial de Defesa (BID) gera empregos de alta qualificação e impulsiona a inovação científica em setores como aeroespacial, bélico e de telecomunicações. Investir em tecnologia militar própria reduz a dependência de potências estrangeiras.",
-            "texto_base_2": "TEXTO II: Projetos estratégicos, como o desenvolvimento de submarinos e caças em parceria com a indústria nacional, transbordam conhecimento para o setor civil, estimulando patentes e fortalecendo a matriz industrial e econômica do país.",
-            "repertorios": ["Soberania Tecnológica", "Celso Furtado (Desenvolvimento Econômico)", "Tríplice Hélice de Inovação"]
-        },
-        {
-            "id": 5,
-            "tema": "Desafios para a vigilância e proteção da Amazônia Azul e dos recursos marítimos nacionais",
-            "eixo": "Defesa Nacional & Estado",
-            "origem": "Simulado EsPCEx",
-            "texto_base_1": "TEXTO I: A Amazônia Azul compreende cerca de 4,5 milhões de km² de área marítima dotada de imensas reservas petrolíferas (Pré-Sal) e biodiversidade marinha. Garantir a patrulha e a soberania sobre essas águas exige investimentos constantes na força naval.",
-            "texto_base_2": "TEXTO II: Mais de 95% do comércio exterior brasileiro trafega por vias marítimas. A salvaguarda do tráfego aquaviário e das plataformas continentais é condição direta para a segurança alimentar, energética e comercial da nação.",
-            "repertorios": ["Convenção das Nações Unidas sobre o Direito do Mar", "Conceito de Amazônia Azul", "Soberania Econômica"]
-        },
-        {
-            "id": 8,
-            "tema": "A vulnerabilidade das infraestruturas críticas nacionais diante de ataques cibernéticos",
-            "eixo": "Cibersegurança & Tecnologia",
-            "origem": "Simulado EsPCEx",
-            "texto_base_1": "TEXTO I: Redes elétricas, sistemas bancários, abastecimento de água e redes de telecomunicação dependem diretamente de sistemas digitais. Ataques promovidos por hackers ou grupos estatais estrangeiros podem paralisar serviços essenciais e comprometer a segurança da nação.",
-            "texto_base_2": "TEXTO II: A criação do Comando de Defesa Cibernética é resposta à necessidade de blindar dados estratégicos do Estado. No entanto, a formação continuada de especialistas e o uso de criptografia própria são urgentes diante de invasões sofisticadas.",
-            "repertorios": ["Comando de Defesa Cibernética (ComDCiber)", "Zygmunt Bauman (Sociedade de Risco)", "Marco Civil da Internet"]
-        },
-        {
-            "id": 14,
-            "tema": "O desafio do combate aos crimes ambientais e a preservação da Amazônia Legal",
-            "eixo": "Meio Ambiente & Sustentabilidade",
-            "origem": "Simulado EsPCEx",
-            "texto_base_1": "TEXTO I: O desmatamento ilegal, o garimpo clandestino e a grilagem de terras ameaçam a biodiversidade e o equilíbrio climático global. A presença das Forças Armadas e dos órgãos de fiscalização é vital para sufocar o crime organizado ambiental.",
-            "texto_base_2": "TEXTO II: A bioeconomia sustentável e o fortalecimento de pesquisas científicas locais oferecem alternativas de desenvolvimento econômico digno para as populações tradicionais da floresta sem destruição.",
-            "repertorios": ["Hans Jonas (O Princípio Responsabilidade)", "Art. 225 da CF/88", "Soberania Ambiental"]
-        },
-        {
-            "id": 20,
-            "tema": "A relevância do civismo e dos valores éticos na formação da juventude brasileira",
-            "eixo": "Cidadania & Ética",
-            "origem": "Prova EsPCEx",
-            "texto_base_1": "TEXTO I: O civismo, o respeito aos símbolos nacionais e a consciência dos deveres sociais são fundamentos da coesão de um país. Estimular valores como disciplina, responsabilidade coletiva e patriotismo fortalece a democracia.",
-            "texto_base_2": "TEXTO II: Cidadania plena envolve não apenas usufruir de direitos, mas praticar ativamente a ética no cotidiano, respeitando as leis e colaborando para a melhoria da comunidade.",
-            "repertorios": ["Immanuel Kant (Imperativo Categórico)", "Émile Durkheim (Fato Social e Moral)", "LDB - Lei de Diretrizes e Bases"]
-        }
-    ]
+    if "banco_temas" not in st.session_state:
+        st.session_state.banco_temas = [
+            # ----------------------------------------------------
+            # EIXO 1: DEFESA NACIONAL & ESTADO
+            # ----------------------------------------------------
+            {
+                "id": 1,
+                "tema": "O impacto da inteligência artificial e da automação na segurança e soberania nacional",
+                "eixo": "Defesa Nacional & Estado",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: A transformação digital redefiniu o conceito de defesa estratégica. Drones autônomos, guerra cibernética e processamento de dados em massa tornaram-se pilares do poder militar moderno. O controle sobre tecnologias críticas não é apenas uma questão comercial, mas de sobrevivência e autonomia das Forças Armadas frente às ameaças externas.",
+                "texto_base_2": "TEXTO II: Segundo a Estratégia Nacional de Defesa, a independência tecnológica é pressuposto para a garantia da soberania. Países que dependem exclusivamente de insumos e softwares estrangeiros para seus sistemas de controle e comando ficam suscetíveis a bloqueios e vulnerabilidades em cenários de conflito internacional.",
+                "repertorios": ["Art. 142 da Constituição Federal", "Conceito de Guerra Híbrida", "Thomas Hobbes (O Leviatã)"]
+            },
+            {
+                "id": 2,
+                "tema": "A importância do controle de fronteiras no combate ao crime organizado transnacional",
+                "eixo": "Defesa Nacional & Estado",
+                "origem": "Prova EsPCEx",
+                "texto_base_1": "TEXTO I: O Brasil possui mais de 16 mil quilômetros de fronteira terrestre com dez países. A vastidão do território impõe desafios monumentais no combate ao tráfico de armas, drogas e ao contrabando. A atuação conjunta entre o Exército, a Polícia Federal e agências internacionais é indispensável para conter a expansão de facções criminosas.",
+                "texto_base_2": "TEXTO II: Operações interagências em zonas fronteiriças demonstram que a presença ostensiva do Estado inibe a instalação de ilícitos e protege a economia nacional. A integração de dados de inteligência e o monitoramento por radar são vetores indispensáveis nessa salvaguarda.",
+                "repertorios": ["Max Weber (Monopólio da Violência Legítima)", "Operações Interagências", "Estratégia Nacional de Defesa"]
+            },
+            {
+                "id": 3,
+                "tema": "A atuação das Forças Armadas em missões de garantia da lei e da ordem (GLO) e ajuda humanitária",
+                "eixo": "Defesa Nacional & Estado",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: Para além da defesa contra agressões estrangeiras, o Exército Brasileiro é frequentemente acionado em operações de apoio à população vulnerável, socorro em desastres naturais e apoio suplementar à segurança pública. Essa dupla vocação reforça a integração entre a caserna e a sociedade civil.",
+                "texto_base_2": "TEXTO II: O emprego de tropas federais em missões de paz ou socorro humanitário exige preparo técnico, neutralidade e respeito rigoroso aos Direitos Humanos, consolidando a imagem do Exército como instituição de Estado garantidora da estabilidade e do bem-estar social.",
+                "repertorios": ["Princípio da Dignidade da Pessoa Humana", "Art. 144 da CF/88", "Ação Própria de Estado"]
+            },
+            {
+                "id": 4,
+                "tema": "O papel da indústria nacional de defesa no desenvolvimento tecnológico e econômico do país",
+                "eixo": "Defesa Nacional & Estado",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: A Base Industrial de Defesa (BID) gera empregos de alta qualificação e impulsiona a inovação científica em setores como aeroespacial, bélico e de telecomunicações. Investir em tecnologia militar própria reduz a dependência de potências estrangeiras.",
+                "texto_base_2": "TEXTO II: Projetos estratégicos, como o desenvolvimento de submarinos e caças em parceria com a indústria nacional, transbordam conhecimento para o setor civil, estimulando patentes e fortalecendo a matriz industrial e econômica do país.",
+                "repertorios": ["Soberania Tecnológica", "Celso Furtado (Desenvolvimento Econômico)", "Tríplice Hélice de Inovação"]
+            },
+            {
+                "id": 5,
+                "tema": "Desafios para a vigilância e proteção da Amazônia Azul e dos recursos marítimos nacionais",
+                "eixo": "Defesa Nacional & Estado",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: A Amazônia Azul compreende cerca de 4,5 milhões de km² de área marítima dotada de imensas reservas petrolíferas (Pré-Sal) e biodiversidade marinha. Garantir a patrulha e a soberania sobre essas águas exige investimentos constantes na força naval.",
+                "texto_base_2": "TEXTO II: Mais de 95% do comércio exterior brasileiro trafega por vias marítimas. A salvaguarda do tráfego aquaviário e das plataformas continentais é condição direta para a segurança alimentar, energética e comercial da nação.",
+                "repertorios": ["Convenção das Nações Unidas sobre o Direito do Mar", "Conceito de Amazônia Azul", "Soberania Econômica"]
+            },
+            {
+                "id": 6,
+                "tema": "O serviço militar obrigatório como instrumento de formação cidadã e coesão social",
+                "eixo": "Defesa Nacional & Estado",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: O serviço militar reúne jovens de diversas origens sociais, étnicas e regionais, proporcionando um ambiente de igualdade de deveres e companheirismo sob o mesmo fardamento.",
+                "texto_base_2": "TEXTO II: Além do treinamento militar, a incorporação estimula princípios de disciplina, hierarquia, respeito às leis e civismo, atuando como porta de entrada para a qualificação profissional e a consciência social.",
+                "repertorios": ["Civismo e Patriotismo", "Émile Durkheim (Fato Social)", "Art. 143 da CF/88"]
+            },
+            {
+                "id": 7,
+                "tema": "A diplomacia militar e a cooperação regional na América do Sul",
+                "eixo": "Defesa Nacional & Estado",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: A construção de um entorno regional pacífico passa por exercícios militares conjuntos, intercâmbio em academias de formação e operações combinadas de salvamento na América do Sul.",
+                "texto_base_2": "TEXTO II: A confiança mútua entre Forças Armadas vizinhas previne corridas armamentistas desnecessárias e fortalece blocos de negociação internacional no combate a ameaças comuns.",
+                "repertorios": ["Carta das Nações Unidas", "Princípio da Não Intervenção", "Conselho de Defesa Sul-Americano"]
+            },
 
-    banco_completo = temas_padrao + db.get("temas_custom", [])
+            # ----------------------------------------------------
+            # EIXO 2: CIBERSEGURANÇA & TECNOLOGIA
+            # ----------------------------------------------------
+            {
+                "id": 8,
+                "tema": "A vulnerabilidade das infraestruturas críticas nacionais diante de ataques cibernéticos",
+                "eixo": "Cibersegurança & Tecnologia",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: Redes elétricas, sistemas bancários, abastecimento de água e redes de telecomunicação dependem diretamente de sistemas digitais. Ataques promovidos por hackers ou grupos estatais estrangeiros podem paralisar serviços essenciais e comprometer a segurança da nação.",
+                "texto_base_2": "TEXTO II: A criação do Comando de Defesa Cibernética é resposta à necessidade de blindar dados estratégicos do Estado. No entanto, a formação continuada de especialistas e o uso de criptografia própria são urgentes diante de invasões sofisticadas.",
+                "repertorios": ["Comando de Defesa Cibernética (ComDCiber)", "Zygmunt Bauman (Sociedade de Risco)", "Marco Civil da Internet"]
+            },
+            {
+                "id": 9,
+                "tema": "A desinformação e as fake news como ameaças à estabilidade democrática e social",
+                "eixo": "Cibersegurança & Tecnologia",
+                "origem": "Prova EsPCEx",
+                "texto_base_1": "TEXTO I: A difusão em massa de notícias falsas por algoritmos e redes sociais manipula a opinião pública, corrói a confiança nas instituições legítimas e acirra a polarização social. Garantir a liberdade de expressão sem permitir o caos informativo é um dilema central.",
+                "texto_base_2": "TEXTO II: A desinformação em momentos de crise sanitária ou eleitoral compromete a coesão do tecido social. A educação de mídias e a responsabilização jurídica das plataformas são caminhos fundamentais de enfrentamento.",
+                "repertorios": ["Hannah Arendt (Verdade e Política)", "Guy Debord (A Sociedade do Espetáculo)", "LGPD"]
+            },
+            {
+                "id": 10,
+                "tema": "Os limites éticos do desenvolvimento e uso da inteligência artificial na sociedade",
+                "eixo": "Cibersegurança & Tecnologia",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: O avanço acelerado dos algoritmos preditivos levanta questionamentos sobre privacidade, viés discriminatório e perda de postos de trabalho. A regulamentação da inteligência artificial busca equilibrar a inovação com a preservação dos direitos humanos.",
+                "texto_base_2": "TEXTO II: Sistemas autônomos de tomada de decisão não possuem discernimento moral. Delegar escolhas de vida, justiça ou defesa a máquinas sem supervisão humana direta fere o princípio da responsabilidade ética.",
+                "repertorios": ["Immanuel Kant (Humanidade como Fim)", "Nick Bostrom (Superinteligência)", "Direito à Privacidade"]
+            },
+            {
+                "id": 11,
+                "tema": "O impacto da hiperconexão na saúde mental e nas relações interpessoais da juventude",
+                "eixo": "Cibersegurança & Tecnologia",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: O uso excessivo de telas e redes sociais tem gerado isolamento, ansiedade e dependência digital entre adolescentes. A busca por validação virtual contínua substitui a convivência presencial e afeta diretamente a capacidade de concentração.",
+                "texto_base_2": "TEXTO II: A cultura do imediatismo gerada pelas notificações em tempo real fragiliza a paciência necessária para o estudo profundo e para a construção de relacionamentos interpessoais sólidos e resilientes.",
+                "repertorios": ["Byung-Chul Han (A Sociedade do Cansaço)", "Conceito de Solidão Digital", "OMS (Saúde Mental)"]
+            },
+            {
+                "id": 12,
+                "tema": "A inclusão digital como fator determinante para o combate às desigualdades sociais",
+                "eixo": "Cibersegurança & Tecnologia",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: O acesso à internet de alta velocidade e a dispositivos computacionais deixou de ser luxo para se tornar requisito de cidadania, educação e oportunidade de trabalho. A exclusão digital perpetua o ciclo de pobreza em regiões periféricas e rurais.",
+                "texto_base_2": "TEXTO II: A alfabetização digital deve caminhar junto à infraestrutura de redes. Sem capacitação para usar as ferramentas com senso crítico e produtividade, o hiato social entre classes continuará a se expandir.",
+                "repertorios": ["Gilberto Dimenstein (O Cidadão de Papel)", "Teoria do Capital Cultural (Bourdieu)", "Art. 205 da CF/88"]
+            },
+            {
+                "id": 13,
+                "tema": "A proteção de dados pessoais e o direito à privacidade na era da informação",
+                "eixo": "Cibersegurança & Tecnologia",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: A rastreabilidade contínua de hábitos, preferências e dados biométricos transforma o indivíduo em produto mercadológico na economia de dados.",
+                "texto_base_2": "TEXTO II: Legislações como a LGPD representam marcos de proteção civil, exigindo consentimento explícito e transparência de empresas e do governo no manuseio de informações sensíveis.",
+                "repertorios": ["LGPD", "Panóptico de Jeremy Bentham", "Direito Fundamental à Privacidade"]
+            },
+
+            # ----------------------------------------------------
+            # EIXO 3: MEIO AMBIENTE & SUSTENTABILIDADE
+            # ----------------------------------------------------
+            {
+                "id": 14,
+                "tema": "O desafio do combate aos crimes ambientais e a preservação da Amazônia Legal",
+                "eixo": "Meio Ambiente & Sustentabilidade",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: O desmatamento ilegal, o garimpo clandestino e a grilagem de terras ameaçam a biodiversidade e o equilíbrio climático global. A presença das Forças Armadas e dos órgãos de fiscalização é vital para sufocar o crime organizado ambiental.",
+                "texto_base_2": "TEXTO II: A bioeconomia sustentável e o fortalecimento de pesquisas científicas locais oferecem alternativas de desenvolvimento econômico digno para as populações tradicionais da floresta sem destruição.",
+                "repertorios": ["Hans Jonas (O Princípio Responsabilidade)", "Art. 225 da CF/88", "Soberania Ambiental"]
+            },
+            {
+                "id": 15,
+                "tema": "A transição energética e o papel do Brasil na matriz limpa mundial",
+                "eixo": "Meio Ambiente & Sustentabilidade",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: Frente ao aquecimento global, a substituição de combustíveis fósseis por fontes renováveis é urgente. O Brasil destaca-se mundialmente por sua matriz energética diversificada e limpa, podendo liderar a economia verde internacional.",
+                "texto_base_2": "TEXTO II: O investimento em biocombustíveis, energia eólica, solar e hidrogênio verde atrai capital estrangeiro e reduz a pegada de carbono do setor produtivo e de transportes.",
+                "repertorios": ["Acordo de Paris", "Conceito de Desenvolvimento Sustentável", "Agenda 2030 da ONU"]
+            },
+            {
+                "id": 16,
+                "tema": "A gestão dos recursos hídricos e a segurança alimentar diante das mudanças climáticas",
+                "eixo": "Meio Ambiente & Sustentabilidade",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: Eventos climáticos extremos, como secas prolongadas e enchentes devastadoras, impactam diretamente a produção agrícola e o abastecimento de água. A sustentabilidade no campo e a preservação dos mananciais são cruciais.",
+                "texto_base_2": "TEXTO II: A tecnologia de irrigação eficiente, o reflorestamento de matas ciliares e o combate ao desperdício são alavancas para assegurar a comida na mesa sem esgotar as bacias hidrográficas.",
+                "repertorios": ["Josué de Castro (Geopolítica da Fome)", "Código Florestal Brasileiro", "Embrapa e Tecnologia Agrícola"]
+            },
+            {
+                "id": 17,
+                "tema": "O dilema entre o crescimento econômico e a conservação do patrimônio natural",
+                "eixo": "Meio Ambiente & Sustentabilidade",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: O avanço das fronteiras agrícolas e industriais é essencial para a geração de empregos. Contudo, a exploração desenfreada sem manejo sustentável esgota os recursos naturais e compromete a qualidade de vida das gerações futuras.",
+                "texto_base_2": "TEXTO II: O conceito de desenvolvimento sustentável prova que preservação e rentabilidade não são antagônicos, desde que pautados por licenciamento sério e compensação ambiental.",
+                "repertorios": ["Relatório Brundtland (1987)", "Desenvolvimento Sustentável", "Paul Crutzen (Antropoceno)"]
+            },
+            {
+                "id": 18,
+                "tema": "A gestão de resíduos sólidos e a responsabilidade socioambiental nas cidades brasileiras",
+                "eixo": "Meio Ambiente & Sustentabilidade",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: O descarte inadequado do lixo, a proliferação de lixões clandestinos e o baixo índice de reciclagem geram impactos severos à saúde pública e ao meio ambiente urbano. A logística reversa e o apoio aos catadores são medidas urgentes.",
+                "texto_base_2": "TEXTO II: A transição para a economia circular exige engajamento do consumidor, incentivos fiscais para embalagens biodegradáveis e coleta seletiva eficiente nas periferias.",
+                "repertorios": ["Política Nacional de Resíduos Sólidos", "Conceito de Economia Circular", "Saneamento Básico como Direito"]
+            },
+            {
+                "id": 19,
+                "tema": "O papel da agricultura de precisão e das agrotecnologias na preservação ambiental",
+                "eixo": "Meio Ambiente & Sustentabilidade",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: O uso de drones, sensores de solo e mapeamento por satélite otimiza a aplicação de insumos e adubos, reduzindo o desperdício e protegendo o lençol freático.",
+                "texto_base_2": "TEXTO II: Produzir mais na mesma área reduz a pressão sobre a abertura de novas vegetações nativas, aliando produtividade no campo e proteção biológica.",
+                "repertorios": ["Inovação Agrícola", "Código Florestal", "Sustentabilidade no Campo"]
+            },
+
+            # ----------------------------------------------------
+            # EIXO 4: CIDADANIA & ÉTICA
+            # ----------------------------------------------------
+            {
+                "id": 20,
+                "tema": "A relevância do civismo e dos valores éticos na formação da juventude brasileira",
+                "eixo": "Cidadania & Ética",
+                "origem": "Prova EsPCEx",
+                "texto_base_1": "TEXTO I: O civismo, o respeito aos símbolos nacionais e a consciência dos deveres sociais são fundamentos da coesão de um país. Estimular valores como disciplina, responsabilidade coletiva e patriotismo fortalece a democracia.",
+                "texto_base_2": "TEXTO II: Cidadania plena envolve não apenas usufruir de direitos, mas praticar ativamente a ética no cotidiano, respeitando as leis e colaborando para a melhoria da comunidade.",
+                "repertorios": ["Immanuel Kant (Imperativo Categórico)", "Émile Durkheim (Fato Social e Moral)", "LDB - Lei de Diretrizes e Bases"]
+            },
+            {
+                "id": 21,
+                "tema": "O papel da educação no combate à intolerância e à cultura da violência na sociedade",
+                "eixo": "Cidadania & Ética",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: O aumento de episódios de discurso de ódio e agressões interpessoais evidencia a necessidade de uma formação educacional pautada no diálogo, na empatia e no cumprimento das leis. A escola deve ser um espaço de mediação de conflitos.",
+                "texto_base_2": "TEXTO II: Educar para a cultura da paz exige desconstruir preconceitos e formar indivíduos conscientes do valor do respeito mútuo e da solução pacífica de divergências.",
+                "repertorios": ["Paulo Freire (Educação como Prática da Liberdade)", "Declaração Universal dos Direitos Humanos", "Conceito de Alteridade"]
+            },
+            {
+                "id": 22,
+                "tema": "A importância do voluntariado e do espírito de solidariedade em momentos de crise nacional",
+                "eixo": "Cidadania & Ética",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: Durante grandes calamidades públicas e crises sociais, a mobilização da sociedade civil em ações comunitárias e doações complementa a atuação estatal. A cultura do voluntariado demonstra a força da empatia coletiva.",
+                "texto_base_2": "TEXTO II: Engajar-se voluntariamente fortalece os laços comunitários e desenvolve o senso de responsabilidade social, transformando o cidadão em agente direto de mudança.",
+                "repertorios": ["Zygmunt Bauman (Comunidade)", "Princípio da Solidariedade Constitucional", "Ação Social Organizacional"]
+            },
+            {
+                "id": 23,
+                "tema": "A valorização do trabalho e o desafio do primeiro emprego para os jovens no Brasil",
+                "eixo": "Cidadania & Ética",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: A transição da escola para o mercado de trabalho é marcada por exigências crescentes de qualificação técnica e experiência prévia. Programas de aprendizagem, ensino técnico e incentivos governamentais são fundamentais.",
+                "texto_base_2": "TEXTO II: O trabalho formal na juventude é vetor de dignidade e autonomia, prevenindo a ociosidade e fornecendo perspectivas reais de crescimento social e profissional.",
+                "repertorios": ["Lei do Aprendiz", "Constituição Federal (Direito ao Trabalho)", "Teoria do Capital Humano"]
+            },
+            {
+                "id": 24,
+                "tema": "A preservação da memória histórica e da identidade cultural como pilares de uma nação",
+                "eixo": "Cidadania & Ética",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: O conhecimento da história, das tradições e dos heróis nacionais permite compreender o presente e projetar o futuro. Um país que desvaloriza seu patrimônio cultural corre o risco de perder sua identidade e coesão social.",
+                "texto_base_2": "TEXTO II: Preservar acervos, monumentos e datas históricas não é apego ao passado, mas compromisso com a continuidade dos valores e símbolos que unificam o povo.",
+                "repertorios": ["Patrimônio Histórico Nacional (IPHAN)", "Marc Bloch (A Apologia da História)", "Identidade Nacional (Ernest Renan)"]
+            },
+            {
+                "id": 25,
+                "tema": "A ética no serviço público como garantia de eficiência e respeito ao cidadão",
+                "eixo": "Cidadania & Ética",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: Servidores públicos investidos de autoridade devem agir estritamente pautados pela impessoalidade, moralidade e transparência em seus atos administrativos.",
+                "texto_base_2": "TEXTO II: A eficiência na prestação de serviços essenciais como saúde, segurança e educação é o reflexo direto de um corpo funcional comprometido com a ética pública.",
+                "repertorios": ["Art. 37 da Constituição Federal (LIMPE)", "Aristóteles (Ética a Nicômaco)", "Transparência Pública"]
+            }
+        ]
 
     if "tema_sorteado" not in st.session_state:
         st.session_state.tema_sorteado = None
@@ -1250,7 +1385,7 @@ elif menu == "🎲 Sorteador de Temas & Textos Base":
         st.write(" ")
         st.write(" ")
         if st.button("🎲 Sortear Tema Agora", use_container_width=True):
-            lista_filtrada = banco_completo
+            lista_filtrada = st.session_state.banco_temas
             if eixo_filtro != "Todos os Eixos":
                 lista_filtrada = [t for t in lista_filtrada if t["eixo"] == eixo_filtro]
             if origem_filtro != "Todas as Origens":
@@ -1266,7 +1401,7 @@ elif menu == "🎲 Sorteador de Temas & Textos Base":
         st.markdown("---")
         st.subheader("📌 Proposta de Redação Sorteada")
 
-        st.info(f"### 📝 Proposta: '{t['tema']}'")
+        st.info(f"### 📝 Proposta: \"{t['tema']}\"")
         st.write(f"**Eixo:** {t['eixo']} | **Origem:** {t['origem']} | **ID:** #{t['id']}")
 
         with st.expander("📜 Textos Base Motivadores (Clique para ler)", expanded=True):
@@ -1293,23 +1428,21 @@ elif menu == "🎲 Sorteador de Temas & Textos Base":
 
             if btn_salvar_tema and n_tema and n_texto_1 and n_texto_2:
                 lista_r = [r.strip() for r in n_reps.split(",") if r.strip()]
-                novo_item = {
-                    "id": len(banco_completo) + 1,
+                st.session_state.banco_temas.append({
+                    "id": len(st.session_state.banco_temas) + 1,
                     "tema": n_tema,
                     "eixo": n_eixo,
                     "origem": n_origem,
                     "texto_base_1": n_texto_1,
                     "texto_base_2": n_texto_2,
                     "repertorios": lista_r if lista_r else ["Repertório Geral do Eixo"]
-                }
-                db["temas_custom"].append(novo_item)
-                salvar_dados_usuario(user_atual, db)
-                st.success("Novo tema cadastrado com sucesso e salvo permanentemente!")
+                })
+                st.success("Novo tema cadastrado com sucesso no Módulo 12!")
                 st.rerun()
 
-# -----------------------------------------------------------------------------
+# ====================================================
 # MÓDULO 13: PACER TAF
-# -----------------------------------------------------------------------------
+# ====================================================
 elif menu == "🏃 Módulo 13: Pacer TAF":
     st.header("🏃 Módulo 13: Simulador Pacer de Corrida TAF")
     st.markdown("Calcule o ritmo exato por volta e acompanhe metas progressivas para os **12 minutos de corrida**.")
@@ -1350,9 +1483,10 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
     df_pacer = pd.DataFrame(metas_semanais)
     st.dataframe(df_pacer, use_container_width=True, hide_index=True)
 
-# -----------------------------------------------------------------------------
+
+# ====================================================
 # MÓDULO 14: NUTRIÇÃO & CALORIAS
-# -----------------------------------------------------------------------------
+# ====================================================
 elif menu == "🥗 Nutrição & Calorias":
     st.header("🥗 Módulo 14: Calculadora Nutricional & Gasto Calórico")
     st.markdown("Ajuste o aporte calórico para conciliar o trabalho na roça com o rendimento no TAF e estudos.")
@@ -1383,9 +1517,10 @@ elif menu == "🥗 Nutrição & Calorias":
     m3.metric("Proteína Recomendada", f"{int(proteina_g)} g")
     m4.metric("Carboidratos (Energia)", f"{int(carbo_g)} g")
 
-# -----------------------------------------------------------------------------
+
+# ====================================================
 # MÓDULO 15: CALC. AGROPECUÁRIA
-# -----------------------------------------------------------------------------
+# ====================================================
 elif menu == "🌾 Calc. Agropecuária":
     st.header("🌾 Módulo 15: Calculadora Técnica Agropecuária")
     st.markdown("Apoio prático para tarefas da EFA, calibração de dosagens e estimativas de café.")
@@ -1417,65 +1552,67 @@ elif menu == "🌾 Calc. Agropecuária":
         sacas_estimadas = litros_totais / 480
         st.info(f"**Estimativa da Colheita:** {litros_totais:,.0f} Litros ➔ **~{sacas_estimadas:.1f} Sacas Beneficiadas (60kg)**")
 
-# -----------------------------------------------------------------------------
+
+# ====================================================
 # MÓDULO 16: KANBAN EFA
-# -----------------------------------------------------------------------------
+# ====================================================
 elif menu == "📌 Kanban EFA":
     st.header("📌 Módulo 16: Quadro Kanban de Trabalhos & Pesquisas EFA")
     st.markdown("Gestão visual de projetos escolares, maquetes e relatórios agrícolas.")
 
-    kanban_tasks = db.get("kanban", [])
+    if "kanban_tasks" not in st.session_state:
+        st.session_state.kanban_tasks = [
+            {"id": 1, "titulo": "Relatório de Solo e Adubação", "status": "A Fazer"},
+            {"id": 2, "titulo": "Pesquisa sobre Cooperativismo", "status": "Em Andamento"},
+            {"id": 3, "titulo": "Apresentação AMSP 01", "status": "Entregue"}
+        ]
 
     with st.expander("➕ Adicionar Novo Projeto/Trabalho"):
         novo_proj = st.text_input("Título do Trabalho")
         if st.button("Cadastrar no Kanban") and novo_proj:
-            novo_id = len(kanban_tasks) + 1
-            kanban_tasks.append({"id": novo_id, "titulo": novo_proj, "status": "A Fazer"})
-            db["kanban"] = kanban_tasks
-            salvar_dados_usuario(user_atual, db)
-            st.success("Tarefa adicionada!")
+            novo_id = len(st.session_state.kanban_tasks) + 1
+            st.session_state.kanban_tasks.append({"id": novo_id, "titulo": novo_proj, "status": "A Fazer"})
             st.rerun()
 
     k_fazer, k_and, k_ent = st.columns(3)
 
     with k_fazer:
         st.subheader("🔴 A Fazer")
-        for item in list(kanban_tasks):
+        for item in list(st.session_state.kanban_tasks):
             if item["status"] == "A Fazer":
                 with st.expander(f"📌 {item['titulo']}"):
                     if st.button("Mover ➔ Em Andamento", key=f"kan_and_{item['id']}"):
                         item["status"] = "Em Andamento"
-                        salvar_dados_usuario(user_atual, db)
                         st.rerun()
 
     with k_and:
         st.subheader("🟡 Em Andamento")
-        for item in list(kanban_tasks):
+        for item in list(st.session_state.kanban_tasks):
             if item["status"] == "Em Andamento":
                 with st.expander(f"⏳ {item['titulo']}"):
                     if st.button("Mover ➔ Entregue", key=f"kan_ent_{item['id']}"):
                         item["status"] = "Entregue"
-                        salvar_dados_usuario(user_atual, db)
                         st.rerun()
 
     with k_ent:
         st.subheader("🟢 Entregue")
-        for item in list(kanban_tasks):
+        for item in list(st.session_state.kanban_tasks):
             if item["status"] == "Entregue":
                 with st.expander(f"✅ {item['titulo']}"):
                     st.caption("Concluído e arquivado")
 
-# -----------------------------------------------------------------------------
+
+# ====================================================
 # MÓDULO 17: HABIT TRACKER
-# -----------------------------------------------------------------------------
+# ====================================================
 elif menu == "🔥 Habit Tracker":
     st.header("🔥 Módulo 17: Habit Tracker & Disciplina Militar")
     st.markdown("Acompanhe o cumprimento diário das tarefas fundamentais para a aprovação.")
 
-    habits_data = db.get("habits", {"streak": 12, "historico": {}})
-    streak_dias = habits_data.get("streak", 12)
+    if "streak_dias" not in st.session_state:
+        st.session_state.streak_dias = 12
 
-    st.subheader(f"🔥 Sequência Atual: **{streak_dias} Dias Consecutivos de Foco!**")
+    st.subheader(f"🔥 Sequência Atual: **{st.session_state.streak_dias} Dias Consecutivos de Foco!**")
 
     st.markdown("### Checklist do Dia")
     h1 = st.checkbox("🎯 Meta de Questões Cumprida (BQEM)")
@@ -1494,9 +1631,10 @@ elif menu == "🔥 Habit Tracker":
         st.balloons()
         st.success("Excelente! Missão cumprida no dia de hoje. Mantenha o padrão!")
 
-# -----------------------------------------------------------------------------
+
+# ====================================================
 # MÓDULO 18: CRONOGRAMA DINÂMICO
-# -----------------------------------------------------------------------------
+# ====================================================
 elif menu == "📅 Cronograma Dinâmico":
     st.header("📅 Módulo 18: Cronograma Semanal Dinâmico")
     st.markdown("Alterne instantaneamente a visualização do plano entre a **Semana A (Na Escola)** e a **Semana B (Em Casa)**.")
@@ -1529,9 +1667,10 @@ elif menu == "📅 Cronograma Dinâmico":
         ]
         st.table(pd.DataFrame(grade_b))
 
-# -----------------------------------------------------------------------------
+
+# ====================================================
 # MÓDULO 19: HUB DE LINKS
-# -----------------------------------------------------------------------------
+# ====================================================
 elif menu == "🔗 Hub de Links":
     st.header("🔗 Módulo 19: Hub de Links Táticos & Atalhos Rápidos")
     st.markdown("Acesso direto às plataformas de estudo, materiais e sistemas com um único clique.")
@@ -1550,240 +1689,86 @@ elif menu == "🔗 Hub de Links":
         st.link_button("💻 Repositório GitHub (qg-espcex-app)", "https://github.com/arrudaluan575-dotcom/qg-espcex-app", use_container_width=True)
         st.link_button("📊 Streamlit Cloud Dashboard", "https://share.streamlit.io/", use_container_width=True)
 
-# -----------------------------------------------------------------------------
+
+# ====================================================
 # MÓDULO 20: DIÁRIO DE BORDO
-# -----------------------------------------------------------------------------
-def render_modulo_20(supabase_client=None, user_id=None):
-    st.title("📖 Módulo 20 - Diário de Bordo")
-    st.subheader("Reflexão diária, acompanhamento e planejamento para o dia seguinte")
+# ====================================================
+elif menu == "📖 Diário de Bordo":
+    import random
+    from datetime import datetime
 
-    tab1, tab2 = st.tabs(["📝 Registrar / Editar Hoje", "🔍 Rever e Histórico do Diário"])
+    st.header("📖 Módulo 20: Diário de Bordo Tático")
 
-    # ----------------------------------------------------
-    # TAB 1: REGISTRAR / EDITAR O DIA ATUAL
-    # ----------------------------------------------------
-    with tab1:
-        st.markdown("### ✍️ Registro Diário")
-        
-        data_hoje = st.date_input("Data do Registro", value=datetime.date.today())
-        
-        # Busca registro existente no Supabase para a data selecionada
-        registo_existente = None
-        if supabase_client:
-            try:
-                res = supabase_client.table("diario_bordo")\
-                    .select("*")\
-                    .eq("data", str(data_hoje))\
-                    .execute()
-                if res.data and len(res.data) > 0:
-                    registo_existente = res.data[0]
-            except Exception as e:
-                st.warning(f"Aviso ao verificar registros anteriores no Supabase: {e}")
+    frases_eb = [
+        "\"A farda não é uma veste que se despe com facilidade e indiferença, mas uma outra pele, que adere à própria alma.\" — Gen. Leônidas Pires Gonçalves",
+        "\"O êxito é a soma de pequenos esforços repetidos dia após dia.\"",
+        "\"A vitória sorri para aqueles que estão dispostos a pagar o preço do suor no treinamento.\"",
+        "\"Brasil acima de tudo!\"",
+        "\"Na selva, a disciplina não é apenas uma virtude, é a diferença entre a vida e a derrota.\""
+    ]
 
-        # Carrega dados existentes para edição ou deixa em branco
-        val_bem = registo_existente.get("pontos_fortes", "") if registo_existente else ""
-        val_ajustar = registo_existente.get("pontos_melhorar", "") if registo_existente else ""
-        val_resumo = registo_existente.get("resumo_dia", "") if registo_existente else ""
-        val_humor = registo_existente.get("humor", "🟢 Bom") if registo_existente else "🟢 Bom"
+    st.info(f"💡 **Frase do Dia:** {random.choice(frases_eb)}")
 
-        if registo_existente:
-            st.info(f"ℹ️ Registros encontrados para {data_hoje.strftime('%d/%m/%Y')}. Você pode rever e editar abaixo.")
+    # 1. Lista que armazena os diários anteriores na memória da sessão
+    if "historico_diario" not in st.session_state:
+        st.session_state.historico_diario = []
 
-        with st.form("form_diario_bordo"):
-            col_a, col_b = st.columns(2)
-            
-            with col_a:
-                o_que_foi_bem = st.text_area(
-                    "🌟 O que foi bem hoje?",
-                    value=val_bem,
-                    placeholder="Ex.: Cumpri a meta de questões e mantive o ritmo nos estudos."
-                )
+    st.markdown("---")
+    st.subheader("📝 Reflexão do Fim de Dia")
 
-            with col_b:
-                o_que_ajustar = st.text_area(
-                    "🛠️ O que precisa editar / ajustar para amanhã?",
-                    value=val_ajustar,
-                    placeholder="Ex.: Acordar no horário sem adiar o alarme e focar no bloco de Física."
-                )
+    with st.form("form_diario_bordo"):
+        foco_dia = st.slider("Nível de Foco nos Estudos (1 a 5)", 1, 5, 4)
+        cansaco_fisico = st.slider("Desgaste Físico da Roça/Treino (1 a 5)", 1, 5, 3)
+        resumo_dia = st.text_area("O que correu bem hoje e o que precisa ser ajustado para amanhã?")
+        btn_salvar_diario = st.form_submit_button("Salvar Diário de Bordo")
 
-            resumo_dia = st.text_area(
-                "📝 Resumo geral do dia / Observações:",
-                value=val_resumo,
-                placeholder="Reflexão geral sobre a rotina e estudos..."
-            )
-
-            humor = st.selectbox(
-                "🧠 Estado de espírito / Nível de energia:",
-                ["🔥 Excelente", "🟢 Bom", "🟡 Regular", "🔴 Cansado / Baixo Desempenho"],
-                index=["🔥 Excelente", "🟢 Bom", "🟡 Regular", "🔴 Cansado / Baixo Desempenho"].index(val_humor) if val_humor in ["🔥 Excelente", "🟢 Bom", "🟡 Regular", "🔴 Cansado / Baixo Desempenho"] else 1
-            )
-
-            btn_salvar = st.form_submit_button("💾 Salvar / Atualizar Diário no Supabase")
-
-        if btn_salvar:
-            dados_diario = {
-                "data": str(data_hoje),
-                "pontos_fortes": o_que_foi_bem,
-                "pontos_melhorar": o_que_ajustar,
-                "resumo_dia": resumo_dia,
-                "humor": humor
-            }
-            if user_id:
-                dados_diario["user_id"] = user_id
-
-            salvo_nuvem = False
-            if supabase_client:
-                try:
-                    if registo_existente and "id" in registo_existente:
-                        supabase_client.table("diario_bordo")\
-                            .update(dados_diario)\
-                            .eq("id", registo_existente["id"])\
-                            .execute()
-                    else:
-                        supabase_client.table("diario_bordo")\
-                            .insert(dados_diario)\
-                            .execute()
-                    salvo_nuvem = True
-                    st.success("✅ Diário de bordo salvo com sucesso na nuvem!")
-                except Exception as e:
-                    st.error(f"Erro ao salvar no Supabase: {e}")
-
-            if not salvo_nuvem:
-                st.info("ℹ️ Salvo na memória local da sessão.")
-                if "diario_local" not in st.session_state:
-                    st.session_state["diario_local"] = []
-                st.session_state["diario_local"].append(dados_diario)
-
-    # ----------------------------------------------------
-    # TAB 2: REVER E REVISITAR REGISTROS ANTERIORES
-    # ----------------------------------------------------
-    with tab2:
-        st.markdown("### 🔍 Consulta e Revisão de Diários Anteriores")
-
-        registos = []
-        if supabase_client:
-            try:
-                res = supabase_client.table("diario_bordo")\
-                    .select("*")\
-                    .order("data", ascending=False)\
-                    .execute()
-                registos = res.data or []
-            except Exception as e:
-                st.error(f"Erro ao carregar histórico do Supabase: {e}")
-        
-        if not registos and "diario_local" in st.session_state:
-            registos = st.session_state["diario_local"]
-
-        if registos:
-            df = pd.DataFrame(registos)
-            cols_exibicao = [c for c in ["data", "pontos_fortes", "pontos_melhorar", "resumo_dia", "humor"] if c in df.columns]
-            df_renomeado = df[cols_exibicao].rename(columns={
-                "data": "Data",
-                "pontos_fortes": "O que foi bem hoje",
-                "pontos_melhorar": "O que ajustar para amanhã",
-                "resumo_dia": "Resumo Geral",
-                "humor": "Humor/Energia"
-            })
-            
-            st.dataframe(df_renomeado, use_container_width=True)
-
-            st.markdown("---")
-            st.markdown("#### 🔎 Ver Detalhes de um Dia")
-            
-            datas_disponiveis = [r.get("data") for r in registos if "data" in r]
-            data_selecionada = st.selectbox("Escolha uma data para rever:", datas_disponiveis)
-
-            registo_sel = next((r for r in registos if r.get("data") == data_selecionada), None)
-
-            if registo_sel:
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.success(f"**🌟 O que foi bem em {data_selecionada}:**\n\n" + str(registo_sel.get("pontos_fortes", "Sem registro")))
-                with c2:
-                    st.warning(f"**🛠️ O que ajustar para o dia seguinte:**\n\n" + str(registo_sel.get("pontos_melhorar", "Sem registro")))
+        if btn_salvar_diario:
+            if resumo_dia.strip():
+                # Captura a data e hora do registro
+                data_registro = datetime.now().strftime("%d/%m/%Y às %H:%M")
                 
-                st.info(f"**📝 Resumo e Observações:** {registo_sel.get('resumo_dia', 'Sem resumo')} | **Energia/Humor:** {registo_sel.get('humor', 'N/A')}")
-        else:
-            st.info("Nenhum registro de diário de bordo encontrado até o momento.")
-# -----------------------------------------------------------------------------
-# MÓDULO 21: PLAYER DE ÁUDIO
-# -----------------------------------------------------------------------------
-def render_modulo_21(supabase_client=None, user_id=None):
-    st.title("🎧 Módulo 21 - Player de Áudio")
-    st.subheader("Reprodutor de áudio para resumos, aulas e revisões em áudio")
-
-    tab1, tab2 = st.tabs(["▶️ Reprodutor", "📤 Carregar / Adicionar Áudio"])
-
-    # ----------------------------------------------------
-    # TAB 1: REPRODUTOR DE ÁUDIO
-    # ----------------------------------------------------
-    with tab1:
-        st.markdown("### 🎶 Selecionar e Ouvir Áudio")
-
-        audios = []
-        if supabase_client:
-            try:
-                res = supabase_client.table("audios").select("*").execute()
-                audios = res.data or []
-            except Exception:
-                pass
-
-        if not audios and "audios_locais" in st.session_state:
-            audios = st.session_state["audios_locais"]
-
-        if audios:
-            opcoes_audio = {a.get("titulo", "Sem título"): a for a in audios}
-            selecionado = st.selectbox("Escolhe o áudio para ouvir:", list(opcoes_audio.keys()))
-
-            if selecionado:
-                dados_audio = opcoes_audio[selecionado]
-                st.markdown(f"**Título:** {dados_audio.get('titulo')}")
-                st.markdown(f"**Descrição:** {dados_audio.get('descricao', 'Sem descrição')}")
-
-                url_ou_caminho = dados_audio.get("url")
-                if url_ou_caminho:
-                    st.audio(url_ou_caminho)
-                else:
-                    st.info("Ficheiro de áudio não encontrado ou URL inválido.")
-        else:
-            st.info("Nenhum áudio disponível. Adiciona um novo áudio na aba ao lado.")
-
-    # ----------------------------------------------------
-    # TAB 2: ADICIONAR NOVO ÁUDIO
-    # ----------------------------------------------------
-    with tab2:
-        st.markdown("### 📝 Registar Novo Áudio")
-
-        with st.form("form_novo_audio"):
-            titulo_audio = st.text_input("Título do Áudio / Aula:")
-            descricao_audio = st.text_area("Descrição / Notas de Estudo:")
-            url_audio = st.text_input("URL do Ficheiro de Áudio (link direto ou Supabase Storage):")
-
-            btn_salvar_audio = st.form_submit_button("💾 Guardar Áudio")
-
-        if btn_salvar_audio:
-            if titulo_audio and url_audio:
-                novo_registo = {
-                    "titulo": titulo_audio,
-                    "descricao": descricao_audio,
-                    "url": url_audio
-                }
-                if user_id:
-                    novo_registo["user_id"] = user_id
-
-                salvo = False
-                if supabase_client:
-                    try:
-                        supabase_client.table("audios").insert(novo_registo).execute()
-                        salvo = True
-                        st.success("✅ Áudio registado com sucesso no Supabase!")
-                    except Exception as e:
-                        st.error(f"Erro ao salvar no Supabase: {e}")
-
-                if not salvo:
-                    if "audios_locais" not in st.session_state:
-                        st.session_state["audios_locais"] = []
-                    st.session_state["audios_locais"].append(novo_registo)
-                    st.success("✅ Áudio guardado na sessão local!")
+                # Guarda o registro no topo da lista
+                st.session_state.historico_diario.insert(0, {
+                    "data": data_registro,
+                    "foco": foco_dia,
+                    "cansaco": cansaco_fisico,
+                    "resumo": resumo_dia
+                })
+                st.success("Reflexão salva com sucesso no histórico!")
+                st.rerun()
             else:
-                st.warning("Preenche pelo menos o Título e o URL do áudio.")
+                st.warning("Escreva sua reflexão antes de clicar em salvar.")
+
+    # 2. EXIBIÇÃO DO HISTÓRICO DE ANOTAÇÕES SALVAS
+    st.markdown("---")
+    st.subheader("📜 Histórico de Reflexões Salvas")
+
+    if len(st.session_state.historico_diario) == 0:
+        st.info("Nenhuma reflexão registrada ainda. Preencha o formulário acima para salvar sua primeira anotação.")
+    else:
+        for idx, reg in enumerate(st.session_state.historico_diario):
+            with st.expander(f"📅 Registro de {reg['data']} — Foco: {reg['foco']}/5 | Cansaço: {reg['cansaco']}/5", expanded=(idx == 0)):
+                st.write("**💬 O que correu bem e o que precisa ser ajustado:**")
+                st.write(reg["resumo"])
+# ====================================================
+# MÓDULO 21: PLAYER DE ÁUDIO
+# ====================================================
+elif menu == "🎧 Player de Áudio":
+    st.header("🎧 Módulo 21: Central de Áudio Tático")
+    st.markdown("Músicas de marcha para os treinos do TAF e frequências para concentração profunda.")
+
+    p_col1, p_col2 = st.columns(2)
+
+    with p_col1:
+        st.subheader("🎺 Canções e Marchas Militares (TAF)")
+        st.markdown("**Hino da Infantaria**")
+        st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3")
+        st.markdown("**Fibra de Herói**")
+        st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3")
+
+    with p_col2:
+        st.subheader("🧠 Áudios para Estudo e Foco Profundo")
+        st.markdown("**Ruído Branco / Foco LDI**")
+        st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3")
+        st.markdown("**Ondas Binaurais (Alfa - Leitura NIP)**")
+        st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3")
