@@ -1702,7 +1702,7 @@ elif menu == "📖 Diário de Bordo":
     with st.form("form_diario_bordo"):
         foco_dia = st.slider("Nível de Foco nos Estudos (1 a 5)", 1, 5, 4)
         cansaco_fisico = st.slider("Desgaste Físico da Roça/Treino (1 a 5)", 1, 5, 3)
-        resumo_dia = st.text_area("O que correu bem hoje e o que precisa de ser adjusted amanhã?")
+        resumo_dia = st.text_area("O que correu bem hoje e o que precisa de ser ajustado para amanhã?")
         btn_salvar_diario = st.form_submit_button("Salvar Diário de Bordo")
 
         if btn_salvar_diario:
