@@ -1100,24 +1100,27 @@ elif menu == "📊 Visualizador de Planilhas":
         st.error(f"O ficheiro '{NOME_DO_ARQUIVO}' não foi encontrado no GitHub. Confirme se enviou o ficheiro com este nome exato.")
     except Exception as e:
         st.error(f"Erro ao carregar a planilha: {e}")
-       # ====================================================
-# MÓDULO 12: SORTEADOR DE TEMAS & TEXTOS BASE
+      # ====================================================
+# MÓDULO 12: SORTEADOR DE TEMAS & TEXTOS BASE (DUPLO)
 # ====================================================
 elif menu == "🎲 Sorteador de Temas & Textos Base":
     import random
 
     st.header("🎲 Módulo 12: Sorteador Tático de Temas & Textos Motivadores")
-    st.markdown("Sorteie propostas completas de redação com **Texto Base Motivador**, eixos temáticos e repertórios para treino.")
+    st.markdown("Sorteie propostas completas de redação com **Textos Base Motivadores (Texto I e Texto II)**, eixos temáticos e repertórios para treino.")
 
     if "banco_temas" not in st.session_state:
         st.session_state.banco_temas = [
+            # ----------------------------------------------------
             # EIXO 1: DEFESA NACIONAL & ESTADO
+            # ----------------------------------------------------
             {
                 "id": 1,
                 "tema": "O impacto da inteligência artificial e da automação na segurança e soberania nacional",
                 "eixo": "Defesa Nacional & Estado",
                 "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: A transformação digital redefiniu o conceito de defesa estratégica. Drones autônomos, guerra cibernética e processamento de dados em massa tornaram-se pilares do poder militar moderno. O controle sobre tecnologias críticas não é apenas uma questão comercial, mas de sobrevivência e autonomia das Forças Armadas frente às ameaças externas.",
+                "texto_base_1": "TEXTO I: A transformação digital redefiniu o conceito de defesa estratégica. Drones autônomos, guerra cibernética e processamento de dados em massa tornaram-se pilares do poder militar moderno. O controle sobre tecnologias críticas não é apenas uma questão comercial, mas de sobrevivência e autonomia das Forças Armadas frente às ameaças externas.",
+                "texto_base_2": "TEXTO II: Segundo a Estratégia Nacional de Defesa, a independência tecnológica é pressuposto para a garantia da soberania. Países que dependem exclusivamente de insumos e softwares estrangeiros para seus sistemas de controle e comando ficam suscetíveis a bloqueios e vulnerabilidades em cenários de conflito internacional.",
                 "repertorios": ["Art. 142 da Constituição Federal", "Conceito de Guerra Híbrida", "Thomas Hobbes (O Leviatã)"]
             },
             {
@@ -1125,7 +1128,8 @@ elif menu == "🎲 Sorteador de Temas & Textos Base":
                 "tema": "A importância do controle de fronteiras no combate ao crime organizado transnacional",
                 "eixo": "Defesa Nacional & Estado",
                 "origem": "Prova EsPCEx",
-                "texto_base": "TEXTO I: O Brasil possui mais de 16 mil quilômetros de fronteira terrestre. A vastidão do território impõe desafios monumentais no combate ao tráfico de armas, drogas e ao contrabando. A atuação conjunta entre o Exército, a Polícia Federal e agências internacionais é indispensável para conter a expansão de facções criminosas.",
+                "texto_base_1": "TEXTO I: O Brasil possui mais de 16 mil quilômetros de fronteira terrestre com dez países. A vastidão do território impõe desafios monumentais no combate ao tráfico de armas, drogas e ao contrabando. A atuação conjunta entre o Exército, a Polícia Federal e agências internacionais é indispensável para conter a expansão de facções criminosas.",
+                "texto_base_2": "TEXTO II: Operações interagências em zonas fronteiriças demonstram que a presença ostensiva do Estado inibe a instalação de ilícitos e protege a economia nacional. A integração de dados de inteligência e o monitoramento por radar são vetores indispensáveis nessa salvaguarda.",
                 "repertorios": ["Max Weber (Monopólio da Violência Legítima)", "Operações Interagências", "Estratégia Nacional de Defesa"]
             },
             {
@@ -1133,7 +1137,8 @@ elif menu == "🎲 Sorteador de Temas & Textos Base":
                 "tema": "A atuação das Forças Armadas em missões de garantia da lei e da ordem (GLO) e ajuda humanitária",
                 "eixo": "Defesa Nacional & Estado",
                 "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: Para além da defesa contra agressões estrangeiras, o Exército Brasileiro é frequentemente acionado em operações de apoio à população vulnerável, socorro em desastres naturais e apoio à segurança pública. Essa dupla vocação reforça a integração entre a caserna e a sociedade civil.",
+                "texto_base_1": "TEXTO I: Para além da defesa contra agressões estrangeiras, o Exército Brasileiro é frequentemente acionado em operações de apoio à população vulnerável, socorro em desastres naturais e apoio suplementar à segurança pública. Essa dupla vocação reforça a integração entre a caserna e a sociedade civil.",
+                "texto_base_2": "TEXTO II: O emprego de tropas federais em missões de paz ou socorro humanitário exige preparo técnico, neutralidade e respeito rigoroso aos Direitos Humanos, consolidando a imagem do Exército como instituição de Estado garantidora da estabilidade e do bem-estar social.",
                 "repertorios": ["Princípio da Dignidade da Pessoa Humana", "Art. 144 da CF/88", "Ação Própria de Estado"]
             },
             {
@@ -1141,7 +1146,8 @@ elif menu == "🎲 Sorteador de Temas & Textos Base":
                 "tema": "O papel da indústria nacional de defesa no desenvolvimento tecnológico e econômico do país",
                 "eixo": "Defesa Nacional & Estado",
                 "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: A Base Industrial de Defesa (BID) gera empregos de alta qualificação e impulsiona a inovação científica em setores como aeroespacial, bélico e de telecomunicações. Investir em tecnologia militar própria reduz a dependência de potências estrangeiras.",
+                "texto_base_1": "TEXTO I: A Base Industrial de Defesa (BID) gera empregos de alta qualificação e impulsiona a inovação científica em setores como aeroespacial, bélico e de telecomunicações. Investir em tecnologia militar própria reduz a dependência de potências estrangeiras.",
+                "texto_base_2": "TEXTO II: Projetos estratégicos, como o desenvolvimento de submarinos e caças em parceria com a indústria nacional, transbordam conhecimento para o setor civil, estimulando patentes e fortalecendo a matriz industrial e econômica do país.",
                 "repertorios": ["Soberania Tecnológica", "Celso Furtado (Desenvolvimento Econômico)", "Tríplice Hélice de Inovação"]
             },
             {
@@ -1149,131 +1155,201 @@ elif menu == "🎲 Sorteador de Temas & Textos Base":
                 "tema": "Desafios para a vigilância e proteção da Amazônia Azul e dos recursos marítimos nacionais",
                 "eixo": "Defesa Nacional & Estado",
                 "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: A Amazônia Azul compreende cerca de 4,5 milhões de km² de área marítima dotada de imensas reservas petrolíferas (Pré-Sal) e biodiversidade marinha. Garantir a patrulha e a soberania sobre essas águas exige investimentos constantes na força naval.",
+                "texto_base_1": "TEXTO I: A Amazônia Azul compreende cerca de 4,5 milhões de km² de área marítima dotada de imensas reservas petrolíferas (Pré-Sal) e biodiversidade marinha. Garantir a patrulha e a soberania sobre essas águas exige investimentos constantes na força naval.",
+                "texto_base_2": "TEXTO II: Mais de 95% do comércio exterior brasileiro trafega por vias marítimas. A salvaguarda do tráfego aquaviário e das plataformas continentais é condição direta para a segurança alimentar, energética e comercial da nação.",
                 "repertorios": ["Convenção das Nações Unidas sobre o Direito do Mar", "Conceito de Amazônia Azul", "Soberania Econômica"]
             },
-            # EIXO 2: CIBERSEGURANÇA & TECNOLOGIA
             {
                 "id": 6,
-                "tema": "A vulnerabilidade das infraestruturas críticas nacionais diante de ataques cibernéticos",
-                "eixo": "Cibersegurança & Tecnologia",
+                "tema": "O serviço militar obrigatório como instrumento de formação cidadã e coesão social",
+                "eixo": "Defesa Nacional & Estado",
                 "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: Redes elétricas, sistemas bancários, abastecimento de água e redes de telecomunicação dependem diretamente de sistemas digitais. Ataques promovidos por hackers ou grupos estatais estrangeiros podem paralisar serviços essenciais e comprometer a segurança da nação.",
-                "repertorios": ["Comando de Defesa Cibernética (ComDCiber)", "Zygmunt Bauman (Sociedade de Risco)", "Marco Civil da Internet"]
+                "texto_base_1": "TEXTO I: O serviço militar reúne jovens de diversas origens sociais, étnicas e regionais, proporcionando um ambiente de igualdade de deveres e companheirismo sob o mesmo fardamento.",
+                "texto_base_2": "TEXTO II: Além do treinamento militar, a incorporação estimula princípios de disciplina, hierarquia, respeito às leis e civismo, atuando como porta de entrada para a qualificação profissional e a consciência social.",
+                "repertorios": ["Civismo e Patriotismo", "Émile Durkheim (Fato Social)", "Art. 143 da CF/88"]
             },
             {
                 "id": 7,
-                "tema": "A desinformação e as fake news como ameaças à estabilidade democrática e social",
-                "eixo": "Cibersegurança & Tecnologia",
-                "origem": "Prova EsPCEx",
-                "texto_base": "TEXTO I: A difusão em massa de notícias falsas manipula a opinião pública, corrói a confiança nas instituições legítimas e acirra a polarização social. Garantir a liberdade de expressão sem permitir o caos informativo é um dos maiores dilemas contemporâneos.",
-                "repertorios": ["Hannah Arendt (Verdade e Política)", "Guy Debord (A Sociedade do Espetáculo)", "LGPD"]
+                "tema": "A diplomacia militar e a cooperação regional na América do Sul",
+                "eixo": "Defesa Nacional & Estado",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: A construção de um entorno regional pacífico passa por exercícios militares conjuntos, intercâmbio em academias de formação e operações combinadas de salvamento na América do Sul.",
+                "texto_base_2": "TEXTO II: A confiança mútua entre Forças Armadas vizinhas previne corridas armamentistas desnecessárias e fortalece blocos de negociação internacional no combate a ameaças comuns.",
+                "repertorios": ["Carta das Nações Unidas", "Princípio da Não Intervenção", "Conselho de Defesa Sul-Americano"]
             },
+
+            # ----------------------------------------------------
+            # EIXO 2: CIBERSEGURANÇA & TECNOLOGIA
+            # ----------------------------------------------------
             {
                 "id": 8,
-                "tema": "Os limites éticos do desenvolvimento e uso da inteligência artificial na sociedade",
+                "tema": "A vulnerabilidade das infraestruturas críticas nacionais diante de ataques cibernéticos",
                 "eixo": "Cibersegurança & Tecnologia",
                 "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: O avanço acelerado dos algoritmos preditivos levanta questionamentos sobre privacidade, viés discriminatório e perda de postos de trabalho. A regulamentação da inteligência artificial busca equilibrar a inovação com a preservação dos direitos fundamentais.",
-                "repertorios": ["Immanuel Kant (Humanidade como Fim)", "Nick Bostrom (Superinteligência)", "Direito à Privacidade"]
+                "texto_base_1": "TEXTO I: Redes elétricas, sistemas bancários, abastecimento de água e redes de telecomunicação dependem diretamente de sistemas digitais. Ataques promovidos por hackers ou grupos estatais estrangeiros podem paralisar serviços essenciais e comprometer a segurança da nação.",
+                "texto_base_2": "TEXTO II: A criação do Comando de Defesa Cibernética é resposta à necessidade de blindar dados estratégicos do Estado. No entanto, a formação continuada de especialistas e o uso de criptografia própria são urgentes diante de invasões sofisticadas.",
+                "repertorios": ["Comando de Defesa Cibernética (ComDCiber)", "Zygmunt Bauman (Sociedade de Risco)", "Marco Civil da Internet"]
             },
             {
                 "id": 9,
-                "tema": "O impacto da hiperconexão na saúde mental e nas relações interpessoais da juventude",
+                "tema": "A desinformação e as fake news como ameaças à estabilidade democrática e social",
                 "eixo": "Cibersegurança & Tecnologia",
-                "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: O uso excessivo de telas e redes sociais tem gerado isolamento, ansiedade e dependência digital entre adolescentes. A busca por validação virtual contínua substitui a convivência presencial e afeta diretamente a capacidade de concentração.",
-                "repertorios": ["Byung-Chul Han (A Sociedade do Cansaço)", "Conceito de Solidão Digital", "OMS (Saúde Mental)"]
+                "origem": "Prova EsPCEx",
+                "texto_base_1": "TEXTO I: A difusão em massa de notícias falsas por algoritmos e redes sociais manipula a opinião pública, corrói a confiança nas instituições legítimas e acirra a polarização social. Garantir a liberdade de expressão sem permitir o caos informativo é um dilema central.",
+                "texto_base_2": "TEXTO II: A desinformação em momentos de crise sanitária ou eleitoral compromete a coesão do tecido social. A educação de mídias e a responsabilização jurídica das plataformas são caminhos fundamentais de enfrentamento.",
+                "repertorios": ["Hannah Arendt (Verdade e Política)", "Guy Debord (A Sociedade do Espetáculo)", "LGPD"]
             },
             {
                 "id": 10,
-                "tema": "A inclusão digital como fator determinante para o combate às desigualdades sociais",
+                "tema": "Os limites éticos do desenvolvimento e uso da inteligência artificial na sociedade",
                 "eixo": "Cibersegurança & Tecnologia",
                 "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: O acesso à internet de alta velocidade e a dispositivos computacionais deixou de ser luxo para se tornar requisito de cidadania, educação e oportunidade de trabalho. A exclusão digital perpetua o ciclo de pobreza em regiões periféricas e rurais.",
-                "repertorios": ["Gilberto Dimenstein (O Cidadão de Papel)", "Teoria do Capital Cultural (Bourdieu)", "Art. 205 da CF/88"]
+                "texto_base_1": "TEXTO I: O avanço acelerado dos algoritmos preditivos levanta questionamentos sobre privacidade, viés discriminatório e perda de postos de trabalho. A regulamentação da inteligência artificial busca equilibrar a inovação com a preservação dos direitos humanos.",
+                "texto_base_2": "TEXTO II: Sistemas autônomos de tomada de decisão não possuem discernimento moral. Delegar escolhas de vida, justiça ou defesa a máquinas sem supervisão humana direta fere o princípio da responsabilidade ética.",
+                "repertorios": ["Immanuel Kant (Humanidade como Fim)", "Nick Bostrom (Superinteligência)", "Direito à Privacidade"]
             },
-            # EIXO 3: MEIO AMBIENTE & SUSTENTABILIDADE
             {
                 "id": 11,
-                "tema": "O desafio do combate aos crimes ambientais e a preservação da Amazônia Legal",
-                "eixo": "Meio Ambiente & Sustentabilidade",
+                "tema": "O impacto da hiperconexão na saúde mental e nas relações interpessoais da juventude",
+                "eixo": "Cibersegurança & Tecnologia",
                 "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: O desmatamento ilegal, o garimpo clandestino e a grilagem de terras ameaçam a biodiversidade e o equilíbrio climático global. A presença das Forças Armadas e dos órgãos de fiscalização é vital para sufocar o crime organizado ambiental.",
-                "repertorios": ["Hans Jonas (O Princípio Responsabilidade)", "Art. 225 da CF/88", "Soberania Ambiental"]
+                "texto_base_1": "TEXTO I: O uso excessivo de telas e redes sociais tem gerado isolamento, ansiedade e dependência digital entre adolescentes. A busca por validação virtual contínua substitui a convivência presencial e afeta diretamente a capacidade de concentração.",
+                "texto_base_2": "TEXTO II: A cultura do imediatismo gerada pelas notificações em tempo real fragiliza a paciência necessária para o estudo profundo e para a construção de relacionamentos interpessoais sólidos e resilientes.",
+                "repertorios": ["Byung-Chul Han (A Sociedade do Cansaço)", "Conceito de Solidão Digital", "OMS (Saúde Mental)"]
             },
             {
                 "id": 12,
-                "tema": "A transição energética e o papel do Brasil na matriz limpa mundial",
-                "eixo": "Meio Ambiente & Sustentabilidade",
+                "tema": "A inclusão digital como fator determinante para o combate às desigualdades sociais",
+                "eixo": "Cibersegurança & Tecnologia",
                 "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: Frente ao aquecimento global, a substituição de combustíveis fósseis por fontes renováveis é urgente. O Brasil destaca-se mundialmente por sua matriz energética diversificada e limpa, podendo liderar a economia verde internacional.",
-                "repertorios": ["Acordo de Paris", "Conceito de Desenvolvimento Sustentável", "Agenda 2030 da ONU"]
+                "texto_base_1": "TEXTO I: O acesso à internet de alta velocidade e a dispositivos computacionais deixou de ser luxo para se tornar requisito de cidadania, educação e oportunidade de trabalho. A exclusão digital perpetua o ciclo de pobreza em regiões periféricas e rurais.",
+                "texto_base_2": "TEXTO II: A alfabetização digital deve caminhar junto à infraestrutura de redes. Sem capacitação para usar as ferramentas com senso crítico e produtividade, o hiato social entre classes continuará a se expandir.",
+                "repertorios": ["Gilberto Dimenstein (O Cidadão de Papel)", "Teoria do Capital Cultural (Bourdieu)", "Art. 205 da CF/88"]
             },
             {
                 "id": 13,
-                "tema": "A gestão dos recursos hídricos e a segurança alimentar diante das mudanças climáticas",
-                "eixo": "Meio Ambiente & Sustentabilidade",
+                "tema": "A proteção de dados pessoais e o direito à privacidade na era da informação",
+                "eixo": "Cibersegurança & Tecnologia",
                 "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: Eventos climáticos extremos, como secas prolongadas e enchentes devastadoras, impactam diretamente a produção agrícola e o abastecimento de água. A sustentabilidade no campo e a preservação dos mananciais são cruciais para a sociedade.",
-                "repertorios": ["Josué de Castro (Geopolítica da Fome)", "Código Florestal Brasileiro", "Embrapa e Tecnologia Agrícola"]
+                "texto_base_1": "TEXTO I: A rastreabilidade contínua de hábitos, preferências e dados biométricos transforma o indivíduo em produto mercadológico na economia de dados.",
+                "texto_base_2": "TEXTO II: Legislações como a LGPD representam marcos de proteção civil, exigindo consentimento explícito e transparência de empresas e do governo no manuseio de informações sensíveis.",
+                "repertorios": ["LGPD", "Panóptico de Jeremy Bentham", "Direito Fundamental à Privacidade"]
             },
+
+            # ----------------------------------------------------
+            # EIXO 3: MEIO AMBIENTE & SUSTENTABILIDADE
+            # ----------------------------------------------------
             {
                 "id": 14,
-                "tema": "O dilema entre o crescimento econômico e a conservação do patrimônio natural",
+                "tema": "O desafio do combate aos crimes ambientais e a preservação da Amazônia Legal",
                 "eixo": "Meio Ambiente & Sustentabilidade",
                 "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: O avanço das fronteiras agrícolas e industriais é essencial para a geração de empregos. Contudo, a exploração desenfreada sem manejo sustentável esgota os recursos naturais e compromete a qualidade de vida das gerações futuras.",
-                "repertorios": ["Relatório Brundtland (1987)", "Desenvolvimento Sustentável", "Paul Crutzen (Antropoceno)"]
+                "texto_base_1": "TEXTO I: O desmatamento ilegal, o garimpo clandestino e a grilagem de terras ameaçam a biodiversidade e o equilíbrio climático global. A presença das Forças Armadas e dos órgãos de fiscalização é vital para sufocar o crime organizado ambiental.",
+                "texto_base_2": "TEXTO II: A bioeconomia sustentável e o fortalecimento de pesquisas científicas locais oferecem alternativas de desenvolvimento econômico digno para as populações tradicionais da floresta sem destruição.",
+                "repertorios": ["Hans Jonas (O Princípio Responsabilidade)", "Art. 225 da CF/88", "Soberania Ambiental"]
             },
             {
                 "id": 15,
-                "tema": "A gestão de resíduos sólidos e a responsabilidade socioambiental nas cidades brasileiras",
+                "tema": "A transição energética e o papel do Brasil na matriz limpa mundial",
                 "eixo": "Meio Ambiente & Sustentabilidade",
                 "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: O descarte inadequado do lixo, a proliferação de lixões clandestinos e o baixo índice de reciclagem geram impactos severos à saúde pública e ao meio ambiente urbano. A logística reversa e o apoio aos catadores são medidas urgentes.",
-                "repertorios": ["Política Nacional de Resíduos Sólidos", "Conceito de Economia Circular", "Saneamento Básico como Direito"]
+                "texto_base_1": "TEXTO I: Frente ao aquecimento global, a substituição de combustíveis fósseis por fontes renováveis é urgente. O Brasil destaca-se mundialmente por sua matriz energética diversificada e limpa, podendo liderar a economia verde internacional.",
+                "texto_base_2": "TEXTO II: O investimento em biocombustíveis, energia eólica, solar e hidrogênio verde atrai capital estrangeiro e reduz a pegada de carbono do setor produtivo e de transportes.",
+                "repertorios": ["Acordo de Paris", "Conceito de Desenvolvimento Sustentável", "Agenda 2030 da ONU"]
             },
-            # EIXO 4: CIDADANIA & ÉTICA
             {
                 "id": 16,
-                "tema": "A relevância do civismo e dos valores éticos na formação da juventude brasileira",
-                "eixo": "Cidadania & Ética",
-                "origem": "Prova EsPCEx",
-                "texto_base": "TEXTO I: O civismo, o respeito aos símbolos nacionais e a consciência dos deveres sociais são fundamentos da coesão de um país. Estimular valores como disciplina, responsabilidade coletiva e patriotismo fortalece a democracia.",
-                "repertorios": ["Immanuel Kant (Imperativo Categórico)", "Émile Durkheim (Fato Social e Moral)", "LDB - Lei de Diretrizes e Bases"]
+                "tema": "A gestão dos recursos hídricos e a segurança alimentar diante das mudanças climáticas",
+                "eixo": "Meio Ambiente & Sustentabilidade",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: Eventos climáticos extremos, como secas prolongadas e enchentes devastadoras, impactam diretamente a produção agrícola e o abastecimento de água. A sustentabilidade no campo e a preservação dos mananciais são cruciais.",
+                "texto_base_2": "TEXTO II: A tecnologia de irrigação eficiente, o reflorestamento de matas ciliares e o combate ao desperdício são alavancas para assegurar a comida na mesa sem esgotar as bacias hidrográficas.",
+                "repertorios": ["Josué de Castro (Geopolítica da Fome)", "Código Florestal Brasileiro", "Embrapa e Tecnologia Agrícola"]
             },
             {
                 "id": 17,
-                "tema": "O papel da educação no combate à intolerância e à cultura da violência na sociedade",
-                "eixo": "Cidadania & Ética",
+                "tema": "O dilema entre o crescimento econômico e a conservação do patrimônio natural",
+                "eixo": "Meio Ambiente & Sustentabilidade",
                 "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: O aumento de episódios de discurso de ódio e agressões interpessoais evidencia a necessidade de uma formação educacional pautada no diálogo, na empatia e no cumprimento das leis. A escola deve ser um espaço de mediação de conflitos.",
-                "repertorios": ["Paulo Freire (Educação como Prática da Liberdade)", "Declaração Universal dos Direitos Humanos", "Conceito de Alteridade"]
+                "texto_base_1": "TEXTO I: O avanço das fronteiras agrícolas e industriais é essencial para a geração de empregos. Contudo, a exploração desenfreada sem manejo sustentável esgota os recursos naturais e compromete a qualidade de vida das gerações futuras.",
+                "texto_base_2": "TEXTO II: O conceito de desenvolvimento sustentável prova que preservação e rentabilidade não são antagônicos, desde que pautados por licenciamento sério e compensação ambiental.",
+                "repertorios": ["Relatório Brundtland (1987)", "Desenvolvimento Sustentável", "Paul Crutzen (Antropoceno)"]
             },
             {
                 "id": 18,
-                "tema": "A importância do voluntariado e do espírito de solidariedade em momentos de crise nacional",
-                "eixo": "Cidadania & Ética",
+                "tema": "A gestão de resíduos sólidos e a responsabilidade socioambiental nas cidades brasileiras",
+                "eixo": "Meio Ambiente & Sustentabilidade",
                 "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: Durante grandes calamidades públicas e crises sociais, a mobilização da sociedade civil em ações comunitárias e doações complementa a atuação estatal. A cultura do voluntariado demonstra a força da empatia coletiva.",
-                "repertorios": ["Zygmunt Bauman (Comunidade)", "Princípio da Solidariedade Constitucional", "Ação Social Organizacional"]
+                "texto_base_1": "TEXTO I: O descarte inadequado do lixo, a proliferação de lixões clandestinos e o baixo índice de reciclagem geram impactos severos à saúde pública e ao meio ambiente urbano. A logística reversa e o apoio aos catadores são medidas urgentes.",
+                "texto_base_2": "TEXTO II: A transição para a economia circular exige engajamento do consumidor, incentivos fiscais para embalagens biodegradáveis e coleta seletiva eficiente nas periferias.",
+                "repertorios": ["Política Nacional de Resíduos Sólidos", "Conceito de Economia Circular", "Saneamento Básico como Direito"]
             },
             {
                 "id": 19,
+                "tema": "O papel da agricultura de precisão e das agrotecnologias na preservação ambiental",
+                "eixo": "Meio Ambiente & Sustentabilidade",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: O uso de drones, sensores de solo e mapeamento por satélite otimiza a aplicação de insumos e adubos, reduzindo o desperdício e protegendo o lençol freático.",
+                "texto_base_2": "TEXTO II: Produzir mais na mesma área reduz a pressão sobre a abertura de novas vegetações nativas, aliando produtividade no campo e proteção biológica.",
+                "repertorios": ["Inovação Agrícola", "Código Florestal", "Sustentabilidade no Campo"]
+            },
+
+            # ----------------------------------------------------
+            # EIXO 4: CIDADANIA & ÉTICA
+            # ----------------------------------------------------
+            {
+                "id": 20,
+                "tema": "A relevância do civismo e dos valores éticos na formação da juventude brasileira",
+                "eixo": "Cidadania & Ética",
+                "origem": "Prova EsPCEx",
+                "texto_base_1": "TEXTO I: O civismo, o respeito aos símbolos nacionais e a consciência dos deveres sociais são fundamentos da coesão de um país. Estimular valores como disciplina, responsabilidade coletiva e patriotismo fortalece a democracia.",
+                "texto_base_2": "TEXTO II: Cidadania plena envolve não apenas usufruir de direitos, mas praticar ativamente a ética no cotidiano, respeitando as leis e colaborando para a melhoria da comunidade.",
+                "repertorios": ["Immanuel Kant (Imperativo Categórico)", "Émile Durkheim (Fato Social e Moral)", "LDB - Lei de Diretrizes e Bases"]
+            },
+            {
+                "id": 21,
+                "tema": "O papel da educação no combate à intolerância e à cultura da violência na sociedade",
+                "eixo": "Cidadania & Ética",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: O aumento de episódios de discurso de ódio e agressões interpessoais evidencia a necessidade de uma formação educacional pautada no diálogo, na empatia e no cumprimento das leis. A escola deve ser um espaço de mediação de conflitos.",
+                "texto_base_2": "TEXTO II: Educar para a cultura da paz exige desconstruir preconceitos e formar indivíduos conscientes do valor do respeito mútuo e da solução pacífica de divergências.",
+                "repertorios": ["Paulo Freire (Educação como Prática da Liberdade)", "Declaração Universal dos Direitos Humanos", "Conceito de Alteridade"]
+            },
+            {
+                "id": 22,
+                "tema": "A importância do voluntariado e do espírito de solidariedade em momentos de crise nacional",
+                "eixo": "Cidadania & Ética",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: Durante grandes calamidades públicas e crises sociais, a mobilização da sociedade civil em ações comunitárias e doações complementa a atuação estatal. A cultura do voluntariado demonstra a força da empatia coletiva.",
+                "texto_base_2": "TEXTO II: Engajar-se voluntariamente fortalece os laços comunitários e desenvolve o senso de responsabilidade social, transformando o cidadão em agente direto de mudança.",
+                "repertorios": ["Zygmunt Bauman (Comunidade)", "Princípio da Solidariedade Constitucional", "Ação Social Organizacional"]
+            },
+            {
+                "id": 23,
                 "tema": "A valorização do trabalho e o desafio do primeiro emprego para os jovens no Brasil",
                 "eixo": "Cidadania & Ética",
                 "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: A transição da escola para o mercado de trabalho é marcada por exigências crescentes de qualificação técnica e experiência prévia. Programas de aprendizagem, ensino técnico e incentivos governamentais são fundamentais.",
+                "texto_base_1": "TEXTO I: A transição da escola para o mercado de trabalho é marcada por exigências crescentes de qualificação técnica e experiência prévia. Programas de aprendizagem, ensino técnico e incentivos governamentais são fundamentais.",
+                "texto_base_2": "TEXTO II: O trabalho formal na juventude é vetor de dignidade e autonomia, prevenindo a ociosidade e fornecendo perspectivas reais de crescimento social e profissional.",
                 "repertorios": ["Lei do Aprendiz", "Constituição Federal (Direito ao Trabalho)", "Teoria do Capital Humano"]
             },
             {
-                "id": 20,
+                "id": 24,
                 "tema": "A preservação da memória histórica e da identidade cultural como pilares de uma nação",
                 "eixo": "Cidadania & Ética",
                 "origem": "Simulado EsPCEx",
-                "texto_base": "TEXTO I: O conhecimento da história, das tradições e dos heróis nacionais permite compreender o presente e projetar o futuro. Um país que desvaloriza seu patrimônio cultural corre o risco de perder sua identidade e coesão social.",
+                "texto_base_1": "TEXTO I: O conhecimento da história, das tradições e dos heróis nacionais permite compreender o presente e projetar o futuro. Um país que desvaloriza seu patrimônio cultural corre o risco de perder sua identidade e coesão social.",
+                "texto_base_2": "TEXTO II: Preservar acervos, monumentos e datas históricas não é apego ao passado, mas compromisso com a continuidade dos valores e símbolos que unificam o povo.",
                 "repertorios": ["Patrimônio Histórico Nacional (IPHAN)", "Marc Bloch (A Apologia da História)", "Identidade Nacional (Ernest Renan)"]
+            },
+            {
+                "id": 25,
+                "tema": "A ética no serviço público como garantia de eficiência e respeito ao cidadão",
+                "eixo": "Cidadania & Ética",
+                "origem": "Simulado EsPCEx",
+                "texto_base_1": "TEXTO I: Servidores públicos investidos de autoridade devem agir estritamente pautados pela impessoalidade, moralidade e transparência em seus atos administrativos.",
+                "texto_base_2": "TEXTO II: A eficiência na prestação de serviços essenciais como saúde, segurança e educação é o reflexo direto de um corpo funcional comprometido com a ética pública.",
+                "repertorios": ["Art. 37 da Constituição Federal (LIMPE)", "Aristóteles (Ética a Nicômaco)", "Transparência Pública"]
             }
         ]
 
@@ -1317,37 +1393,41 @@ elif menu == "🎲 Sorteador de Temas & Textos Base":
         st.info(f"### 📝 Proposta: \"{t['tema']}\"")
         st.write(f"**Eixo:** {t['eixo']} | **Origem:** {t['origem']} | **ID:** #{t['id']}")
 
-        with st.expander("📜 Texto Base Motivador (Clique para ler)", expanded=True):
-            st.write(t["texto_base"])
+        with st.expander("📜 Textos Base Motivadores (Clique para ler)", expanded=True):
+            st.markdown(f"**TEXTO I**\n\n{t['texto_base_1']}")
+            st.markdown("---")
+            st.markdown(f"**TEXTO II**\n\n{t['texto_base_2']}")
+            st.caption("A partir da leitura dos textos motivadores e dos seus conhecimentos construídos ao longo de sua formação, redija um texto dissertativo-argumentativo na modalidade escrita culta da língua portuguesa.")
 
         st.markdown("#### 💡 Repertórios Coringa Sugeridos:")
         for rep in t["repertorios"]:
             st.success(f"📌 {rep}")
 
     st.markdown("---")
-    with st.expander("➕ Cadastrar Novo Tema com Texto Base ao Banco"):
+    with st.expander("➕ Cadastrar Novo Tema com Textos Base ao Banco"):
         with st.form("form_novo_tema_completo"):
             n_tema = st.text_input("Título da Proposta de Redação")
             n_eixo = st.selectbox("Eixo Temático", ["Defesa Nacional & Estado", "Cibersegurança & Tecnologia", "Meio Ambiente & Sustentabilidade", "Cidadania & Ética"])
             n_origem = st.text_input("Origem (Ex: Prova 2024, Simulado 05)", value="Simulado EsPCEx")
-            n_texto_base = st.text_area("Texto Base / Motivador")
+            n_texto_1 = st.text_area("Texto Base I (Motivador 1)")
+            n_texto_2 = st.text_area("Texto Base II (Motivador 2)")
             n_reps = st.text_input("Repertórios Sugeridos (separados por vírgula)")
 
             btn_salvar_tema = st.form_submit_button("Salvar Tema no Banco")
 
-            if btn_salvar_tema and n_tema and n_texto_base:
+            if btn_salvar_tema and n_tema and n_texto_1 and n_texto_2:
                 lista_r = [r.strip() for r in n_reps.split(",") if r.strip()]
                 st.session_state.banco_temas.append({
                     "id": len(st.session_state.banco_temas) + 1,
                     "tema": n_tema,
                     "eixo": n_eixo,
                     "origem": n_origem,
-                    "texto_base": n_texto_base,
+                    "texto_base_1": n_texto_1,
+                    "texto_base_2": n_texto_2,
                     "repertorios": lista_r if lista_r else ["Repertório Geral do Eixo"]
                 })
                 st.success("Novo tema cadastrado com sucesso no Módulo 12!")
                 st.rerun()
-
 
 # ====================================================
 # MÓDULO 13: PACER TAF
