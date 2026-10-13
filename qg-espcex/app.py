@@ -1553,57 +1553,158 @@ elif menu == "🔗 Hub de Links":
 # -----------------------------------------------------------------------------
 # MÓDULO 20: DIÁRIO DE BORDO
 # -----------------------------------------------------------------------------
-elif menu == "📖 Diário de Bordo":
-    st.header("📖 Módulo 20: Diário de Bordo Tático")
+def render_modulo_20(supabase_client=None, user_id=None):
+    st.title("📖 Módulo 20 - Diário de Bordo")
+    st.subheader("Reflexão diária, acompanhamento e planeamento para o dia seguinte")
 
-    frases_eb = [
-        "'A farda não é uma veste que se despe com facilidade e indiferença, mas uma outra pele, que adere à própria alma.' — Gen. Leônidas Pires Gonçalves",
-        "'O êxito é a soma de pequenos esforços repetidos dia após dia.'",
-        "'A vitória sorri para aqueles que estão dispostos a pagar o preço do suor no treinamento.'",
-        "'Brasil acima de tudo!'",
-        "'Na selva, a disciplina não é apenas uma virtude, é a diferença entre a vida e a derrota.'"
-    ]
+    tab1, tab2 = st.tabs(["📝 Registar / Editar Hoje", "🔍 Rever e Histórico do Diário"])
 
-    st.info(f"💡 **Frase do Dia:** {random.choice(frases_eb)}")
+    # ----------------------------------------------------
+    # TAB 1: REGISTAR / EDITAR O DIA ATUAL
+    # ----------------------------------------------------
+    with tab1:
+        st.markdown("### ✍️ Registo Diário")
+        
+        data_hoje = st.date_input("Data do Registo", value=datetime.date.today())
+        
+        # Procura registo existente no Supabase para a data selecionada
+        registo_existente = None
+        if supabase_client:
+            try:
+                res = supabase_client.table("diario_bordo")\
+                    .select("*")\
+                    .eq("data", str(data_hoje))\
+                    .execute()
+                if res.data and len(res.data) > 0:
+                    registo_existente = res.data[0]
+            except Exception as e:
+                st.warning(f"Aviso ao verificar registos anteriores no Supabase: {e}")
 
-    diario_historico = db.get("diario_bordo", [])
+        # Carrega dados existentes para edição ou deixa em branco
+        val_bem = registo_existente.get("pontos_fortes", "") if registo_existente else ""
+        val_ajustar = registo_existente.get("pontos_melhorar", "") if registo_existente else ""
+        val_resumo = registo_existente.get("resumo_dia", "") if registo_existente else ""
+        val_humor = registo_existente.get("humor", "🟢 Bom") if registo_existente else "🟢 Bom"
 
-    st.markdown("---")
-    st.subheader("📝 Reflexão do Fim de Dia")
+        if registo_existente:
+            st.info(f"ℹ️ Registos encontrados para {data_hoje.strftime('%d/%m/%Y')}. Podes rever e editar abaixo.")
 
-    with st.form("form_diario_bordo"):
-        foco_dia = st.slider("Nível de Foco nos Estudos (1 a 5)", 1, 5, 4)
-        cansaco_fisico = st.slider("Desgaste Físico da Roça/Treino (1 a 5)", 1, 5, 3)
-        resumo_dia = st.text_area("O que correu bem hoje e o que precisa ser ajustado para amanhã?")
-        btn_salvar_diario = st.form_submit_button("Salvar Diário de Bordo")
+        with st.form("form_diario_bordo"):
+            col_a, col_b = st.columns(2)
+            
+            with col_a:
+                o_que_foi_bem = st.text_area(
+                    "🌟 O que correu bem hoje?",
+                    value=val_bem,
+                    placeholder="Ex.: Cumpri a meta de questões e mantive o ritmo nos estudos."
+                )
 
-        if btn_salvar_diario:
-            if resumo_dia.strip():
-                data_registro = datetime.datetime.now().strftime("%d/%m/%Y às %H:%M")
+            with col_b:
+                o_que_ajustar = st.text_area(
+                    "🛠️ O que precisa de ser editado / ajustado para amanhã?",
+                    value=val_ajustar,
+                    placeholder="Ex.: Acordar no horário sem adiar o alarme e focar no bloco de Física."
+                )
+
+            resumo_dia = st.text_area(
+                "📝 Resumo geral do dia / Observações:",
+                value=val_resumo,
+                placeholder="Reflexão geral sobre a rotina e estudos..."
+            )
+
+            humor = st.selectbox(
+                "🧠 Estado de espírito / Nível de energia:",
+                ["🔥 Excelente", "🟢 Bom", "🟡 Regular", "🔴 Cansado / Baixo Desempenho"],
+                index=["🔥 Excelente", "🟢 Bom", "🟡 Regular", "🔴 Cansado / Baixo Desempenho"].index(val_humor) if val_humor in ["🔥 Excelente", "🟢 Bom", "🟡 Regular", "🔴 Cansado / Baixo Desempenho"] else 1
+            )
+
+            btn_salvar = st.form_submit_button("💾 Guardar / Atualizar Diário no Supabase")
+
+        if btn_salvar:
+            dados_diario = {
+                "data": str(data_hoje),
+                "pontos_fortes": o_que_foi_bem,
+                "pontos_melhorar": o_que_ajustar,
+                "resumo_dia": resumo_dia,
+                "humor": humor
+            }
+            if user_id:
+                dados_diario["user_id"] = user_id
+
+            salvo_nuvem = False
+            if supabase_client:
+                try:
+                    if registo_existente and "id" in registo_existente:
+                        supabase_client.table("diario_bordo")\
+                            .update(dados_diario)\
+                            .eq("id", registo_existente["id"])\
+                            .execute()
+                    else:
+                        supabase_client.table("diario_bordo")\
+                            .insert(dados_diario)\
+                            .execute()
+                    salvo_nuvem = True
+                    st.success("✅ Diário de bordo guardado com sucesso na nuvem!")
+                except Exception as e:
+                    st.error(f"Erro ao guardar no Supabase: {e}")
+
+            if not salvo_nuvem:
+                st.info("ℹ️ Guardado na memória local da sessão.")
+                if "diario_local" not in st.session_state:
+                    st.session_state["diario_local"] = []
+                st.session_state["diario_local"].append(dados_diario)
+
+    # ----------------------------------------------------
+    # TAB 2: REVER E REVISITAR REGISTOS ANTERIORES
+    # ----------------------------------------------------
+    with tab2:
+        st.markdown("### 🔍 Consulta e Revisão de Diários Anteriores")
+
+        registos = []
+        if supabase_client:
+            try:
+                res = supabase_client.table("diario_bordo")\
+                    .select("*")\
+                    .order("data", ascending=False)\
+                    .execute()
+                registos = res.data or []
+            except Exception as e:
+                st.error(f"Erro ao carregar histórico do Supabase: {e}")
+        
+        if not registos and "diario_local" in st.session_state:
+            registos = st.session_state["diario_local"]
+
+        if registos:
+            df = pd.DataFrame(registos)
+            cols_exibicao = [c for c in ["data", "pontos_fortes", "pontos_melhorar", "resumo_dia", "humor"] if c in df.columns]
+            df_renomeado = df[cols_exibicao].rename(columns={
+                "data": "Data",
+                "pontos_fortes": "O que correu bem hoje",
+                "pontos_melhorar": "O que ajustar para amanhã",
+                "resumo_dia": "Resumo Geral",
+                "humor": "Humor/Energia"
+            })
+            
+            st.dataframe(df_renomeado, use_container_width=True)
+
+            st.markdown("---")
+            st.markdown("#### 🔎 Ver Detalhes de um Dia")
+            
+            datas_disponiveis = [r.get("data") for r in registos if "data" in r]
+            data_selecionada = st.selectbox("Escolha uma data para rever:", datas_disponiveis)
+
+            registo_sel = next((r for r in registos if r.get("data") == data_selecionada), None)
+
+            if registo_sel:
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.success(f"**🌟 O que correu bem em {data_selecionada}:**\n\n" + str(registo_sel.get("pontos_fortes", "Sem registo")))
+                with c2:
+                    st.warning(f"**🛠️ O que ajustar para o dia seguinte:**\n\n" + str(registo_sel.get("pontos_melhorar", "Sem registo")))
                 
-                diario_historico.insert(0, {
-                    "data": data_registro,
-                    "foco": foco_dia,
-                    "cansaco": cansaco_fisico,
-                    "resumo": resumo_dia
-                })
-                db["diario_bordo"] = diario_historico
-                salvar_dados_usuario(user_atual, db)
-                st.success("Reflexão salva com sucesso no histórico!")
-                st.rerun()
-            else:
-                st.warning("Escreva sua reflexão antes de clicar em salvar.")
-
-    st.markdown("---")
-    st.subheader("📜 Histórico de Reflexões Salvas")
-
-    if not diario_historico:
-        st.info("Nenhuma reflexão registrada ainda. Preencha o formulário acima para salvar sua primeira anotação.")
-    else:
-        for idx, reg in enumerate(diario_historico):
-            with st.expander(f"📅 Registro de {reg['data']} — Foco: {reg['foco']}/5 | Cansaço: {reg['cansaco']}/5", expanded=(idx == 0)):
-                st.write("**💬 O que correu bem e o que precisa ser ajustado:**")
-                st.write(reg["resumo"])
+                st.info(f"**📝 Resumo e Observações:** {registo_sel.get('resumo_dia', 'Sem resumo')} | **Energia/Humor:** {registo_sel.get('humor', 'N/A')}")
+        else:
+            st.info("Nenhum registo de diário de bordo encontrado até ao momento.")
 
 # -----------------------------------------------------------------------------
 # MÓDULO 21: PLAYER DE ÁUDIO
