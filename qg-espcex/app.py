@@ -1100,7 +1100,7 @@ elif menu == "📊 Visualizador de Planilhas":
         st.error(f"O ficheiro '{NOME_DO_ARQUIVO}' não foi encontrado no GitHub. Confirme se enviou o ficheiro com este nome exato.")
     except Exception as e:
         st.error(f"Erro ao carregar a planilha: {e}")
-      # ====================================================
+     # ====================================================
 # MÓDULO 12: SORTEADOR DE TEMAS & TEXTOS BASE (DUPLO)
 # ====================================================
 elif menu == "🎲 Sorteador de Temas & Textos Base":
