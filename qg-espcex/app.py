@@ -318,7 +318,7 @@ menu = st.sidebar.radio(
         "📋 Edital Verticalizado EsPCEx",
         "📝 Registro de Questões",
         "📕 Caderno de Bizus & Erros",
-        "🎯 Simulados (1º e 2º Dia)"
+        "🎯 Simulados (1º e 2º Dia)",
         "📊 Visualizador de Planilhas"
     ]
 )
