@@ -1683,6 +1683,9 @@ elif menu == "🔗 Hub de Links":
 # MÓDULO 20: DIÁRIO DE BORDO
 # ====================================================
 elif menu == "📖 Diário de Bordo":
+    import random
+    from datetime import datetime
+
     st.header("📖 Módulo 20: Diário de Bordo Tático")
 
     frases_eb = [
@@ -1693,8 +1696,11 @@ elif menu == "📖 Diário de Bordo":
         "\"Na selva, a disciplina não é apenas uma virtude, é a diferença entre a vida e a derrota.\""
     ]
 
-    import random
     st.info(f"💡 **Frase do Dia:** {random.choice(frases_eb)}")
+
+    # 1. Lista que armazena os diários anteriores na memória da sessão
+    if "historico_diario" not in st.session_state:
+        st.session_state.historico_diario = []
 
     st.markdown("---")
     st.subheader("📝 Reflexão do Fim de Dia")
@@ -1702,13 +1708,37 @@ elif menu == "📖 Diário de Bordo":
     with st.form("form_diario_bordo"):
         foco_dia = st.slider("Nível de Foco nos Estudos (1 a 5)", 1, 5, 4)
         cansaco_fisico = st.slider("Desgaste Físico da Roça/Treino (1 a 5)", 1, 5, 3)
-        resumo_dia = st.text_area("O que correu bem hoje e o que precisa de ser ajustado para amanhã?")
+        resumo_dia = st.text_area("O que correu bem hoje e o que precisa ser ajustado para amanhã?")
         btn_salvar_diario = st.form_submit_button("Salvar Diário de Bordo")
 
         if btn_salvar_diario:
-            st.success("Diário salvo com sucesso na memória da sessão!")
+            if resumo_dia.strip():
+                # Captura a data e hora do registro
+                data_registro = datetime.now().strftime("%d/%m/%Y às %H:%M")
+                
+                # Guarda o registro no topo da lista
+                st.session_state.historico_diario.insert(0, {
+                    "data": data_registro,
+                    "foco": foco_dia,
+                    "cansaco": cansaco_fisico,
+                    "resumo": resumo_dia
+                })
+                st.success("Reflexão salva com sucesso no histórico!")
+                st.rerun()
+            else:
+                st.warning("Escreva sua reflexão antes de clicar em salvar.")
 
+    # 2. EXIBIÇÃO DO HISTÓRICO DE ANOTAÇÕES SALVAS
+    st.markdown("---")
+    st.subheader("📜 Histórico de Reflexões Salvas")
 
+    if len(st.session_state.historico_diario) == 0:
+        st.info("Nenhuma reflexão registrada ainda. Preencha o formulário acima para salvar sua primeira anotação.")
+    else:
+        for idx, reg in enumerate(st.session_state.historico_diario):
+            with st.expander(f"📅 Registro de {reg['data']} — Foco: {reg['foco']}/5 | Cansaço: {reg['cansaco']}/5", expanded=(idx == 0)):
+                st.write("**💬 O que correu bem e o que precisa ser ajustado:**")
+                st.write(reg["resumo"])
 # ====================================================
 # MÓDULO 21: PLAYER DE ÁUDIO
 # ====================================================
