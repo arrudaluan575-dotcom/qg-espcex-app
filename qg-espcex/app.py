@@ -12,8 +12,8 @@ from supabase import create_client, Client
 # --- Inicialização Global do Supabase ---
 @st.cache_resource
 def init_supabase():
-    url = st.secrets.get("SUPABASE_URL")
-    key = st.secrets.get("SUPABASE_KEY")
+    url = "https://agckdimywmujrtr.supabase.co"
+    key = "sb_publishable_P_JcgLMuU9kbC1JjBDN3Jg_HSLkE_cA"
     if not url or not key:
         return None
     return create_client(url, key)
