@@ -1708,22 +1708,82 @@ def render_modulo_20(supabase_client=None, user_id=None):
 # -----------------------------------------------------------------------------
 # MÓDULO 21: PLAYER DE ÁUDIO
 # -----------------------------------------------------------------------------
-elif menu == "🎧 Player de Áudio":
-    st.header("🎧 Módulo 21: Central de Áudio Tático")
-    st.markdown("Músicas de marcha para os treinos do TAF e frequências para concentração profunda.")
+def render_modulo_21(supabase_client=None, user_id=None):
+    st.title("🎧 Módulo 21 - Player de Áudio")
+    st.subheader("Reprodutor de áudio para resumos, aulas e revisões em áudio")
 
-    p_col1, p_col2 = st.columns(2)
+    tab1, tab2 = st.tabs(["▶️ Reprodutor", "📤 Carregar / Adicionar Áudio"])
 
-    with p_col1:
-        st.subheader("🎺 Canções e Marchas Militares (TAF)")
-        st.markdown("**Hino da Infantaria**")
-        st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3")
-        st.markdown("**Fibra de Herói**")
-        st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3")
+    # ----------------------------------------------------
+    # TAB 1: REPRODUTOR DE ÁUDIO
+    # ----------------------------------------------------
+    with tab1:
+        st.markdown("### 🎶 Selecionar e Ouvir Áudio")
 
-    with p_col2:
-        st.subheader("🧠 Áudios para Estudo e Foco Profundo")
-        st.markdown("**Ruído Branco / Foco LDI**")
-        st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3")
-        st.markdown("**Ondas Binaurais (Alfa - Leitura NIP)**")
-        st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3")
+        audios = []
+        if supabase_client:
+            try:
+                res = supabase_client.table("audios").select("*").execute()
+                audios = res.data or []
+            except Exception:
+                pass
+
+        if not audios and "audios_locais" in st.session_state:
+            audios = st.session_state["audios_locais"]
+
+        if audios:
+            opcoes_audio = {a.get("titulo", "Sem título"): a for a in audios}
+            selecionado = st.selectbox("Escolhe o áudio para ouvir:", list(opcoes_audio.keys()))
+
+            if selecionado:
+                dados_audio = opcoes_audio[selecionado]
+                st.markdown(f"**Título:** {dados_audio.get('titulo')}")
+                st.markdown(f"**Descrição:** {dados_audio.get('descricao', 'Sem descrição')}")
+
+                url_ou_caminho = dados_audio.get("url")
+                if url_ou_caminho:
+                    st.audio(url_ou_caminho)
+                else:
+                    st.info("Ficheiro de áudio não encontrado ou URL inválido.")
+        else:
+            st.info("Nenhum áudio disponível. Adiciona um novo áudio na aba ao lado.")
+
+    # ----------------------------------------------------
+    # TAB 2: ADICIONAR NOVO ÁUDIO
+    # ----------------------------------------------------
+    with tab2:
+        st.markdown("### 📝 Registar Novo Áudio")
+
+        with st.form("form_novo_audio"):
+            titulo_audio = st.text_input("Título do Áudio / Aula:")
+            descricao_audio = st.text_area("Descrição / Notas de Estudo:")
+            url_audio = st.text_input("URL do Ficheiro de Áudio (link direto ou Supabase Storage):")
+
+            btn_salvar_audio = st.form_submit_button("💾 Guardar Áudio")
+
+        if btn_salvar_audio:
+            if titulo_audio and url_audio:
+                novo_registo = {
+                    "titulo": titulo_audio,
+                    "descricao": descricao_audio,
+                    "url": url_audio
+                }
+                if user_id:
+                    novo_registo["user_id"] = user_id
+
+                salvo = False
+                if supabase_client:
+                    try:
+                        supabase_client.table("audios").insert(novo_registo).execute()
+                        salvo = True
+                        st.success("✅ Áudio registado com sucesso no Supabase!")
+                    except Exception as e:
+                        st.error(f"Erro ao salvar no Supabase: {e}")
+
+                if not salvo:
+                    if "audios_locais" not in st.session_state:
+                        st.session_state["audios_locais"] = []
+                    st.session_state["audios_locais"].append(novo_registo)
+                    st.success("✅ Áudio guardado na sessão local!")
+            else:
+                st.warning("Preenche pelo menos o Título e o URL do áudio.")
