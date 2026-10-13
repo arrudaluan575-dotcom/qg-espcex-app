@@ -319,7 +319,17 @@ menu = st.sidebar.radio(
         "📝 Registro de Questões",
         "📕 Caderno de Bizus & Erros",
         "🎯 Simulados (1º e 2º Dia)",
-        "📊 Visualizador de Planilhas"
+        "📊 Visualizador de Planilhas",
+        "🎲 Sorteador de Temas & Textos Base",
+        "🏃 Módulo 13: Pacer TAF",
+        "🥗 Nutrição & Calorias",
+        "🌾 Calc. Agropecuária",
+        "📌 Kanban EFA",
+       "🔥 Habit Tracker",
+      "📅 Cronograma Dinâmico",
+      "🔗 Hub de Links",
+      "📖 Diário de Bordo",
+      "🎧 Player de Áudio"
     ]
 )
 
@@ -1090,3 +1100,589 @@ elif menu == "📊 Visualizador de Planilhas":
         st.error(f"O ficheiro '{NOME_DO_ARQUIVO}' não foi encontrado no GitHub. Confirme se enviou o ficheiro com este nome exato.")
     except Exception as e:
         st.error(f"Erro ao carregar a planilha: {e}")
+        # ====================================================
+# MÓDULO 12: SORTEADOR TÁTICO DE TEMAS & TEXTOS BASE
+# ====================================================
+with tab_modulo12:
+    import random
+
+    st.header("🎲 Módulo 12: Sorteador Tático de Temas & Textos Motivadores")
+    st.markdown("Sorteie propostas completas de redação com **Texto Base Motivador**, eixos temáticos e repertórios para treino.")
+
+    # Banco de Temas com Textos Motivadores e Repertórios
+    if "banco_temas" not in st.session_state:
+        st.session_state.banco_temas = [
+            # ----------------------------------------------------
+            # EIXO 1: DEFESA NACIONAL, SOBERANIA & PAPEL DO ESTADO
+            # ----------------------------------------------------
+            {
+                "id": 1,
+                "tema": "O impacto da inteligência artificial e da automação na segurança e soberania nacional",
+                "eixo": "Defesa Nacional & Estado",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: A transformação digital redefiniu o conceito de defesa estratégica. Drones autônomos, guerra cibernética e processamento de dados em massa tornaram-se pilares do poder militar moderno. O controle sobre tecnologias críticas não é apenas uma questão comercial, mas de sobrevivência e autonomia das Forças Armadas frente às ameaças externas.",
+                "repertorios": ["Art. 142 da Constituição Federal", "Conceito de Guerra Híbrida", "Thomas Hobbes (O Leviatã)"]
+            },
+            {
+                "id": 2,
+                "tema": "A importância do controle de fronteiras no combate ao crime organizado transnacional",
+                "eixo": "Defesa Nacional & Estado",
+                "origem": "Prova EsPCEx",
+                "texto_base": "TEXTO I: O Brasil possui mais de 16 mil quilômetros de fronteira terrestre com dez países. A vastidão do território impõe desafios monumentais no combate ao tráfico de armas, drogas e ao contrabando. A atuação conjunta entre o Exército, a Polícia Federal e agências internacionais é indispensável para conter a expansão de facções criminosas.",
+                "repertorios": ["Max Weber (Monopólio da Violência Legítima)", "Operações Interagências", "Estratégia Nacional de Defesa"]
+            },
+            {
+                "id": 3,
+                "tema": "A atuação das Forças Armadas em missões de garantia da lei e da ordem (GLO) e ajuda humanitária",
+                "eixo": "Defesa Nacional & Estado",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: Para além da defesa contra agressões estrangeiras, o Exército Brasileiro é frequentemente acionado em operações de apoio à população vulnerável, socorro em desastres naturais e apoio à segurança pública. Essa dupla vocação reforça a integração entre a caserna e a sociedade civil.",
+                "repertorios": ["Princípio da Dignidade da Pessoa Humana", "Art. 144 da CF/88", "Ação Própria de Estado"]
+            },
+            {
+                "id": 4,
+                "tema": "O papel da indústria nacional de defesa no desenvolvimento tecnológico e econômico do país",
+                "eixo": "Defesa Nacional & Estado",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: A Base Industrial de Defesa (BID) gera empregos de alta qualificação e impulsiona a inovação científica em setores como aeroespacial, bélico e de telecomunicações. Investir em tecnologia militar própria reduz a dependência de potências estrangeiras em momentos de crise internacional.",
+                "repertorios": ["Soberania Tecnológica", "Celso Furtado (Desenvolvimento Econômico)", "Tríplice Hélice de Inovação"]
+            },
+            {
+                "id": 5,
+                "tema": "Desafios para a vigilância e proteção da Amazônia Azul e dos recursos marítimos nacionais",
+                "eixo": "Defesa Nacional & Estado",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: A Amazônia Azul compreende cerca de 4,5 milhões de km² de área marítima dotada de imensas reservas petrolíferas (como o Pré-Sal) e biodiversidade marinha. Garantir a patrulha e a soberania sobre essas águas territoriais exige investimentos constantes na força naval e em tecnologia de rastreamento.",
+                "repertorios": ["Convenção das Nações Unidas sobre o Direito do Mar", "Conceito de Amazônia Azul", "Soberania Econômica"]
+            },
+
+            # ----------------------------------------------------
+            # EIXO 2: CIBERSEGURANÇA, TECNOLOGIA & SOCIEDADE DIGITAL
+            # ----------------------------------------------------
+            {
+                "id": 6,
+                "tema": "A vulnerabilidade das infraestruturas críticas nacionais diante de ataques cibernéticos",
+                "eixo": "Cibersegurança & Tecnologia",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: Redes elétricas, sistemas bancários, abastecimento de água e redes de telecomunicação dependem diretamente de sistemas digitais. Ataques promovidos por hackers ou grupos estatais estrangeiros podem paralisar serviços essenciais e comprometer a segurança da nação.",
+                "repertorios": ["Comando de Defesa Cibernética (ComDCiber)", "Zygmunt Bauman (Sociedade de Risco)", "Marco Civil da Internet"]
+            },
+            {
+                "id": 7,
+                "tema": "A desinformação e as fake news como ameaças à estabilidade democrática e social",
+                "eixo": "Cibersegurança & Tecnologia",
+                "origem": "Prova EsPCEx",
+                "texto_base": "TEXTO I: A difusão em massa de notícias falsas por meio de algoritmos e redes sociais manipula a opinião pública, corrói a confiança nas instituições legítimas e acirra a polarização social. Garantir a liberdade de expressão sem permitir o caos informativo é um dos maiores dilemas contemporâneos.",
+                "repertorios": ["Hannah Arendt (Verdade e Política)", "Guy Debord (A Sociedade do Espetáculo)", "LGPD"]
+            },
+            {
+                "id": 8,
+                "tema": "Os limites éticos do desenvolvimento e uso da inteligência artificial na sociedade",
+                "eixo": "Cibersegurança & Tecnologia",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: O avanço acelerado dos algoritmos preditivos levanta questionamentos sobre privacidade, viés discriminatório e perda de postos de trabalho. A regulamentação da inteligência artificial busca equilibrar o incentivo à inovação com a preservação dos direitos humanos fundamentais.",
+                "repertorios": ["Immanuel Kant (Humanidade como Fim)", "Nick Bostrom (Superinteligência)", "Direito à Privacidade"]
+            },
+            {
+                "id": 9,
+                "tema": "O impacto da hiperconexão na saúde mental e nas relações interpessoais da juventude",
+                "eixo": "Cibersegurança & Tecnologia",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: O uso excessivo de telas e redes sociais tem gerado isolamento, ansiedade e dependência digital entre adolescentes. A busca por validação virtual contínua substitui a convivência presencial e afeta diretamente a capacidade de concentração e resiliência dos jovens.",
+                "repertorios": ["Byung-Chul Han (A Sociedade do Cansaço)", "Conceito de Solidão Digital", "OMS (Saúde Mental)"]
+            },
+            {
+                "id": 10,
+                "tema": "A inclusão digital como fator determinante para o combate às desigualdades sociais",
+                "eixo": "Cibersegurança & Tecnologia",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: O acesso à internet de alta velocidade e a dispositivos computacionais deixou de ser luxo para se tornar requisito de cidadania, educação e oportunidade de trabalho. A exclusão digital perpetua o ciclo de pobreza em regiões periféricas e rurais do país.",
+                "repertorios": ["Gilberto Dimenstein (O Cidadão de Papel)", "Teoria do Capital Cultural (Bourdieu)", "Art. 205 da CF/88"]
+            },
+
+            # ----------------------------------------------------
+            # EIXO 3: MEIO AMBIENTE, RECURSOS NATURAIS & SUSTENTABILIDADE
+            # ----------------------------------------------------
+            {
+                "id": 11,
+                "tema": "O desafio do combate aos crimes ambientais e a preservação da Amazônia Legal",
+                "eixo": "Meio Ambiente & Sustentabilidade",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: O desmatamento ilegal, o garimpo clandestino e a grilagem de terras ameaçam a biodiversidade e o equilíbrio climático global. A presença das Forças Armadas e dos órgãos de fiscalização é vital para sufocar o crime organizado ambiental e proteger as populações tradicionais.",
+                "repertorios": ["Hans Jonas (O Princípio Responsabilidade)", "Art. 225 da CF/88", "Soberania Ambiental"]
+            },
+            {
+                "id": 12,
+                "tema": "A transição energética e o papel do Brasil na matriz limpa mundial",
+                "eixo": "Meio Ambiente & Sustentabilidade",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: Frente ao aquecimento global, a substituição de combustíveis fósseis por fontes renováveis (solar, eólica e biocombustíveis) é urgente. O Brasil destaca-se mundialmente por sua matriz energética diversificada e limpa, podendo liderar a economia verde internacional.",
+                "repertorios": ["Acordo de Paris", "Conceito de Desenvolvimento Sustentável", "Agenda 2030 da ONU"]
+            },
+            {
+                "id": 13,
+                "tema": "A gestão dos recursos hídricos e a segurança alimentar diante das mudanças climáticas",
+                "eixo": "Meio Ambiente & Sustentabilidade",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: Eventos climáticos extremos, como secas prolongadas e enchentes devastadoras, impactam diretamente a produção agrícola e o abastecimento de água nas grandes cidades. A sustentabilidade no campo e a preservação dos mananciais são cruciais para garantir o alimento na mesa da população.",
+                "repertorios": ["Josué de Castro (Geopolítica da Fome)", "Código Florestal Brasileiro", "Embrapa e Tecnologia Agrícola"]
+            },
+            {
+                "id": 14,
+                "tema": "O dilema entre o crescimento econômico e a conservação do patrimônio natural",
+                "eixo": "Meio Ambiente & Sustentabilidade",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: O avanço das fronteiras agrícolas e industriais é essencial para o PIB e a geração de empregos. Contudo, a exploração desenfreada sem manejo sustentável esgota os recursos naturais e compromete a qualidade de vida das gerações futuras.",
+                "repertorios": ["Relatório Brundtland (1987)", "Desenvolvimento Sustentável", "Paul Crutzen (Antropoceno)"]
+            },
+            {
+                "id": 15,
+                "tema": "A gestão de resíduos sólidos e a responsabilidade socioambiental nas cidades brasileiras",
+                "eixo": "Meio Ambiente & Sustentabilidade",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: O descarte inadequado do lixo, a proliferação de lixões clandestinos e o baixo índice de reciclagem geram impactos severos à saúde pública e ao meio ambiente urbano. A logística reversa e a inclusão de catadores de materiais recicláveis são medidas urgentes.",
+                "repertorios": ["Política Nacional de Resíduos Sólidos", "Conceito de Economia Circular", "Saneamento Básico como Direito"]
+            },
+
+            # ----------------------------------------------------
+            # EIXO 4: CIDADANIA, ÉTICA, EDUCAÇÃO & VALORES SOCIAIS
+            # ----------------------------------------------------
+            {
+                "id": 16,
+                "tema": "A relevância do civismo e dos valores éticos na formação da juventude brasileira",
+                "eixo": "Cidadania & Ética",
+                "origem": "Prova EsPCEx",
+                "texto_base": "TEXTO I: O civismo, o respeito aos símbolos nacionais e a consciência dos deveres sociais são fundamentos da coesão de um país. Estimular valores como disciplina, responsabilidade coletiva e patriotismo nas escolas fortalece a democracia e o sentimento de pertencimento comunitário.",
+                "repertorios": ["Immanuel Kant (Imperativo Categórico)", "Émile Durkheim (Fato Social e Moral)", "LDB - Lei de Diretrizes e Bases"]
+            },
+            {
+                "id": 17,
+                "tema": "O papel da educação no combate à intolerância e à cultura da violência na sociedade",
+                "eixo": "Cidadania & Ética",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: O aumento de episódios de discurso de ódio e agressões interpessoais evidencia a necessidade de uma formação educacional pautada no diálogo, na empatia e no cumprimento das leis. A escola deve ser um espaço de mediação de conflitos e promoção da paz.",
+                "repertorios": ["Paulo Freire (Educação como Prática da Liberdade)", "Declaração Universal dos Direitos Humanos", "Conceito de Alteridade"]
+            },
+            {
+                "id": 18,
+                "tema": "A importância do voluntariado e do espírito de solidariedade em momentos de crise nacional",
+                "eixo": "Cidadania & Ética",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: Durante grandes calamidades públicas e crises sociais, a mobilização da sociedade civil em ações comunitárias e doações complementa a atuação estatal. A cultura do voluntariado demonstra a força da empatia e fortalece os laços sociais.",
+                "repertorios": ["Zygmunt Bauman (Comunidade)", "Princípio da Solidariedade Constitucional", "Ação Social Organizacional"]
+            },
+            {
+                "id": 19,
+                "tema": "A valorização do trabalho e o desafio do primeiro emprego para os jovens no Brasil",
+                "eixo": "Cidadania & Ética",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: A transição da escola para o mercado de trabalho é marcada por exigências crescentes de qualificação técnica e experiência prévia. Programas de aprendizagem, ensino técnico e incentivos governamentais são fundamentais para evitar a ociosidade da juventude.",
+                "repertorios": ["Lei do Aprendiz", "Constituição Federal (Direito ao Trabalho)", "Teoria do Capital Humano"]
+            },
+            {
+                "id": 20,
+                "tema": "A preservação da memória histórica e da identidade cultural como pilares de uma nação",
+                "eixo": "Cidadania & Ética",
+                "origem": "Simulado EsPCEx",
+                "texto_base": "TEXTO I: O conhecimento da história, das tradições e dos heróis nacionais permite compreender o presente e projetar o futuro. Um país que desvaloriza seu patrimônio cultural e histórico corre o risco de perder sua identidade e coesão social.",
+                "repertorios": ["Patrimônio Histórico Nacional (IPHAN)", "Marc Bloch (A Apologia da História)", "Identidade Nacional (Ernest Renan)"]
+            }
+        ]
+
+    if "tema_sorteado" not in st.session_state:
+        st.session_state.tema_sorteado = None
+
+    # Controles de Filtro e Sorteio
+    c_eixo, c_origem, c_btn = st.columns([2, 2, 1.5])
+
+    with c_eixo:
+        eixo_filtro = st.selectbox(
+            "Filtrar Eixo Temático:",
+            ["Todos os Eixos", "Defesa Nacional & Estado", "Cibersegurança & Tecnologia", "Meio Ambiente & Sustentabilidade", "Cidadania & Ética"]
+        )
+
+    with c_origem:
+        origem_filtro = st.selectbox(
+            "Filtrar Origem:",
+            ["Todas as Origens", "Prova EsPCEx", "Simulado EsPCEx"]
+        )
+
+    with c_btn:
+        st.write(" ")
+        st.write(" ")
+        if st.button("🎲 Sortear Tema Agora", use_container_width=True):
+            lista_filtrada = st.session_state.banco_temas
+
+            if eixo_filtro != "Todos os Eixos":
+                lista_filtrada = [t for t in lista_filtrada if t["eixo"] == eixo_filtro]
+
+            if origem_filtro != "Todas as Origens":
+                lista_filtrada = [t for t in lista_filtrada if t["origem"] == origem_filtro]
+
+            if lista_filtrada:
+                st.session_state.tema_sorteado = random.choice(lista_filtrada)
+            else:
+                st.warning("Nenhum tema encontrado com estes filtros.")
+
+    # Exibição da Proposta Completa de Redação
+    if st.session_state.tema_sorteado:
+        t = st.session_state.tema_sorteado
+        st.markdown("---")
+
+        st.subheader("📌 Proposta de Redação Sorteada")
+
+        col_metas, col_info = st.columns([3, 1])
+
+        with col_metas:
+            st.info(f"### 📝 Proposta: \"{t['tema']}\"")
+
+        with col_info:
+            st.write(f"**Eixo:** {t['eixo']}")
+            st.write(f"**Origem:** {t['origem']}")
+            st.write(f"**ID do Tema:** #{t['id']}")
+
+        # Texto Base / Motivador
+        with st.expander("📜 Texto Base Motivador (Clique para ler)", expanded=True):
+            st.write(t["texto_base"])
+            st.caption("A partir da leitura do texto motivador e de seus conhecimentos construídos ao longo de sua formação, redija um texto dissertativo-argumentativo na modalidade escrita culta da língua portuguesa.")
+
+        # Repertórios Coringa Sugeridos
+        st.markdown("#### 💡 Repertórios Coringa Sugeridos:")
+        col_rep1, col_rep2, col_rep3 = st.columns(3)
+        if len(t["repertorios"]) >= 1:
+            col_rep1.success(f"📌 {t['repertorios'][0]}")
+        if len(t["repertorios"]) >= 2:
+            col_rep2.success(f"📌 {t['repertorios'][1]}")
+        if len(t["repertorios"]) >= 3:
+            col_rep3.success(f"📌 {t['repertorios'][2]}")
+
+    # Formulário para Cadastrar Novos Temas ao Banco
+    st.markdown("---")
+    with st.expander("➕ Cadastrar Novo Tema com Texto Base ao Banco"):
+        with st.form("form_novo_tema_completo"):
+            n_tema = st.text_input("Título da Proposta de Redação")
+            n_eixo = st.selectbox("Eixo Temático", ["Defesa Nacional & Estado", "Cibersegurança & Tecnologia", "Meio Ambiente & Sustentabilidade", "Cidadania & Ética"])
+            n_origem = st.text_input("Origem (Ex: Prova 2024, Simulado 05)", value="Simulado EsPCEx")
+            n_texto_base = st.text_area("Texto Base / Motivador")
+            n_reps = st.text_input("Repertórios Sugeridos (separados por vírgula)")
+
+            btn_salvar_tema = st.form_submit_button("Salvar Tema no Banco")
+
+            if btn_salvar_tema and n_tema and n_texto_base:
+                lista_r = [r.strip() for r in n_reps.split(",") if r.strip()]
+                st.session_state.banco_temas.append({
+                    "id": len(st.session_state.banco_temas) + 1,
+                    "tema": n_tema,
+                    "eixo": n_eixo,
+                    "origem": n_origem,
+                    "texto_base": n_texto_base,
+                    "repertorios": lista_r if lista_r else ["Repertório Geral do Eixo"]
+                })
+                st.success("Novo tema cadastrado com sucesso no Módulo 12!")
+                st.rerun()
+                # ====================================================
+# MÓDULO 13: SIMULADOR DE RITMO PACER PARA CORRIDA DO TAF (IDEIA 1)
+# ====================================================
+with tab_m13:
+    st.header("🏃 Módulo 13: Simulador Pacer de Corrida TAF")
+    st.markdown("Calcule o ritmo exato por volta e acompanhe metas progressivas para os **12 minutos de corrida**.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        distancia_meta = st.number_input("Meta de Distância (metros)", min_value=1000, max_value=4000, value=2450, step=50)
+        tamanho_pista = st.number_input("Tamanho da Pista/Volta (metros)", min_value=100, max_value=1000, value=400, step=50)
+
+    # Cálculos de Pacer
+    tempo_min = 12.0
+    vel_media_kmh = (distancia_meta / 1000) / (tempo_min / 60)
+    total_voltas = distancia_meta / tamanho_pista
+    tempo_por_volta_seg = (tempo_min * 60) / total_voltas
+
+    with col2:
+        st.subheader("🎯 Métricas Táticas")
+        st.metric("Velocidade Média Necessária", f"{vel_media_kmh:.2f} km/h")
+        st.metric("Total de Voltas na Pista", f"{total_voltas:.2f} voltas")
+        st.metric("Tempo Exato por Volta (400m)", f"{int(tempo_por_volta_seg // 60)}min {int(tempo_por_volta_seg % 60)}seg")
+
+    st.markdown("---")
+    st.subheader("📈 Plano de Evolução Progressiva (8 Semanas)")
+    
+    metas_semanais = []
+    base_dist = min(2000, distancia_meta - 450)
+    incremento = (distancia_meta + 100 - base_dist) / 7
+
+    for sem in range(1, 9):
+        dist_sem = base_dist + (incremento * (sem - 1))
+        vel_sem = (dist_sem / 1000) / (12 / 60)
+        metas_semanais.append({
+            "Semana": f"Semana {sem}",
+            "Meta Corrida (m)": int(dist_sem),
+            "Velocidade (km/h)": round(vel_sem, 2),
+            "Status": "Concluído" if sem == 1 else "Pendente"
+        })
+
+    df_pacer = pd.DataFrame(metas_semanais)
+    st.dataframe(df_pacer, use_container_width=True, hide_index=True)
+
+
+# ====================================================
+# MÓDULO 14: CALCULADORA DE CALORIAS E NUTRIÇÃO (IDEIA 3)
+# ====================================================
+with tab_m14:
+    st.header("🥗 Módulo 14: Calculadora Nutricional & Gasto Calórico")
+    st.markdown("Ajuste o aporte calórico para conciliar o trabalho na roça com o rendimento no TAF e estudos.")
+
+    c_peso, c_altura, c_idade = st.columns(3)
+    peso = c_peso.number_input("Peso Atual (kg)", min_value=40.0, max_value=150.0, value=68.0, step=0.5)
+    altura = c_altura.number_input("Altura (cm)", min_value=130, max_value=220, value=175)
+    idade = c_idade.number_input("Idade", min_value=14, max_value=60, value=17)
+
+    c_roca, c_taf = st.columns(2)
+    nivel_roca = c_roca.selectbox("Intensidade do Trabalho na Roça/Propriedade", ["Leve / Interno", "Moderado (Manejo/Café)", "Pesado (Capina/Carga)"])
+    treino_taf = c_taf.selectbox("Treino TAF do Dia", ["Nenhum / Descanso", "Corrida Moderada", "Treino Intenso (Corrida + Barra + Abdominal)"])
+
+    # Cálculo da Taxa Metabólica Basal (Mifflin-St Jeor para homens)
+    tmb = (10 * peso) + (6.25 * altura) - (5 * idade) + 5
+    
+    fator_roca = 1.2 if "Leve" in nivel_roca else (1.45 if "Moderado" in nivel_roca else 1.7)
+    fator_taf = 0 if "Nenhum" in treino_taf else (250 if "Moderada" in treino_taf else 450)
+    
+    gasto_total = (tmb * fator_roca) + fator_taf
+    agua_ml = peso * 40
+    proteina_g = peso * 1.8
+    carbo_g = peso * 5.0
+
+    st.markdown("---")
+    st.subheader("📊 Metas Diárias de Nutrição & Hidratação")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Gasto Calórico Estimado", f"{int(gasto_total)} kcal")
+    m2.metric("Meta de Água", f"{agua_ml / 1000:.2f} Litros")
+    m3.metric("Proteína Recomendada", f"{int(proteina_g)} g")
+    m4.metric("Carboidratos (Energia)", f"{int(carbo_g)} g")
+
+
+# ====================================================
+# MÓDULO 15: CALCULADORA TÉCNICA AGROPECUÁRIA (IDEIA 14)
+# ====================================================
+with tab_m15:
+    st.header("🌾 Módulo 15: Calculadora Técnica Agropecuária")
+    st.markdown("Apoio prático para tarefas da EFA, calibração de dosagens e estimativas de café.")
+
+    subtab1, subtab2, subtab3 = st.tabs(["📐 Conversor de Áreas", "🧪 Dosagem de Adubação", "☕ Estimativa de Cafeicultura"])
+
+    with subtab1:
+        st.subheader("Conversão de Medidas de Área")
+        ha_input = st.number_input("Área em Hectares (ha)", min_value=0.1, value=1.0, step=0.5)
+        m2_calc = ha_input * 10000
+        alq_mg = ha_input / 4.8  # Alqueire Mineiro
+        col_a1, col_a2 = st.columns(2)
+        col_a1.metric("Área em Metros Quadrados", f"{m2_calc:,.0f} m²")
+        col_a2.metric("Alqueires Mineiros (4,8 ha)", f"{alq_mg:.2f} alq")
+
+    with subtab2:
+        st.subheader("Cálculo de Adubação por Talhão")
+        pes_alvo = st.number_input("Número de Pés de Café no Talhão", min_value=100, value=2000, step=100)
+        dose_g = st.number_input("Dosagem Recomendada por Planta (gramas)", min_value=10, value=150, step=10)
+        total_kg = (pes_alvo * dose_g) / 1000
+        sacos_50kg = total_kg / 50
+        st.success(f"**Total de Adubo Necessário:** {total_kg:.1f} kg ({sacos_50kg:.1f} sacos de 50kg)")
+
+    with subtab3:
+        st.subheader("Estimativa de Produtividade do Cafezal")
+        total_pes = st.number_input("Total de Plantas em Produção", min_value=100, value=3000, step=500)
+        litros_por_pe = st.number_input("Média Estimada de Litros de Café da Roça por Pé", min_value=0.5, value=4.0, step=0.5)
+        litros_totais = total_pes * litros_por_pe
+        sacas_estimadas = litros_totais / 480  # Média de 480L de café da roça por saca beneficiada de 60kg
+        st.info(f"**Estimativa da Colheita:** {litros_totais:,.0f} Litros ➔ **~{sacas_estimadas:.1f} Sacas Beneficiadas (60kg)**")
+
+
+# ====================================================
+# MÓDULO 16: QUADRO KANBAN DE TRABALHOS EFA (IDEIA 15)
+# ====================================================
+with tab_m16:
+    st.header("📌 Módulo 16: Quadro Kanban de Trabalhos & Pesquisas EFA")
+    st.markdown("Gestão visual de projetos escolares, maquetes e relatórios agrícolas.")
+
+    if "kanban_tasks" not in st.session_state:
+        st.session_state.kanban_tasks = [
+            {"id": 1, "titulo": "Relatório de Solo e Adubação", "status": "A Fazer"},
+            {"id": 2, "titulo": "Pesquisa sobre Cooperativismo", "status": "Em Andamento"},
+            {"id": 3, "titulo": "Apresentação AMSP 01", "status": "Entregue"}
+        ]
+
+    # Adicionar nova tarefa
+    with st.expander("➕ Adicionar Novo Projeto/Trabalho"):
+        novo_proj = st.text_input("Título do Trabalho")
+        if st.button("Cadastrar no Kanban") and novo_proj:
+            novo_id = len(st.session_state.kanban_tasks) + 1
+            st.session_state.kanban_tasks.append({"id": novo_id, "titulo": novo_proj, "status": "A Fazer"})
+            st.rerun()
+
+    k_fazer, k_and, k_ent = st.columns(3)
+
+    with k_fazer:
+        st.subheader("🔴 A Fazer")
+        for item in list(st.session_state.kanban_tasks):
+            if item["status"] == "A Fazer":
+                with st.expander(f"📌 {item['titulo']}"):
+                    if st.button("Mover ➔ Em Andamento", key=f"kan_and_{item['id']}"):
+                        item["status"] = "Em Andamento"
+                        st.rerun()
+
+    with k_and:
+        st.subheader("🟡 Em Andamento")
+        for item in list(st.session_state.kanban_tasks):
+            if item["status"] == "Em Andamento":
+                with st.expander(f"⏳ {item['titulo']}"):
+                    if st.button("Mover ➔ Entregue", key=f"kan_ent_{item['id']}"):
+                        item["status"] = "Entregue"
+                        st.rerun()
+
+    with k_ent:
+        st.subheader("🟢 Entregue")
+        for item in list(st.session_state.kanban_tasks):
+            if item["status"] == "Entregue":
+                with st.expander(f"✅ {item['titulo']}"):
+                    st.caption("Concluído e arquivado")
+
+
+# ====================================================
+# MÓDULO 17: RASTREADOR DE HÁBITOS & DISCIPLINA (IDEIA 16)
+# ====================================================
+with tab_m17:
+    st.header("🔥 Módulo 17: Habit Tracker & Disciplina Militar")
+    st.markdown("Acompanhe o cumprimento diário das tarefas fundamentais para a aprovação.")
+
+    if "streak_dias" not in st.session_state:
+        st.session_state.streak_dias = 12
+
+    st.subheader(f"🔥 Sequência Atual: **{st.session_state.streak_dias} Dias Consecutivos de Foco!**")
+
+    st.markdown("### Checklist do Dia")
+    h1 = st.checkbox("🎯 Meta de Questões Cumprida (BQEM)")
+    h2 = st.checkbox("🏃 Treino do TAF Realizado (Corrida / Flexão / Abdominal)")
+    h3 = st.checkbox("📖 Leitura do LDI / Teoria")
+    h4 = st.checkbox("🧠 Anotações e Revisão NIP")
+    h5 = st.checkbox("📑 Diário de Campo / AMSP EFA em dia")
+
+    total_cumprido = sum([h1, h2, h3, h4, h5])
+    progresso = total_cumprido / 5.0
+
+    st.progress(progresso)
+    st.write(f"**Progresso Diário:** {total_cumprido} de 5 metas concluídas ({int(progresso * 100)}%)")
+
+    if total_cumprido == 5:
+        st.balloons()
+        st.success("Excelente! Missão cumprida no dia de hoje. Mantenha o padrão!")
+
+
+# ====================================================
+# MÓDULO 18: GERADOR DE CRONOGRAMA DINÂMICO (IDEIA 17)
+# ====================================================
+with tab_m18:
+    st.header("📅 Módulo 18: Cronograma Semanal Dinâmico")
+    st.markdown("Alterne instantaneamente a visualização do plano entre a **Semana A (Na Escola)** e a **Semana B (Em Casa)**.")
+
+    modo_semana = st.radio("Selecione o Contexto Atual:", ["Semana A (Escola EFA)", "Semana B (Propriedade / Casa)"], horizontal=True)
+
+    if modo_semana == "Semana A (Escola EFA)":
+        st.info("🏫 **Foco da Semana A:** Blocos noturnos concentrados (21h30 às 22h30) após o período letivo na EFA.")
+        grade_a = [
+            {"Dia": "Segunda-feira", "Horário": "21h30 - 22h30", "Matéria": "Matemática Básica", "Foco": "LDI Cap. 01 + 10 questões"},
+            {"Dia": "Terça-feira", "Horário": "21h30 - 22h30", "Matéria": "Gramática / Português", "Foco": "Classes de Palavras + NIP"},
+            {"Dia": "Quarta-feira", "Horário": "21h30 - 22h30", "Matéria": "Física", "Foco": "Conversão de Unidades e Vetores"},
+            {"Dia": "Quinta-feira", "Horário": "21h30 - 22h30", "Matéria": "Química", "Foco": "Estados da Matéria"},
+            {"Dia": "Sexta-feira", "Horário": "21h30 - 22h30", "Matéria": "História do Brasil", "Foco": "Período Pré-Colonial"},
+            {"Dia": "Sábado", "Horário": "14h00 - 16h00", "Matéria": "Revisão + Redação", "Foco": "Estrutura de Parágrafo"},
+            {"Dia": "Domingo", "Horário": "09h00 - 10h00", "Matéria": "Planejamento", "Foco": "Download de PDFs para a semana"}
+        ]
+        st.table(pd.DataFrame(grade_a))
+
+    else:
+        st.success("🏡 **Foco da Semana B:** Janelas ampliadas pós-trabalho na roça (18h30 às 21h30).")
+        grade_b = [
+            {"Dia": "Segunda-feira", "Horário": "18h30 - 21h30", "Matéria": "Matemática + Gramática", "Foco": "Porcentagem / Regra de Três + Pronomes"},
+            {"Dia": "Terça-feira", "Horário": "18h30 - 21h30", "Matéria": "Física + Química", "Foco": "Movimento Uniforme + Tabela Periódica"},
+            {"Dia": "Quarta-feira", "Horário": "18h30 - 21h30", "Matéria": "Matemática + Geografia", "Foco": "Equações + Cartografia e Fusos"},
+            {"Dia": "Quinta-feira", "Horário": "18h30 - 21h30", "Matéria": "Física/Química + Inglês", "Foco": "Exercícios de Fixação BQEM"},
+            {"Dia": "Sexta-feira", "Horário": "18h30 - 21h30", "Matéria": "Português + História", "Foco": "Sintaxe + Ciclo do Açúcar"},
+            {"Dia": "Sábado", "Horário": "08h00 - 16h30", "Matéria": "Redação Prática + Caderno Erros", "Foco": "Texto Completo + Refazer Erradas"},
+            {"Dia": "Domingo", "Horário": "09h00 - 10h30", "Matéria": "Planejamento Alternância", "Foco": "Organizar PDFs e Malhar TAF"}
+        ]
+        st.table(pd.DataFrame(grade_b))
+
+
+# ====================================================
+# MÓDULO 19: HUB DE LINKS TÁTICOS & ATALHOS (IDEIA 18)
+# ====================================================
+with tab_m19:
+    st.header("🔗 Módulo 19: Hub de Links Táticos & Atalhos Rápidos")
+    st.markdown("Acesso direto às plataformas de estudo, materiais e sistemas com um único clique.")
+
+    c_l1, c_l2 = st.columns(2)
+
+    with c_l1:
+        st.subheader("🎖️ EsPCEx & Estratégia Militares")
+        st.link_button("🌐 Plataforma Estratégia Militares", "https://militar.estrategiaconcursos.com.br/", use_container_width=True)
+        st.link_button("🎯 Banco de Questões (BQEM)", "https://questoes.estrategiaconcursos.com.br/", use_container_width=True)
+        st.link_button("📜 Site Oficial da EsPCEx", "http://www.espcex.eb.mil.br/", use_container_width=True)
+
+    with c_l2:
+        st.subheader("🌾 EFA & Ferramentas Pessoais")
+        st.link_button("📁 Google Drive - Documentos EFA", "https://drive.google.com/", use_container_width=True)
+        st.link_button("💻 Repositório GitHub (qg-espcex-app)", "https://github.com/arrudaluan575-dotcom/qg-espcex-app", use_container_width=True)
+        st.link_button("📊 Streamlit Cloud Dashboard", "https://share.streamlit.io/", use_container_width=True)
+
+
+# ====================================================
+# MÓDULO 20: DIÁRIO DE BORDO & FRASE MOTIVACIONAL (IDEIA 19)
+# ====================================================
+with tab_m20:
+    st.header("📖 Módulo 20: Diário de Bordo Tático")
+
+    frases_eb = [
+        "\"A farda não é uma veste que se despe com facilidade e indiferença, mas uma outra pele, que adere à própria alma.\" — Gen. Leônidas Pires Gonçalves",
+        "\"O êxito é a soma de pequenos esforços repetidos dia após dia.\"",
+        "\"A vitória sorri para aqueles que estão dispostos a pagar o preço do suor no treinamento.\"",
+        "\"Brasil acima de tudo!\"",
+        "\"Na selva, a disciplina não é apenas uma virtude, é a diferença entre a vida e a derrota.\""
+    ]
+
+    import random
+    st.info(f"💡 **Frase do Dia:** {random.choice(frases_eb)}")
+
+    st.markdown("---")
+    st.subheader("📝 Reflexão do Fim de Dia")
+
+    with st.form("form_diario_bordo"):
+        foco_dia = st.slider("Nível de Foco nos Estudos (1 a 5)", 1, 5, 4)
+        cansaco_fisico = st.slider("Desgaste Físico da Roça/Treino (1 a 5)", 1, 5, 3)
+        resumo_dia = st.text_area("O que correu bem hoje e o que precisa de ser ajustado amanhã?")
+        btn_salvar_diario = st.form_submit_button("Salvar Diário de Bordo")
+
+        if btn_salvar_diario:
+            st.success("Diário salvo com sucesso na memória da sessão!")
+
+
+# ====================================================
+# MÓDULO 21: PLAYER DE ÁUDIO TÁTICO (IDEIA 20)
+# ====================================================
+with tab_m21:
+    st.header("🎧 Módulo 21: Central de Áudio Tático")
+    st.markdown("Músicas de marcha para os treinos do TAF e frequências para concentração profunda.")
+
+    p_col1, p_col2 = st.columns(2)
+
+    with p_col1:
+        st.subheader("🎺 Canções e Marchas Militares (TAF)")
+        st.markdown("**Hino da Infantaria**")
+        st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3")
+        st.markdown("**Fibra de Herói**")
+        st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3")
+
+    with p_col2:
+        st.subheader("🧠 Áudios para Estudo e Foco Profundo")
+        st.markdown("**Ruído Branco / Foco LDI**")
+        st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3")
+        st.markdown("**Ondas Binaurais (Alfa - Leitura NIP)**")
+        st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3")
