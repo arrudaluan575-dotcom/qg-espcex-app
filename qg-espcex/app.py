@@ -7,6 +7,18 @@ import json
 import os
 import time
 import hashlib
+from supabase import create_client, Client
+
+# --- Inicialização Global do Supabase ---
+@st.cache_resource
+def init_supabase():
+    url = st.secrets.get("SUPABASE_URL")
+    key = st.secrets.get("SUPABASE_KEY")
+    if not url or not key:
+        return None
+    return create_client(url, key)
+
+supabase = init_supabase()
 
 # -----------------------------------------------------------------------------
 # Configuração da Página, Proteção Contra Tradução e Tema EsPCEx / EFA
