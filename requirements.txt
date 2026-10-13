@@ -2,4 +2,4 @@ streamlit
 pandas
 plotly
 openpyxl
-Plano_de_Estudos_EFA_Status_Automatico.xlsx
+
