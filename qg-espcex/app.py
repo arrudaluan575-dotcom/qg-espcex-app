@@ -71,8 +71,8 @@ st.markdown("""
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def init_supabase():
-    url = st.secrets.get("SUPABASE_URL", "https://agckdimywmujrtr.supabase.co")
-    key = st.secrets.get("SUPABASE_KEY", "sb_publishable_P_JcgLMuU9kbC1JjBDN3Jg_HSLkE_cA")
+    url = st.secrets.get("SUPABASE_URL", "https://xnihuagckdimywmujtrt.supabase.co")
+    key = st.secrets.get("SUPABASE_KEY", "sb_publishable_P_JcgLMuU9kbClJjBDN3Jg_HSLkE_cA")
     if not url or not key:
         return None
     try:
