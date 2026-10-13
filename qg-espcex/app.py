@@ -1555,19 +1555,19 @@ elif menu == "🔗 Hub de Links":
 # -----------------------------------------------------------------------------
 def render_modulo_20(supabase_client=None, user_id=None):
     st.title("📖 Módulo 20 - Diário de Bordo")
-    st.subheader("Reflexão diária, acompanhamento e planeamento para o dia seguinte")
+    st.subheader("Reflexão diária, acompanhamento e planejamento para o dia seguinte")
 
-    tab1, tab2 = st.tabs(["📝 Registar / Editar Hoje", "🔍 Rever e Histórico do Diário"])
+    tab1, tab2 = st.tabs(["📝 Registrar / Editar Hoje", "🔍 Rever e Histórico do Diário"])
 
     # ----------------------------------------------------
-    # TAB 1: REGISTAR / EDITAR O DIA ATUAL
+    # TAB 1: REGISTRAR / EDITAR O DIA ATUAL
     # ----------------------------------------------------
     with tab1:
-        st.markdown("### ✍️ Registo Diário")
+        st.markdown("### ✍️ Registro Diário")
         
-        data_hoje = st.date_input("Data do Registo", value=datetime.date.today())
+        data_hoje = st.date_input("Data do Registro", value=datetime.date.today())
         
-        # Procura registo existente no Supabase para a data selecionada
+        # Busca registro existente no Supabase para a data selecionada
         registo_existente = None
         if supabase_client:
             try:
@@ -1578,7 +1578,7 @@ def render_modulo_20(supabase_client=None, user_id=None):
                 if res.data and len(res.data) > 0:
                     registo_existente = res.data[0]
             except Exception as e:
-                st.warning(f"Aviso ao verificar registos anteriores no Supabase: {e}")
+                st.warning(f"Aviso ao verificar registros anteriores no Supabase: {e}")
 
         # Carrega dados existentes para edição ou deixa em branco
         val_bem = registo_existente.get("pontos_fortes", "") if registo_existente else ""
@@ -1587,21 +1587,21 @@ def render_modulo_20(supabase_client=None, user_id=None):
         val_humor = registo_existente.get("humor", "🟢 Bom") if registo_existente else "🟢 Bom"
 
         if registo_existente:
-            st.info(f"ℹ️ Registos encontrados para {data_hoje.strftime('%d/%m/%Y')}. Podes rever e editar abaixo.")
+            st.info(f"ℹ️ Registros encontrados para {data_hoje.strftime('%d/%m/%Y')}. Você pode rever e editar abaixo.")
 
         with st.form("form_diario_bordo"):
             col_a, col_b = st.columns(2)
             
             with col_a:
                 o_que_foi_bem = st.text_area(
-                    "🌟 O que correu bem hoje?",
+                    "🌟 O que foi bem hoje?",
                     value=val_bem,
                     placeholder="Ex.: Cumpri a meta de questões e mantive o ritmo nos estudos."
                 )
 
             with col_b:
                 o_que_ajustar = st.text_area(
-                    "🛠️ O que precisa de ser editado / ajustado para amanhã?",
+                    "🛠️ O que precisa editar / ajustar para amanhã?",
                     value=val_ajustar,
                     placeholder="Ex.: Acordar no horário sem adiar o alarme e focar no bloco de Física."
                 )
@@ -1618,7 +1618,7 @@ def render_modulo_20(supabase_client=None, user_id=None):
                 index=["🔥 Excelente", "🟢 Bom", "🟡 Regular", "🔴 Cansado / Baixo Desempenho"].index(val_humor) if val_humor in ["🔥 Excelente", "🟢 Bom", "🟡 Regular", "🔴 Cansado / Baixo Desempenho"] else 1
             )
 
-            btn_salvar = st.form_submit_button("💾 Guardar / Atualizar Diário no Supabase")
+            btn_salvar = st.form_submit_button("💾 Salvar / Atualizar Diário no Supabase")
 
         if btn_salvar:
             dados_diario = {
@@ -1644,18 +1644,18 @@ def render_modulo_20(supabase_client=None, user_id=None):
                             .insert(dados_diario)\
                             .execute()
                     salvo_nuvem = True
-                    st.success("✅ Diário de bordo guardado com sucesso na nuvem!")
+                    st.success("✅ Diário de bordo salvo com sucesso na nuvem!")
                 except Exception as e:
-                    st.error(f"Erro ao guardar no Supabase: {e}")
+                    st.error(f"Erro ao salvar no Supabase: {e}")
 
             if not salvo_nuvem:
-                st.info("ℹ️ Guardado na memória local da sessão.")
+                st.info("ℹ️ Salvo na memória local da sessão.")
                 if "diario_local" not in st.session_state:
                     st.session_state["diario_local"] = []
                 st.session_state["diario_local"].append(dados_diario)
 
     # ----------------------------------------------------
-    # TAB 2: REVER E REVISITAR REGISTOS ANTERIORES
+    # TAB 2: REVER E REVISITAR REGISTROS ANTERIORES
     # ----------------------------------------------------
     with tab2:
         st.markdown("### 🔍 Consulta e Revisão de Diários Anteriores")
@@ -1679,7 +1679,7 @@ def render_modulo_20(supabase_client=None, user_id=None):
             cols_exibicao = [c for c in ["data", "pontos_fortes", "pontos_melhorar", "resumo_dia", "humor"] if c in df.columns]
             df_renomeado = df[cols_exibicao].rename(columns={
                 "data": "Data",
-                "pontos_fortes": "O que correu bem hoje",
+                "pontos_fortes": "O que foi bem hoje",
                 "pontos_melhorar": "O que ajustar para amanhã",
                 "resumo_dia": "Resumo Geral",
                 "humor": "Humor/Energia"
@@ -1698,14 +1698,13 @@ def render_modulo_20(supabase_client=None, user_id=None):
             if registo_sel:
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.success(f"**🌟 O que correu bem em {data_selecionada}:**\n\n" + str(registo_sel.get("pontos_fortes", "Sem registo")))
+                    st.success(f"**🌟 O que foi bem em {data_selecionada}:**\n\n" + str(registo_sel.get("pontos_fortes", "Sem registro")))
                 with c2:
-                    st.warning(f"**🛠️ O que ajustar para o dia seguinte:**\n\n" + str(registo_sel.get("pontos_melhorar", "Sem registo")))
+                    st.warning(f"**🛠️ O que ajustar para o dia seguinte:**\n\n" + str(registo_sel.get("pontos_melhorar", "Sem registro")))
                 
                 st.info(f"**📝 Resumo e Observações:** {registo_sel.get('resumo_dia', 'Sem resumo')} | **Energia/Humor:** {registo_sel.get('humor', 'N/A')}")
         else:
-            st.info("Nenhum registo de diário de bordo encontrado até ao momento.")
-
+            st.info("Nenhum registro de diário de bordo encontrado até o momento.")
 # -----------------------------------------------------------------------------
 # MÓDULO 21: PLAYER DE ÁUDIO
 # -----------------------------------------------------------------------------
