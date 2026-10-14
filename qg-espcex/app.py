@@ -8,6 +8,18 @@ import os
 import time
 import hashlib
 from supabase import create_client, Client
+
+# --- Inicialização Global do Supabase ---
+@st.cache_resource
+def init_supabase():
+    url = "https://agckdimywmujrtr.supabase.co"
+    key = "sb_publishable_P_JcgLMuU9kbC1JjBDN3Jg_HSLkE_cA"
+    if not url or not key:
+        return None
+    return create_client(url, key)
+
+supabase = init_supabase()
+
 # -----------------------------------------------------------------------------
 # Configuração da Página, Proteção Contra Tradução e Tema EsPCEx / EFA
 # -----------------------------------------------------------------------------
@@ -60,17 +72,6 @@ st.markdown("""
     }
     </style>
 """, unsafe_allow_html=True)
-""", unsafe_allow_html=True)
-# --- Inicialização Global do Supabase ---
-@st.cache_resource
-def init_supabase():
-    url = "https://agckdimywmujrtr.supabase.co"
-    key = "sb_publishable_P_JcgLMuU9kbC1JjBDN3Jg_HSLkE_cA"
-    if not url or not key:
-        return None
-    return create_client(url, key)
-
-supabase = init_supabase()
 
 USERS_FILE = "usuarios.json"
 
@@ -1709,110 +1710,47 @@ elif menu == "📖 Diário de Bordo":
 
     st.info(f"💡 **Frase do Dia:** {random.choice(frases_eb)}")
 
-    # Captura a conexão do Supabase
-    client_supabase = globals().get("supabase", st.session_state.get("supabase", None))
-
-    # 1. CARREGAR REGISTOS DA NUVEM (SUPABASE)
-    registos_nuvem = []
-    if client_supabase:
-        try:
-            # SINTAXE CORRIGIDA: usa desc=True em vez de ascending=False
-            res = client_supabase.table("diario_bordo").select("*").order("id", desc=True).execute()
-            if res.data:
-                registos_nuvem = res.data
-        except Exception as e:
-            st.error(f"⚠️ Erro ao carregar histórico do Supabase: {e}")
-
-    # Fallback para a sessão local
+    # 1. Lista que armazena os diários anteriores na memória da sessão
     if "historico_diario" not in st.session_state:
         st.session_state.historico_diario = []
-
-    historico_exibicao = registos_nuvem if registos_nuvem else st.session_state.historico_diario
 
     st.markdown("---")
     st.subheader("📝 Reflexão do Fim de Dia")
 
     with st.form("form_diario_bordo"):
-        col1, col2 = st.columns(2)
-        with col1:
-            foco_dia = st.slider("Nível de Foco nos Estudos (1 a 5)", 1, 5, 4)
-        with col2:
-            cansaco_fisico = st.slider("Desgaste Físico da Roça/Treino (1 a 5)", 1, 5, 3)
-
-        o_que_foi_bem = st.text_area("🌟 O que correu bem hoje?", placeholder="Ex.: Cumpri a meta de questões e mantive o ritmo no TAF.")
-        o_que_ajustar = st.text_area("🛠️ O que precisa ser ajustado / editado para amanhã?", placeholder="Ex.: Focar mais no bloco de exatas e acordar sem adiar o alarme.")
-
-        resumo_dia = st.text_area("📝 Resumo geral do dia / Observações:")
-
-        btn_salvar_diario = st.form_submit_button("💾 Salvar Diário de Bordo na Nuvem")
+        foco_dia = st.slider("Nível de Foco nos Estudos (1 a 5)", 1, 5, 4)
+        cansaco_fisico = st.slider("Desgaste Físico da Roça/Treino (1 a 5)", 1, 5, 3)
+        resumo_dia = st.text_area("O que correu bem hoje e o que precisa ser ajustado para amanhã?")
+        btn_salvar_diario = st.form_submit_button("Salvar Diário de Bordo")
 
         if btn_salvar_diario:
-            texto_completo = ""
-            if o_que_foi_bem.strip():
-                texto_completo += f"**O que correu bem:**\n{o_que_foi_bem.strip()}\n\n"
-            if o_que_ajustar.strip():
-                texto_completo += f"**Ajustes para amanhã:**\n{o_que_ajustar.strip()}\n\n"
             if resumo_dia.strip():
-                texto_completo += f"**Resumo Geral:**\n{resumo_dia.strip()}"
-
-            if texto_completo.strip():
+                # Captura a data e hora do registro
                 data_registro = datetime.now().strftime("%d/%m/%Y às %H:%M")
                 
-                novo_registro = {
+                # Guarda o registro no topo da lista
+                st.session_state.historico_diario.insert(0, {
                     "data": data_registro,
                     "foco": foco_dia,
                     "cansaco": cansaco_fisico,
-                    "pontos_fortes": o_que_foi_bem,
-                    "pontos_melhorar": o_que_ajustar,
-                    "resumo": texto_completo,
-                    "resumo_dia": resumo_dia
-                }
-                
-                uid = globals().get("user_id", st.session_state.get("user_id", None))
-                if uid:
-                    novo_registro["user_id"] = uid
-
-                # SALVAR NO SUPABASE (NUVEM)
-                salvo_na_nuvem = False
-                if client_supabase:
-                    try:
-                        client_supabase.table("diario_bordo").insert(novo_registro).execute()
-                        salvo_na_nuvem = True
-                        st.success("✅ Reflexão salva com sucesso no Supabase!")
-                    except Exception as e:
-                        st.error(f"❌ Falha ao gravar no Supabase: {e}")
-
-                # Guarda localmente para exibição imediata
-                st.session_state.historico_diario.insert(0, novo_registro)
-
-                if not salvo_na_nuvem:
-                    st.warning("⚠️ Atenção: Não foi possível gravar na nuvem. Os dados sumirão se recarregar a página.")
-
+                    "resumo": resumo_dia
+                })
+                st.success("Reflexão salva com sucesso no histórico!")
                 st.rerun()
             else:
                 st.warning("Escreva sua reflexão antes de clicar em salvar.")
 
-    # 3. EXIBIÇÃO DO HISTÓRICO DE ANOTAÇÕES SALVAS
+    # 2. EXIBIÇÃO DO HISTÓRICO DE ANOTAÇÕES SALVAS
     st.markdown("---")
     st.subheader("📜 Histórico de Reflexões Salvas")
 
-    if not historico_exibicao:
+    if len(st.session_state.historico_diario) == 0:
         st.info("Nenhuma reflexão registrada ainda. Preencha o formulário acima para salvar sua primeira anotação.")
     else:
-        for idx, reg in enumerate(historico_exibicao):
-            data_disp = reg.get("data", "Sem data")
-            foco_disp = reg.get("foco", reg.get("foco_dia", "N/A"))
-            cansaco_disp = reg.get("cansaco", reg.get("cansaco_fisico", "N/A"))
-            resumo_disp = reg.get("resumo", reg.get("resumo_dia", ""))
-
-            with st.expander(f"📅 Registro de {data_disp} — Foco: {foco_disp}/5 | Cansaço: {cansaco_disp}/5", expanded=(idx == 0)):
-                if reg.get("pontos_fortes"):
-                    st.success(f"**🌟 O que correu bem:**\n\n{reg.get('pontos_fortes')}")
-                if reg.get("pontos_melhorar"):
-                    st.warning(f"**🛠️ O que precisa ser ajustado para amanhã:**\n\n{reg.get('pontos_melhorar')}")
-                if resumo_disp:
-                    st.write("**💬 Resumo / Reflexão:**")
-                    st.write(resumo_disp)
+        for idx, reg in enumerate(st.session_state.historico_diario):
+            with st.expander(f"📅 Registro de {reg['data']} — Foco: {reg['foco']}/5 | Cansaço: {reg['cansaco']}/5", expanded=(idx == 0)):
+                st.write("**💬 O que correu bem e o que precisa ser ajustado:**")
+                st.write(reg["resumo"])
 # ====================================================
 # MÓDULO 21: PLAYER DE ÁUDIO
 # ====================================================
