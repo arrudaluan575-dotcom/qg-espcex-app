@@ -967,91 +967,44 @@ elif menu == "📝 Registro de Questões":
 # MÓDULO 9: Caderno de Bizus & Erros
 # -----------------------------------------------------------------------------
 elif menu == "📕 Caderno de Bizus & Erros":
-   
     st.title("📕 Caderno de Bizus Táticos e Erros")
 
-    # 1. Garante a criação da tabela no SQLite local
-    def init_db_erros():
-        conn = sqlite3.connect("dados_qg.db")
-        c = conn.cursor()
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS caderno_erros (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                data TEXT,
-                materia TEXT,
-                assunto TEXT,
-                motivo TEXT,
-                bisu TEXT,
-                sanado INTEGER DEFAULT 0
-            )
-        ''')
-        conn.commit()
-        conn.close()
-
-    init_db_erros()
-
-    # Obtém a lista de matérias do edital ou usa a lista padrão como fallback
-    materias_padrao = ["Português", "Matemática", "História", "Geografia", "Inglês", "Física", "Química"]
-    if "db" in globals() and isinstance(db, dict) and "edital" in db and db["edital"]:
-        try:
-            df_edital = pd.DataFrame(db["edital"])
-            if "Matéria" in df_edital.columns:
-                materias_padrao = sorted(list(df_edital["Matéria"].unique()))
-        except Exception:
-            pass
-
-    # 2. Formuário para cadastrar novo Bisu
     with st.expander("➕ Cadastrar Novo Bisu", expanded=True):
         with st.form("form_e", clear_on_submit=True):
+            df_edital = pd.DataFrame(db["edital"])
             c1, c2 = st.columns(2)
-            mat_e = c1.selectbox("Matéria", materias_padrao)
+            mat_e = c1.selectbox("Matéria", sorted(list(df_edital["Matéria"].unique())))
             assunto_e = c2.text_input("Assunto / Questão")
 
             motivo = st.text_area("Qual foi a pegadinha / erro?")
             bisu = st.text_area("Bisu de Correção Tática")
 
             if st.form_submit_button("📌 Salvar Bisu"):
-                if assunto_e.strip() or motivo.strip() or bisu.strip():
-                    conn = sqlite3.connect("dados_qg.db")
-                    c = conn.cursor()
-                    c.execute('''
-                        INSERT INTO caderno_erros (data, materia, assunto, motivo, bisu, sanado)
-                        VALUES (?, ?, ?, ?, ?, 0)
-                    ''', (str(datetime.date.today()), mat_e, assunto_e, motivo, bisu))
-                    conn.commit()
-                    conn.close()
-                    st.success("📌 Bisu registrado com sucesso no banco de dados local!")
-                    st.rerun()
-                else:
-                    st.warning("Preencha as informações do bisu antes de salvar.")
+                novo_e = {
+                    "id": len(db["erros"]) + 1, "Data": str(datetime.date.today()),
+                    "Matéria": mat_e, "Assunto": assunto_e, "Motivo": motivo,
+                    "Bisu": bisu, "Sanado": False
+                }
+                db["erros"].append(novo_e)
+                salvar_dados_usuario(user_atual, db)
+                st.success("Bisu registrado!")
+                st.rerun()
 
     st.markdown("---")
-
-    # 3. Consulta e exibição dos bizus pendentes na base de dados
-    conn = sqlite3.connect("dados_qg.db")
-    c = conn.cursor()
-    c.execute("SELECT id, data, materia, assunto, motivo, bisu FROM caderno_erros WHERE sanado = 0 ORDER BY id DESC")
-    erros_pendentes = c.fetchall()
-    conn.close()
-
+    erros_pendentes = [e for e in db.get("erros", []) if not e.get("Sanado", False)]
     if not erros_pendentes:
         st.success("🎉 Nenhum bisu pendente de revisão!")
     else:
         for err in erros_pendentes:
-            err_id, err_data, err_mat, err_assunto, err_motivo, err_bisu = err
-            st.markdown(f"### ⚔️ [{err_mat}] - {err_assunto}")
-            st.markdown(f"**Causa:** {err_motivo}")
-            st.info(f"💡 **BISU:** {err_bisu}")
-            
-            if st.button(f"✅ Marcar como Sanado #{err_id}", key=f"btn_s_{err_id}"):
-                conn = sqlite3.connect("dados_qg.db")
-                c = conn.cursor()
-                c.execute("UPDATE caderno_erros SET sanado = 1 WHERE id = ?", (err_id,))
-                conn.commit()
-                conn.close()
-                st.success("✅ Bisu marcado como sanado!")
+            st.markdown(f"### ⚔️ [{err['Matéria']}] - {err['Assunto']}")
+            st.markdown(f"**Causa:** {err['Motivo']}")
+            st.info(f"💡 **BISU:** {err['Bisu']}")
+            if st.button(f"✅ Marcar como Sanado #{err['id']}", key=f"btn_s_{err['id']}"):
+                err["Sanado"] = True
+                salvar_dados_usuario(user_atual, db)
                 st.rerun()
             st.markdown("---")
+
 # -----------------------------------------------------------------------------
 # MÓDULO 10: Simulados
 # -----------------------------------------------------------------------------
