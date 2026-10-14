@@ -1709,20 +1709,21 @@ elif menu == "📖 Diário de Bordo":
 
     st.info(f"💡 **Frase do Dia:** {random.choice(frases_eb)}")
 
-    # Captura a conexão do Supabase do escopo global ou session_state
+    # Captura a conexão do Supabase
     client_supabase = globals().get("supabase", st.session_state.get("supabase", None))
 
-    # 1. CARREGAR REGISTROS DA NUVEM (SUPABASE)
+    # 1. CARREGAR REGISTOS DA NUVEM (SUPABASE)
     registos_nuvem = []
     if client_supabase:
         try:
-            res = client_supabase.table("diario_bordo").select("*").order("id", ascending=False).execute()
+            # SINTAXE CORRIGIDA: usa desc=True em vez de ascending=False
+            res = client_supabase.table("diario_bordo").select("*").order("id", desc=True).execute()
             if res.data:
                 registos_nuvem = res.data
         except Exception as e:
             st.error(f"⚠️ Erro ao carregar histórico do Supabase: {e}")
 
-    # Fallback para a sessão local caso a nuvem não retorne dados
+    # Fallback para a sessão local
     if "historico_diario" not in st.session_state:
         st.session_state.historico_diario = []
 
@@ -1781,7 +1782,7 @@ elif menu == "📖 Diário de Bordo":
                     except Exception as e:
                         st.error(f"❌ Falha ao gravar no Supabase: {e}")
 
-                # Também guarda localmente para atualização imediata na tela
+                # Guarda localmente para exibição imediata
                 st.session_state.historico_diario.insert(0, novo_registro)
 
                 if not salvo_na_nuvem:
