@@ -328,7 +328,12 @@ menu = st.sidebar.radio(
       "📅 Cronograma Dinâmico",
       "🔗 Hub de Links",
       "📖 Diário de Bordo",
-      "🎧 Player de Áudio"
+      "🎧 Player de Áudio",
+        "⚙️ Configurações do QG",
+        "📅 Calendário Tático",
+        "🛡️ Módulo 24 - Painel do Administrador"
+
+
     ]
 )
 
@@ -553,100 +558,6 @@ elif menu == "🏋️ Treino TAF + Spotify":
         "🎧 Spotify Player Integrado"
     ])
 
-    # ----------------------------------------------------
-    # ABA 1: CADASTRAR TREINO (05H)
-    # ----------------------------------------------------
-    with aba_registro:
-        st.markdown("""
-        **Índices Mínimos Masculinos (EsPCEx):**
-        - 🏃‍♂️ **Corrida 12 min:** Mínimo `2.450 metros`
-        - 💪 **Flexão de Braço:** Mínimo `21 repetições`
-        - 🧘‍♂️ **Abdominal Supra:** Mínimo `30 repetições` (em 1 minuto)
-        - 🏋️‍♂️ **Barra Fixa:** Mínimo `3 repetições`
-        """)
-
-        with st.form("form_taf", clear_on_submit=True):
-            col_t1, col_t2 = st.columns(2)
-            data_treino = col_t1.date_input("Data do Treino", datetime.date.today())
-            modalidade = col_t2.selectbox("Foco Principal", [
-                "Treino Completo TAF",
-                "Corrida de Tiro/Resistência",
-                "Calistenia (Barra/Flexão/Abs)",
-                "Simulado TAF Oficial"
-            ])
-
-            c_f1, c_f2, c_f3, c_f4 = st.columns(4)
-            flexoes = c_f1.number_input("Flexões de Braço", min_value=0, value=22)
-            abdominais = c_f2.number_input("Abdominais (1 min)", min_value=0, value=32)
-            barras = c_f3.number_input("Barra Fixa", min_value=0, value=4)
-            corrida_m = c_f4.number_input("Corrida 12 min (Metros)", min_value=0, value=2500, step=50)
-
-            obs_taf = st.text_input("Observações do Treino")
-
-            if st.form_submit_button("⚔️ Registrar Treino TAF"):
-                ok_flex = flexoes >= 21
-                ok_abs = abdominais >= 30
-                ok_bar = barras >= 3
-                ok_cor = corrida_m >= 2450
-                aprovado_taf = ok_flex and ok_abs and ok_bar and ok_cor
-                indice_str = "✅ APROVADO" if aprovado_taf else "⚠️ ABAIXO"
-
-                # Guarda o registo na base de dados SQLite local
-                conn = sqlite3.connect("dados_qg.db")
-                c = conn.cursor()
-                c.execute('''
-                    INSERT INTO treinos_taf (data, foco, flexoes, abdominais, barras, corrida_m, indice_minimo, observacoes)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (str(data_treino), modalidade, flexoes, abdominais, barras, corrida_m, indice_str, obs_taf))
-                conn.commit()
-                conn.close()
-
-                if aprovado_taf:
-                    st.success("🎉 EXCELENTE! Atingiu todos os índices mínimos do TAF da EsPCEx!")
-                else:
-                    st.warning("Manter a constância nos treinos!")
-                st.rerun()
-
-    # ----------------------------------------------------
-    # ABA 2: EVOLUÇÃO FÍSICA (GRÁFICOS & TABELA)
-    # ----------------------------------------------------
-    with aba_evolucao:
-        conn = sqlite3.connect("dados_qg.db")
-        try:
-            df_taf = pd.read_sql_query('''
-                SELECT 
-                    data AS "Data",
-                    foco AS "Foco",
-                    flexoes AS "Flexões",
-                    abdominais AS "Abdominais",
-                    barras AS "Barra",
-                    corrida_m AS "Corrida (m)",
-                    indice_minimo AS "Índice Mínimo",
-                    observacoes AS "Observações"
-                FROM treinos_taf
-                ORDER BY id ASC
-            ''', conn)
-        except Exception:
-            df_taf = pd.DataFrame()
-        finally:
-            conn.close()
-
-        if not df_taf.empty:
-            col_g_taf1, col_g_taf2 = st.columns(2)
-            with col_g_taf1:
-                fig_cor = px.line(df_taf, x="Data", y="Corrida (m)", markers=True, title="Evolução na Corrida de 12 Minutos")
-                fig_cor.add_hline(y=2450, line_dash="dash", line_color="green", annotation_text="Mínimo EsPCEx (2450m)")
-                fig_cor.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="#e0e6ed")
-                st.plotly_chart(fig_cor, use_container_width=True)
-
-            with col_g_taf2:
-                fig_rep = px.line(df_taf, x="Data", y=["Flexões", "Abdominais", "Barra"], markers=True, title="Repetições nos Exercícios de Força")
-                fig_rep.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="#e0e6ed")
-                st.plotly_chart(fig_rep, use_container_width=True)
-
-            st.dataframe(df_taf, use_container_width=True)
-        else:
-            st.info("Nenhum treino TAF cadastrado até o momento.")
 
     # ----------------------------------------------------
     # ABA 3: SPOTIFY PLAYER INTEGRADO
@@ -1267,109 +1178,98 @@ elif menu == "📝 Registro de Questões":
 # -----------------------------------------------------------------------------
 # MÓDULO 9: Caderno de Bizus & Erros
 # -----------------------------------------------------------------------------
-elif menu == "📅 Módulo 9 - Ciclo de Estudos & Cronograma":
+elif "bizu" in menu.lower() or "erros" in menu.lower():
     import sqlite3
     import datetime
     import pandas as pd
 
-    st.title("📅 Módulo 9 - Ciclo de Estudos & Cronograma Semanal")
-    st.caption("Planeamento e controlo de horas de estudo por matéria no ciclo tático.")
+    st.title("📕 Caderno de Bizus Táticos e Erros")
+    st.caption("Central de registo de erros, pegadinhas e correções táticas para revisão.")
 
     # 1. Garante a criação da tabela no SQLite local
-    def init_db_ciclo():
+    def init_db_erros():
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS ciclo_estudos (
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS caderno_erros (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                data TEXT,
                 materia TEXT,
-                horas_meta REAL,
-                horas_cumpridas REAL DEFAULT 0.0,
-                status TEXT DEFAULT 'Em Andamento',
-                data_atualizacao TEXT
+                assunto TEXT,
+                motivo TEXT,
+                bisu TEXT,
+                sanado INTEGER DEFAULT 0
             )
-        """)
+        ''')
         conn.commit()
         conn.close()
 
-    init_db_ciclo()
+    init_db_erros()
 
-    # 2. Formulário para adicionar meta no ciclo
-    with st.expander("➕ Adicionar Meta no Ciclo de Estudos", expanded=False):
-        with st.form("form_ciclo", clear_on_submit=True):
-            col_c1, col_c2 = st.columns(2)
-            
-            # Procura matérias do edital local do SQLite ou usa lista padrão de segurança
-            materias_padrao = ["Português", "Matemática", "História", "Geografia", "Inglês", "Física", "Química", "EFA / Técnica"]
-            conn = sqlite3.connect("dados_qg.db")
-            try:
-                df_e = pd.read_sql_query("SELECT DISTINCT materia FROM edital_verticalizado", conn)
-                if not df_e.empty and "materia" in df_e.columns:
-                    materias_padrao = sorted(df_e["materia"].dropna().tolist())
-            except Exception:
-                pass
-            finally:
-                conn.close()
-
-            materia_sel = col_c1.selectbox("Matéria / Disciplina", materias_padrao)
-            horas_meta_input = col_c2.number_input("Meta de Horas no Ciclo", min_value=0.5, value=4.0, step=0.5)
-
-            if st.form_submit_button("📌 Salvar Meta no Ciclo"):
-                conn = sqlite3.connect("dados_qg.db")
-                c = conn.cursor()
-                sql_insert = "INSERT INTO ciclo_estudos (materia, horas_meta, horas_cumpridas, status, data_atualizacao) VALUES (?, ?, 0.0, 'Em Andamento', ?)"
-                c.execute(sql_insert, (materia_sel, float(horas_meta_input), str(datetime.date.today())))
-                conn.commit()
-                conn.close()
-                st.success("Meta adicionada ao Ciclo de Estudos!")
-                st.rerun()
-
-    st.markdown("---")
-
-    # 3. Exibição e Lançamento de Horas Estudadas
+    # Obter matérias cadastradas no edital local do SQLite ou lista de reserva
+    materias_padrao = ["Português", "Matemática", "História", "Geografia", "Inglês", "Física", "Química", "EFA / Técnica"]
     conn = sqlite3.connect("dados_qg.db")
     try:
-        sql_select = "SELECT id, materia, horas_meta, horas_cumpridas, status FROM ciclo_estudos WHERE status != 'Arquivado' ORDER BY id ASC"
-        df_ciclo = pd.read_sql_query(sql_select, conn)
+        df_edital = pd.read_sql_query("SELECT DISTINCT materia AS 'Matéria' FROM edital_verticalizado", conn)
+        if not df_edital.empty and "Matéria" in df_edital.columns:
+            materias_padrao = sorted(df_edital["Matéria"].dropna().tolist())
     except Exception:
-        df_ciclo = pd.DataFrame()
+        pass
     finally:
         conn.close()
 
-    if df_ciclo.empty:
-        st.info("Nenhuma matéria cadastrada no ciclo de estudos atual.")
+    # 2. Formulário para cadastrar novo Bisu
+    with st.expander("➕ Cadastrar Novo Bisu", expanded=True):
+        with st.form("form_e", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            mat_e = c1.selectbox("Matéria", materias_padrao)
+            assunto_e = c2.text_input("Assunto / Questão")
+
+            motivo = st.text_area("Qual foi a pegadinha / erro?")
+            bisu = st.text_area("Bisu de Correção Tática")
+
+            if st.form_submit_button("📌 Salvar Bisu"):
+                if assunto_e.strip() or motivo.strip() or bisu.strip():
+                    conn = sqlite3.connect("dados_qg.db")
+                    c = conn.cursor()
+                    c.execute('''
+                        INSERT INTO caderno_erros (data, materia, assunto, motivo, bisu, sanado)
+                        VALUES (?, ?, ?, ?, ?, 0)
+                    ''', (str(datetime.date.today()), mat_e, assunto_e, motivo, bisu))
+                    conn.commit()
+                    conn.close()
+                    st.success("📌 Bisu registrado com sucesso na base de dados local!")
+                    st.rerun()
+                else:
+                    st.warning("Preencha as informações do bisu antes de salvar.")
+
+    st.markdown("---")
+
+    # 3. Exibição dos bizus pendentes na base de dados SQLite
+    conn = sqlite3.connect("dados_qg.db")
+    c = conn.cursor()
+    c.execute("SELECT id, data, materia, assunto, motivo, bisu FROM caderno_erros WHERE sanado = 0 ORDER BY id DESC")
+    erros_pendentes = c.fetchall()
+    conn.close()
+
+    if not erros_pendentes:
+        st.success("🎉 Nenhum bisu pendente de revisão!")
     else:
-        st.subheader("🎯 Progresso do Ciclo Ativo")
-        
-        for _, row in df_ciclo.iterrows():
-            c_id = int(row["id"])
-            mat = row["materia"]
-            meta = float(row["horas_meta"])
-            cumprido = float(row["horas_cumpridas"])
-            progresso = min(1.0, cumprido / meta) if meta > 0 else 0.0
-
-            with st.container():
-                col_m1, col_m2, col_m3 = st.columns([3, 2, 2])
-                col_m1.markdown(f"### 📖 {mat}")
-                col_m1.caption(f"Horas cumpridas: **{cumprido:.1f}h** / **{meta:.1f}h**")
-                col_m2.progress(progresso)
-
-                with col_m3:
-                    add_h = st.number_input("Adicionar Horas (+h)", min_value=0.25, max_value=10.0, value=1.0, step=0.25, key=f"inp_h_{c_id}")
-                    if st.button("➕ Registrar Horas", key=f"btn_add_{c_id}"):
-                        novas_horas = cumprido + add_h
-                        novo_status = "Concluído" if novas_horas >= meta else "Em Andamento"
-                        
-                        conn = sqlite3.connect("dados_qg.db")
-                        c = conn.cursor()
-                        sql_update = "UPDATE ciclo_estudos SET horas_cumpridas = ?, status = ?, data_atualizacao = ? WHERE id = ?"
-                        c.execute(sql_update, (novas_horas, novo_status, str(datetime.date.today()), c_id))
-                        conn.commit()
-                        conn.close()
-                        st.success(f"Registradas +{add_h}h em {mat}!")
-                        st.rerun()
-
-                st.markdown("---")
+        for err in erros_pendentes:
+            err_id, err_data, err_mat, err_assunto, err_motivo, err_bisu = err
+            st.markdown(f"### ⚔️ [{err_mat}] - {err_assunto}")
+            st.markdown(f"**Causa:** {err_motivo}")
+            st.info(f"💡 **BISU:** {err_bisu}")
+            
+            if st.button(f"✅ Marcar como Sanado #{err_id}", key=f"btn_sanar_bisu_{err_id}"):
+                conn = sqlite3.connect("dados_qg.db")
+                c = conn.cursor()
+                c.execute("UPDATE caderno_erros SET sanado = 1 WHERE id = ?", (err_id,))
+                conn.commit()
+                conn.close()
+                st.success("✅ Bisu marcado como sanado!")
+                st.rerun()
+            st.markdown("---")
 # -----------------------------------------------------------------------------
 # MÓDULO 10: Simulados
 # -----------------------------------------------------------------------------
@@ -2246,3 +2146,901 @@ elif menu == "🎧 Player de Áudio":
         st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3")
         st.markdown("**Ondas Binaurais (Alfa - Leitura NIP)**")
         st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3")
+# ====================================================
+# #MODULO_22_CENTRAL_DE_CONFIGURACOES
+elif "módulo 22" in menu.lower() or "configurações" in menu.lower():
+    import sqlite3
+    import datetime
+    import os
+    import json
+    import pandas as pd
+    import streamlit as st
+
+    # Hashtag de identificação tática na interface
+    st.markdown("### `#Modulo22_Configuracoes_QG`")
+    st.title("⚙️ Módulo 22 - Central de Configurações & Painel de Controle")
+    st.caption("Gerenciamento integral de identidade tática, parâmetros de estudo, segurança de acesso e banco de dados local.")
+
+    # -----------------------------------------------------------------------------
+    # 1. INFRAESTRUTURA DE CONFIGURAÇÕES NO SQLITE
+    # -----------------------------------------------------------------------------
+    def init_db_config():
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS config_qg (
+                chave TEXT PRIMARY KEY,
+                valor TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    init_db_config()
+
+    def set_config(chave, valor):
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO config_qg (chave, valor) VALUES (?, ?)", (chave, str(valor)))
+        conn.commit()
+        conn.close()
+
+    def get_config(chave, padrao=""):
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute("SELECT valor FROM config_qg WHERE chave = ?", (chave,))
+        res = c.fetchone()
+        conn.close()
+        return res[0] if res else padrao
+
+    def get_all_configs():
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute("SELECT chave, valor FROM config_qg")
+        rows = c.fetchall()
+        conn.close()
+        return dict(rows)
+
+    # -----------------------------------------------------------------------------
+    # 2. NAVEGAÇÃO POR ABAS PROFISSIONAIS
+    # -----------------------------------------------------------------------------
+    aba_perfil, aba_parametros, aba_seguranca, aba_banco, aba_manutencao = st.tabs([
+        "🎖️ Perfil & Identidade",
+        "🎯 Parâmetros & Metas",
+        "🔒 Acesso & Autenticação",
+        "💾 Banco de Dados & Backup",
+        "🛠️ Ferramentas & Restauração"
+    ])
+
+    # -----------------------------------------------------------------------------
+    # ABA 1: PERFIL & IDENTIDADE TÁTICA
+    # -----------------------------------------------------------------------------
+    with aba_perfil:
+        st.subheader("🎖️ Perfil do Cadete & Personalização Tática")
+        st.caption("Edite os dados principais exibidos no cabeçalho e relatórios da plataforma.")
+
+        with st.form("form_perfil_master"):
+            col_p1, col_p2 = st.columns(2)
+            nome_guerra = col_p1.text_input("Nome de Guerra", value=get_config("nome_guerra", "Arruda"))
+            nome_completo = col_p2.text_input("Nome Completo", value=get_config("nome_completo", "Luan de Cristo Arruda"))
+
+            col_p3, col_p4 = st.columns(2)
+            arma_interesse = col_p3.selectbox(
+                "Arma / Especialização de Interesse (EsPCEx)",
+                ["Infantaria (Selva)", "Cavalaria", "Artilharia", "Engenharia", "Comunicações", "Material Bélico / Intendência"],
+                index=0
+            )
+            instituicao_efa = col_p4.text_input("Instituição EFA", value=get_config("instituicao_efa", "Escola Família Agrícola Margarida Alves"))
+
+            lema_tatico = st.text_input("Lema Tático / Frase Motivacional", value=get_config("lema_tatico", "A vitória ama a preparação!"))
+            
+            st.markdown("---")
+            if st.form_submit_button("💾 Salvar Alterações do Perfil", use_container_width=True):
+                set_config("nome_guerra", nome_guerra)
+                set_config("nome_completo", nome_completo)
+                set_config("arma_interesse", arma_interesse)
+                set_config("instituicao_efa", instituicao_efa)
+                set_config("lema_tatico", lema_tatico)
+                st.success("✅ Perfil tático atualizado com sucesso!")
+                st.rerun()
+
+    # -----------------------------------------------------------------------------
+    # ABA 2: PARÂMETROS DE ESTUDO E TAF
+    # -----------------------------------------------------------------------------
+    with aba_parametros:
+        st.subheader("🎯 Metas Globais do Sistema e Índices do TAF")
+        
+        with st.form("form_parametros_qg"):
+            st.markdown("##### ⏱️ Metas Diárias de Estudos & Pomodoro")
+            c_m1, c_m2, c_m3 = st.columns(3)
+            meta_pomodoros = c_m1.number_input("Meta Diária de Pomodoros", min_value=1, max_value=20, value=int(get_config("meta_pomodoros", "8")))
+            tempo_pomodoro = c_m2.number_input("Duração do Bloco (Minutos)", min_value=15, max_value=60, value=int(get_config("tempo_pomodoro", "25")))
+            tempo_descanso = c_m3.number_input("Pausa Curta (Minutos)", min_value=3, max_value=15, value=int(get_config("tempo_descanso", "5")))
+
+            st.markdown("---")
+            st.markdown("##### 🏋️‍♂️ Índices Mínimos do TAF EsPCEx")
+            c_t1, c_t2, c_t3, c_t4 = st.columns(4)
+            taf_corrida = c_t1.number_input("Corrida 12 min (m)", min_value=2000, value=int(get_config("taf_corrida", "2450")), step=50)
+            taf_flexao = c_t2.number_input("Flexões de Braço", min_value=10, value=int(get_config("taf_flexao", "21")))
+            taf_abdominal = c_t3.number_input("Abdominais (1 min)", min_value=15, value=int(get_config("taf_abdominal", "30")))
+            taf_barra = c_t4.number_input("Barra Fixa", min_value=1, value=int(get_config("taf_barra", "3")))
+
+            if st.form_submit_button("⚙️ Atualizar Parâmetros do Sistema", use_container_width=True):
+                set_config("meta_pomodoros", meta_pomodoros)
+                set_config("tempo_pomodoro", tempo_pomodoro)
+                set_config("tempo_descanso", tempo_descanso)
+                set_config("taf_corrida", taf_corrida)
+                set_config("taf_flexao", taf_flexao)
+                set_config("taf_abdominal", taf_abdominal)
+                set_config("taf_barra", taf_barra)
+                st.success("✅ Parâmetros globais atualizados!")
+                st.rerun()
+
+    # -----------------------------------------------------------------------------
+    # ABA 3: SEGURANÇA, CREDENCIAIS E CONEXÕES
+    # -----------------------------------------------------------------------------
+    with aba_seguranca:
+        st.subheader("🔒 Segurança da Conta & Controle de Acesso")
+        
+        with st.form("form_seguranca_senha"):
+            st.markdown("##### 🔑 Alterar Senha de Acesso ao QG")
+            col_s1, col_s2 = st.columns(2)
+            nova_senha = col_s1.text_input("Nova Senha", type="password")
+            confirma_senha = col_s2.text_input("Confirmar Nova Senha", type="password")
+
+            if st.form_submit_button("🔒 Salvar Nova Senha"):
+                if nova_senha.strip() != "" and nova_senha == confirma_senha:
+                    set_config("senha_acesso", nova_senha)
+                    st.success("✅ Senha alterada com sucesso! Utilize-a no próximo login.")
+                else:
+                    st.error("As senhas informadas não coincidem ou estão vazias.")
+
+        st.markdown("---")
+        st.markdown("##### 📱 Gestão de Conexões Salvas (Cookies de 30 Dias)")
+        st.caption("Caso deseje encerrar a sessão em todos os dispositivos onde o login foi salvo:")
+
+        if st.button("🧹 Revogar Todas as Sessões Ativas", key="btn_clear_sessions_master", use_container_width=True):
+            conn = sqlite3.connect("dados_qg.db")
+            c = conn.cursor()
+            try:
+                c.execute("DELETE FROM sessoes_usuario")
+                conn.commit()
+                st.success("✅ Todas as conexões salvas foram apagadas. Será necessário efetuar login novamente.")
+            except Exception as e:
+                st.error(f"Erro ao limpar sessões: {e}")
+            finally:
+                conn.close()
+            st.rerun()
+
+    # -----------------------------------------------------------------------------
+    # ABA 4: BANCO DE DADOS & BACKUPS
+    # -----------------------------------------------------------------------------
+    with aba_banco:
+        st.subheader("💾 Gestão da Base de Dados Local (`dados_qg.db`)")
+        st.caption("Efetue o download dos seus dados ou inspecione o uso do armazenamento SQLite.")
+
+        col_b1, col_b2 = st.columns(2)
+
+        with col_b1:
+            st.markdown("##### 📥 Exportar Backup Completo")
+            if os.path.exists("dados_qg.db"):
+                with open("dados_qg.db", "rb") as fp:
+                    st.download_button(
+                        label="📦 Baixar Banco SQLite (.db)",
+                        data=fp,
+                        file_name=f"backup_qg_espcex_{datetime.date.today()}.db",
+                        mime="application/x-sqlite3",
+                        use_container_width=True
+                    )
+
+        with col_b2:
+            st.markdown("##### 📄 Exportar Configurações em JSON")
+            all_configs = get_all_configs()
+            json_str = json.dumps(all_configs, indent=4, ensure_ascii=False)
+            st.download_button(
+                label="📄 Baixar Arquivo JSON de Configurações",
+                data=json_str,
+                file_name=f"configuracoes_qg_{datetime.date.today()}.json",
+                mime="application/json",
+                use_container_width=True
+            )
+
+        st.markdown("---")
+        st.markdown("##### 📊 Diagnóstico de Tabelas e Registros Salvos")
+
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        tabelas = [r[0] for r in c.fetchall() if r[0] != "sqlite_sequence"]
+
+        diag_data = []
+        for tb in tabelas:
+            try:
+                c.execute(f"SELECT COUNT(*) FROM {tb}")
+                count = c.fetchone()[0]
+                diag_data.append({"Módulo / Tabela": tb, "Total de Registros": count, "Status": "🟢 Ativo"})
+            except Exception:
+                diag_data.append({"Módulo / Tabela": tb, "Total de Registros": 0, "Status": "🔴 Erro"})
+        conn.close()
+
+        if diag_data:
+            st.dataframe(pd.DataFrame(diag_data), use_container_width=True)
+
+    # -----------------------------------------------------------------------------
+    # ABA 5: FERRAMENTAS & RESETAÇÃO SELETIVA
+    # -----------------------------------------------------------------------------
+    with aba_manutencao:
+        st.subheader("🛠️ Ferramentas de Manutenção Avançada")
+        st.warning("⚠️ **Atenção:** As ações abaixo alteram diretamente os dados das tabelas locais.")
+
+        with st.expander("🗑️ Limpeza Seletiva de Módulos (Zerar Dados)"):
+            st.caption("Selecione qual módulo deseja resetar individualmente sem afetar os outros:")
+
+            c_r1, c_r2, c_r3 = st.columns(3)
+
+            if c_r1.button("🔥 Zerar Simulados", use_container_width=True):
+                conn = sqlite3.connect("dados_qg.db"); c = conn.cursor()
+                c.execute("DELETE FROM simulados"); conn.commit(); conn.close()
+                st.success("Tabela de simulados zerada!")
+                st.rerun()
+
+            if c_r2.button("🔥 Zerar Questões", use_container_width=True):
+                conn = sqlite3.connect("dados_qg.db"); c = conn.cursor()
+                c.execute("DELETE FROM baterias_questoes"); conn.commit(); conn.close()
+                st.success("Histórico de questões zerado!")
+                st.rerun()
+
+            if c_r3.button("🔥 Zerar Caderno de Bizus", use_container_width=True):
+                conn = sqlite3.connect("dados_qg.db"); c = conn.cursor()
+                c.execute("DELETE FROM caderno_erros"); conn.commit(); conn.close()
+                st.success("Caderno de bizus zerado!")
+                st.rerun()
+
+        st.markdown("---")
+        st.markdown("##### 🧹 Otimização do Banco de Dados (VACUUM)")
+        if st.button("⚡ Executar Otimização e Compactação do SQLite", use_container_width=True):
+            conn = sqlite3.connect("dados_qg.db")
+            conn.execute("VACUUM")
+            conn.close()
+            st.success("✅ Banco de dados otimizado com sucesso!")
+# ====================================================
+ # #MODULO_23_CALENDARIO_TATICO
+# ====================================================
+elif "módulo 23" in menu.lower() or "calendário" in menu.lower():
+    import sqlite3
+    import datetime
+    import pandas as pd
+    import streamlit as st
+
+    st.markdown("### `#Modulo23_Calendario_Tatico`")
+    st.title("📅 Módulo 23 - Calendário Tático & Agenda de Eventos")
+    st.caption("Planejamento cronológico de provas, alternâncias EFA, simulados, TAF e compromissos operacionais.")
+
+    # -----------------------------------------------------------------------------
+    # 1. INFRAESTRUTURA DE BANCO DE DADOS LOCAL (SQLITE)
+    # -----------------------------------------------------------------------------
+    def init_db_calendario():
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS calendario_qg (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                data_evento TEXT NOT NULL,
+                hora_evento TEXT,
+                titulo TEXT NOT NULL,
+                categoria TEXT NOT NULL,
+                descricao TEXT,
+                prioridade TEXT DEFAULT 'Média',
+                status TEXT DEFAULT 'Pendente'
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    init_db_calendario()
+
+    def adicionar_evento(data_e, hora_e, titulo, categoria, desc, prioridade):
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO calendario_qg (data_evento, hora_evento, titulo, categoria, descricao, prioridade, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'Pendente')
+        """, (str(data_e), str(hora_e), titulo, categoria, desc, prioridade))
+        conn.commit()
+        conn.close()
+
+    def atualizar_status_evento(id_evento, novo_status):
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute("UPDATE calendario_qg SET status = ? WHERE id = ?", (novo_status, id_evento))
+        conn.commit()
+        conn.close()
+
+    def deletar_evento(id_evento):
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute("DELETE FROM calendario_qg WHERE id = ?", (id_evento,))
+        conn.commit()
+        conn.close()
+
+    def carregar_eventos():
+        conn = sqlite3.connect("dados_qg.db")
+        df = pd.read_sql_query("SELECT * FROM calendario_qg ORDER BY data_evento ASC, hora_evento ASC", conn)
+        conn.close()
+        return df
+
+    # -----------------------------------------------------------------------------
+    # 2. NAVEGAÇÃO POR ABAS
+    # -----------------------------------------------------------------------------
+    aba_agenda, aba_novo, aba_gestao = st.tabs([
+        "📋 Agenda & Próximos Eventos",
+        "➕ Cadastrar Novo Compromisso",
+        "🛠️ Gerenciar & Exportar"
+    ])
+
+    # -----------------------------------------------------------------------------
+    # ABA 1: AGENDA & PRÓXIMOS EVENTOS
+    # -----------------------------------------------------------------------------
+    with aba_agenda:
+        df_evt = carregar_eventos()
+        hoje_str = str(datetime.date.today())
+
+        # Métricas Rápidas
+        tot_eventos = len(df_evt) if not df_evt.empty else 0
+        tot_pendentes = len(df_evt[df_evt['status'] == 'Pendente']) if not df_evt.empty else 0
+        tot_futuros = len(df_evt[df_evt['data_evento'] >= hoje_str]) if not df_evt.empty else 0
+
+        c_m1, c_m2, c_m3 = st.columns(3)
+        c_m1.metric("Total de Registros", tot_eventos)
+        c_m2.metric("Eventos Pendentes", tot_pendentes)
+        c_m3.metric("Próximos Compromissos", tot_futuros)
+
+        st.markdown("---")
+        st.subheader("📆 Cronograma Operacional")
+
+        if df_evt.empty:
+            st.info("Nenhum evento registrado no calendário tático. Acesse a aba **'Cadastrar Novo Compromisso'** para adicionar.")
+        else:
+            col_f1, col_f2 = st.columns(2)
+            categorias_disponiveis = df_evt['categoria'].unique().tolist()
+            cat_filtro = col_f1.multiselect("Filtrar por Categoria", options=categorias_disponiveis, default=categorias_disponiveis)
+            status_filtro = col_f2.radio("Filtrar Status", ["Todos", "Pendente", "Concluído"], horizontal=True)
+
+            df_filtrado = df_evt[df_evt['categoria'].isin(cat_filtro)]
+            if status_filtro != "Todos":
+                df_filtrado = df_filtrado[df_filtrado['status'] == status_filtro]
+
+            if df_filtrado.empty:
+                st.warning("Nenhum evento corresponde aos filtros selecionados.")
+            else:
+                for idx, row in df_filtrado.iterrows():
+                    cor_prioridade = "🔴" if row['prioridade'] == "Alta" else ("🟡" if row['prioridade'] == "Média" else "🟢")
+                    status_icone = "✅" if row['status'] == "Concluído" else "⏳"
+                    
+                    titulo_expander = f"{status_icone} {row['data_evento']} ({row['hora_evento']}) — {row['titulo']} [{row['categoria']}] {cor_prioridade}"
+                    
+                    with st.expander(titulo_expander):
+                        st.write(f"**Descrição / Detalhes:** {row['descricao'] if row['descricao'] else 'Sem detalhes adicionais.'}")
+                        st.write(f"**Prioridade:** {row['prioridade']} | **Status:** `{row['status']}`")
+                        
+                        c_a1, c_a2, _ = st.columns([1, 1, 2])
+                        if row['status'] == "Pendente":
+                            if c_a1.button("✅ Marcar Concluído", key=f"btn_concluir_{row['id']}"):
+                                atualizar_status_evento(row['id'], "Concluído")
+                                st.success("Evento concluído!")
+                                st.rerun()
+                        else:
+                            if c_a1.button("🔄 Reabrir Evento", key=f"btn_reabrir_{row['id']}"):
+                                atualizar_status_evento(row['id'], "Pendente")
+                                st.info("Evento reaberto!")
+                                st.rerun()
+                                
+                        if c_a2.button("🗑️ Excluir", key=f"btn_del_{row['id']}"):
+                            deletar_evento(row['id'])
+                            st.warning("Evento removido!")
+                            st.rerun()
+
+    # -----------------------------------------------------------------------------
+    # ABA 2: CADASTRAR NOVO COMPROMISSO
+    # -----------------------------------------------------------------------------
+    with aba_novo:
+        st.subheader("➕ Novo Evento no Calendário")
+        
+        with st.form("form_novo_evento_qg", clear_on_submit=True):
+            col_e1, col_e2 = st.columns(2)
+            titulo_evt = col_e1.text_input("Título do Compromisso / Evento *", placeholder="Ex: Simulado EsPCEx 1º Dia")
+            categoria_evt = col_e2.selectbox(
+                "Categoria *",
+                [
+                    "🎯 Concurso / Prova (EsPCEx)",
+                    "🌾 EFA / AMSP (Alternância / Relatórios)",
+                    "📚 Simulado / Bateria de Questões",
+                    "🏋️ TAF / Teste Físico",
+                    "📌 Compromisso Geral / Estudo"
+                ]
+            )
+
+            col_d1, col_d2, col_d3 = st.columns(3)
+            data_evt = col_d1.date_input("Data do Evento", datetime.date.today())
+            hora_evt = col_d2.time_input("Horário", datetime.time(8, 0))
+            prioridade_evt = col_d3.selectbox("Prioridade", ["Baixa", "Média", "Alta"], index=1)
+
+            descricao_evt = st.text_area("Descrição / Detalhes Táticos", placeholder="Ex: Revisão geral de Química e Física. Verificar documentos.")
+
+            if st.form_submit_button("💾 Salvar Evento no Calendário", use_container_width=True):
+                if titulo_evt.strip() == "":
+                    st.error("O título do compromisso é obrigatório!")
+                else:
+                    adicionar_evento(
+                        data_e=data_evt,
+                        hora_e=hora_evt.strftime("%H:%M"),
+                        titulo=titulo_evt,
+                        categoria=categoria_evt,
+                        desc=descricao_evt,
+                        prioridade=prioridade_evt
+                    )
+                    st.success(f"✅ Compromisso '{titulo_evt}' agendado para {data_evt} com sucesso!")
+                    st.rerun()
+
+    # -----------------------------------------------------------------------------
+    # ABA 3: GERENCIAR & EXPORTAR
+    # -----------------------------------------------------------------------------
+    with aba_gestao:
+        st.subheader("🛠️ Tabela Geral do Calendário (`calendario_qg`)")
+        df_completo = carregar_eventos()
+        
+        if not df_completo.empty:
+            st.dataframe(df_completo, use_container_width=True)
+            
+            csv_data = df_completo.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Baixar Calendário Completo (.csv)",
+                data=csv_data,
+                file_name=f"calendario_tatico_qg_{datetime.date.today()}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        else:
+            st.info("Nenhum dado cadastrado para exportação.")
+#==========================================================================
+# #MODULO_24_PAINEL_ADMINISTRADOR_EXPANDIDO
+#===========================================================================
+elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" in menu.lower():
+    st.markdown("### `#Modulo24_Painel_Administrador`")
+    st.title("🛡️ Módulo 24 - Central Restrita do Administrador")
+    st.caption("Painel de controlo exclusivo: gestão de alertas Telegram, emissão de relatórios master, auditoria e manutenção avançada.")
+
+    # -----------------------------------------------------------------------------
+    # 1. REGISTO DE LOGS E CONFIGURAÇÃO INICIAL
+    # -----------------------------------------------------------------------------
+    import sqlite3
+
+    def init_db_config():
+        conn = sqlite3.connect("dados_qg.db")
+        conn.execute("CREATE TABLE IF NOT EXISTS config_qg (chave TEXT PRIMARY KEY, valor TEXT)")
+        conn.commit()
+        conn.close()
+
+    def get_config(chave, padrao=""):
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute("SELECT valor FROM config_qg WHERE chave = ?", (chave,))
+        res = c.fetchone()
+        conn.close()
+        return res[0] if res else padrao
+
+    def set_config(chave, valor):
+        conn = sqlite3.connect("dados_qg.db")
+        conn.execute("CREATE TABLE IF NOT EXISTS config_qg (chave TEXT PRIMARY KEY, valor TEXT)")
+        conn.execute("INSERT OR REPLACE INTO config_qg (chave, valor) VALUES (?, ?)", (chave, str(valor)))
+        conn.commit()
+        conn.close()
+
+    def get_all_configs():
+        conn = sqlite3.connect("dados_qg.db")
+        conn.execute("CREATE TABLE IF NOT EXISTS config_qg (chave TEXT PRIMARY KEY, valor TEXT)")
+        rows = conn.execute("SELECT chave, valor FROM config_qg").fetchall()
+        conn.close()
+        return dict(rows)
+
+    def get_total_registros(tabela):
+        tabelas_permitidas = {
+            "simulados",
+            "baterias_questoes",
+            "caderno_erros",
+            "diario_bordo",
+            "calendario_qg",
+        }
+        if tabela not in tabelas_permitidas:
+            return 0
+
+        conn = sqlite3.connect("dados_qg.db")
+        try:
+            existe = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (tabela,)
+            ).fetchone()
+            if not existe:
+                return 0
+            return conn.execute(f'SELECT COUNT(*) FROM "{tabela}"').fetchone()[0]
+        finally:
+            conn.close()
+
+    init_db_config()
+
+    def registrar_log(acao, detalhe=""):
+        try:
+            conn = sqlite3.connect("dados_qg.db")
+            c = conn.cursor()
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS logs_sistema (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    data_hora TEXT NOT NULL,
+                    acao TEXT NOT NULL,
+                    detalhe TEXT
+                )
+            """)
+            c.execute(
+                "INSERT INTO logs_sistema (data_hora, acao, detalhe) VALUES (?, ?, ?)",
+                (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), acao, detalhe)
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    pin_admin_salvo = set_config("senha_admin", "1911")
+
+    if "admin_autenticado" not in st.session_state:
+        st.session_state["admin_autenticado"] = False
+
+    # -----------------------------------------------------------------------------
+    # 2. AUTENTICAÇÃO RESTRITA (TELA DE DESBLOQUEIO)
+    # -----------------------------------------------------------------------------
+    if not st.session_state["admin_autenticado"]:
+        st.warning("🔒 **Acesso Restrito:** Digite o PIN / Senha Master do Administrador para desbloquear as ferramentas restritas.")
+        
+        with st.form("form_login_admin_master"):
+            pin_digitado = st.text_input("🔑 PIN / Senha Master", type="password", placeholder="Digite o PIN master")
+            
+            if st.form_submit_button("🔓 Desbloquear Painel Restrito", use_container_width=True):
+                if pin_digitado == pin_admin_salvo:
+                    st.session_state["admin_autenticado"] = True
+                    registrar_log("LOGIN_ADMIN", "Acesso autorizado ao Painel Master")
+                    st.success("✅ Acesso de Administrador concedido!")
+                    st.rerun()
+                else:
+                    registrar_log("FALHA_LOGIN_ADMIN", "Tentativa com PIN incorreto")
+                    st.error("❌ PIN incorreto! Acesso negado.")
+
+    # -----------------------------------------------------------------------------
+    # 3. PAINEL RESTRITO DESBLOQUEADO (TODAS AS FUNCIONALIDADES EXCLUSIVAS)
+    # -----------------------------------------------------------------------------
+    else:
+        col_adm_h1, col_adm_h2 = st.columns([3, 1])
+        col_adm_h1.success("🟢 **Sessão de Administrador Ativa**")
+        if col_adm_h2.button("🔒 Bloquear Painel", use_container_width=True):
+            st.session_state["admin_autenticado"] = False
+            registrar_log("LOGOUT_ADMIN", "Sessão encerrada")
+            st.rerun()
+
+        st.markdown("---")
+
+        aba_telegram, aba_relatorio, aba_import, aba_terminal, aba_logs, aba_telemetria, aba_manutencao, aba_arquivos, aba_pin = st.tabs([
+            "🤖 Bot Telegram",
+            "📄 Relatório Master",
+            "📥 Carga Massiva",
+            "💻 Console SQL",
+            "📜 Logs & Auditoria",
+            "📊 Telemetria",
+            "🚨 Modo Manutenção",
+            "📂 Arquivos",
+            "🔑 Alterar PIN"
+        ])
+
+        # -------------------------------------------------------------------------
+        # ABA 1: CONFIGURAÇÃO DO BOT TELEGRAM (ENVIO DE NOTIFICAÇÕES)
+        # -------------------------------------------------------------------------
+        with aba_telegram:
+            st.subheader("🤖 Configuração e Disparo de Alertas via Telegram")
+            st.caption("Configure as credenciais do seu bot para enviar alertas de simulados, metas e lemas direto para o telemóvel.")
+
+            with st.form("form_config_telegram"):
+                bot_token = st.text_input("Token do Bot Telegram", value=get_config("telegram_bot_token", ""), type="password", placeholder="Ex: 123456789:ABCdefGhIJKlmNoPQRstuVWXyz")
+                chat_id = st.text_input("ID do Chat / Canal Telegram", value=get_config("telegram_chat_id", ""), placeholder="Ex: 987654321 ou @meuchanal")
+
+                if st.form_submit_button("💾 Salvar Configurações do Telegram"):
+                    set_config("telegram_bot_token", bot_token)
+                    set_config("telegram_chat_id", chat_id)
+                    registrar_log("CONFIG_TELEGRAM", "Credenciais do Telegram atualizadas")
+                    st.success("✅ Credenciais do Telegram salvas no banco local!")
+                    st.rerun()
+
+            st.markdown("---")
+            st.markdown("##### 🚀 Testar Disparo de Alerta Instantâneo")
+            mensagem_teste = st.text_area("Mensagem do Alerta", value=f"🎖️ *QG EsPCEx — Mensagem de Teste*\n\nCadete {get_config('nome_guerra', 'Arruda')}, o sistema de notificações restritas está operacional!")
+
+            if st.button("📲 Enviar Notificação de Teste", type="primary", use_container_width=True):
+                token_atual = get_config("telegram_bot_token", "")
+                chat_atual = get_config("telegram_chat_id", "")
+
+                if not token_atual or not chat_atual:
+                    st.error("Configure e salve o Token e Chat ID do Telegram antes de enviar!")
+                else:
+                    try:
+                        import urllib.parse
+                        import urllib.request
+                        
+                        texto_encoded = urllib.parse.quote(mensagem_teste)
+                        url = f"https://api.telegram.org/bot{token_atual}/sendMessage?chat_id={chat_atual}&text={texto_encoded}&parse_mode=Markdown"
+                        
+                        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                        with urllib.request.urlopen(req) as response:
+                            if response.status == 200:
+                                registrar_log("ENVIO_TELEGRAM_SUCESSO", "Mensagem enviada com sucesso")
+                                st.success("✅ Notificação enviada com sucesso para o Telegram!")
+                            else:
+                                st.error(f"Erro ao enviar: Código {response.status}")
+                    except Exception as e:
+                        registrar_log("ENVIO_TELEGRAM_ERRO", str(e))
+                        st.error(f"❌ Falha no disparo do Telegram: {e}")
+
+        # -------------------------------------------------------------------------
+        # ABA 2: GERADOR DE RELATÓRIO MASTER
+        # -------------------------------------------------------------------------
+        with aba_relatorio:
+            st.subheader("📄 Emissão de Relatório Geral de Desempenho")
+            st.caption("Compila o status de todos os módulos num documento formatado pronto para impressão.")
+
+            nome_c = get_config("nome_guerra", "Arruda")
+            meta_c = get_config("meta_concurso", "EsPCEx")
+            arma_c = get_config("arma_interesse", "Infantaria (Selva)")
+            data_hoje = datetime.date.today().strftime("%d/%m/%Y")
+
+            html_relatorio = f"""
+            <html>
+            <head>
+                <style>
+                    body {{ font-family: Arial, sans-serif; margin: 20px; color: #111; }}
+                    h1 {{ color: #2e7d32; border-bottom: 2px solid #2e7d32; padding-bottom: 5px; }}
+                    h2 {{ color: #1b5e20; margin-top: 20px; }}
+                    .box {{ background: #f4f6f4; border-left: 4px solid #2e7d32; padding: 12px; margin-bottom: 15px; }}
+                    table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+                    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                    th {{ background-color: #e8f5e9; }}
+                </style>
+            </head>
+            <body>
+                <h1>🎖️ BOLETIM DE DESEMPENHO E TELEMETRIA DO QG</h1>
+                <div class="box">
+                    <p><b>Cadete:</b> {nome_c} | <b>Alvo:</b> {meta_c} | <b>Especialização:</b> {arma_c}</p>
+                    <p><b>Data de Emissão:</b> {data_hoje} | <b>Status do QG:</b> Operacional</p>
+                </div>
+
+                <h2>📊 Resumo das Bases do SQLite (`dados_qg.db`)</h2>
+                <table>
+                    <tr><th>Módulo / Tabela</th><th>Total de Registos</th></tr>
+                    <tr><td>Simulados Cadastrados</td><td>{get_total_registros('simulados')}</td></tr>
+                    <tr><td>Baterias de Questões</td><td>{get_total_registros('baterias_questoes')}</td></tr>
+                    <tr><td>Bizus & Erros Salvos</td><td>{get_total_registros('caderno_erros')}</td></tr>
+                    <tr><td>Notas no Diário de Bordo</td><td>{get_total_registros('diario_bordo')}</td></tr>
+                    <tr><td>Eventos no Calendário</td><td>{get_total_registros('calendario_qg')}</td></tr>
+                </table>
+
+                <h2>🏋️ Índices Configurados para o TAF</h2>
+                <ul>
+                    <li><b>Corrida 12 min:</b> {get_config('taf_corrida', '2450')} metros</li>
+                    <li><b>Flexões de Braço:</b> {get_config('taf_flexao', '21')} repetições</li>
+                    <li><b>Barra Fixa:</b> {get_config('taf_barra', '3')} repetições</li>
+                    <li><b>Abdominais:</b> {get_config('taf_abdominal', '30')} repetições</li>
+                </ul>
+            </body>
+            </html>
+            """
+
+            st.components.v1.html(html_relatorio, height=380, scrolling=True)
+
+            st.download_button(
+                label="📥 Baixar Relatório Master em HTML (Imprimível)",
+                data=html_relatorio,
+                file_name=f"relatorio_master_qg_{datetime.date.today()}.html",
+                mime="text/html",
+                use_container_width=True
+            )
+
+        # -------------------------------------------------------------------------
+        # ABA 3: CARGA MASSIVA DE DADOS (CSV / EXCEL)
+        # -------------------------------------------------------------------------
+        with aba_import:
+            st.subheader("📥 Carga Massiva de Dados (Upload CSV / Excel)")
+            st.caption("Suba planilhas prontas para alimentar as tabelas do sistema em lote.")
+
+            conn = sqlite3.connect("dados_qg.db")
+            c = conn.cursor()
+            c.execute("SELECT name FROM sqlite_master WHERE type='table';")
+            tabelas_alvo = [r[0] for r in c.fetchall() if r[0] != "sqlite_sequence"]
+            conn.close()
+
+            if tabelas_alvo:
+                tabela_destino = st.selectbox("Selecione a Tabela de Destino", tabelas_alvo)
+                arquivo_upload = st.file_uploader("Selecione o arquivo CSV ou Excel", type=["csv", "xlsx"])
+
+                if arquivo_upload is not None:
+                    try:
+                        if arquivo_upload.name.endswith(".csv"):
+                            df_import = pd.read_csv(arquivo_upload)
+                        else:
+                            df_import = pd.read_excel(arquivo_upload)
+
+                        st.write("🔍 **Pré-visualização dos dados a importar:**")
+                        st.dataframe(df_import.head(5), use_container_width=True)
+
+                        if st.button("🚀 Confirmar Importação em Lote", type="primary", use_container_width=True):
+                            conn = sqlite3.connect("dados_qg.db")
+                            df_import.to_sql(tabela_destino, conn, if_exists="append", index=False)
+                            conn.close()
+                            
+                            registrar_log("CARGA_MASSIVA", f"Importados {len(df_import)} registos para {tabela_destino}")
+                            st.success(f"✅ {len(df_import)} registos importados com sucesso para a tabela `{tabela_destino}`!")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Erro ao processar arquivo: {e}")
+
+        # -------------------------------------------------------------------------
+        # ABA 4: CONSOLE SQL DIRETO
+        # -------------------------------------------------------------------------
+        with aba_terminal:
+            st.subheader("💻 Execução SQL e Inspeção Direta")
+            query_sql = st.text_area("Comando SQL", value="SELECT name FROM sqlite_master WHERE type='table';", height=90)
+
+            if st.button("⚡ Executar Query no SQLite", type="primary", use_container_width=True):
+                if query_sql.strip():
+                    try:
+                        conn = sqlite3.connect("dados_qg.db")
+                        if query_sql.strip().upper().startswith("SELECT"):
+                            df_res = pd.read_sql_query(query_sql, conn)
+                            st.dataframe(df_res, use_container_width=True)
+                        else:
+                            c = conn.cursor()
+                            c.execute(query_sql)
+                            conn.commit()
+                            registrar_log("EXEC_SQL_DIRECT", f"Query: {query_sql[:50]}...")
+                            st.success(f"✅ Comando executado! Linhas afetadas: {c.rowcount}")
+                        conn.close()
+                    except Exception as e:
+                        st.error(f"❌ Erro ao executar SQL: {e}")
+
+        # -------------------------------------------------------------------------
+        # ABA 5: LOGS E AUDITORIA DE ATIVIDADES
+        # -------------------------------------------------------------------------
+        with aba_logs:
+            st.subheader("📜 Logs & Registo de Auditoria")
+            try:
+                conn = sqlite3.connect("dados_qg.db")
+                df_logs = pd.read_sql_query("SELECT * FROM logs_sistema ORDER BY id DESC", conn)
+                conn.close()
+
+                if df_logs.empty:
+                    st.info("Nenhum log registrado até o momento.")
+                else:
+                    st.dataframe(df_logs, use_container_width=True)
+                    if st.button("🧹 Limpar Histórico de Logs", use_container_width=True):
+                        conn = sqlite3.connect("dados_qg.db"); c = conn.cursor()
+                        c.execute("DELETE FROM logs_sistema"); conn.commit(); conn.close()
+                        st.success("Logs apagados com sucesso!")
+                        st.rerun()
+            except Exception:
+                st.info("A tabela de logs será criada no primeiro evento do sistema.")
+
+        # -------------------------------------------------------------------------
+        # ABA 6: TELEMETRIA DO SISTEMA
+        # -------------------------------------------------------------------------
+        with aba_telemetria:
+            st.subheader("📊 Telemetria do Sistema e Base de Dados")
+            
+            tamanho_db_mb = 0
+            if os.path.exists("dados_qg.db"):
+                tamanho_db_mb = round(os.path.getsize("dados_qg.db") / (1024 * 1024), 2)
+
+            col_tel1, col_tel2, col_tel3 = st.columns(3)
+            col_tel1.metric("Tamanho da Base SQLite", f"{tamanho_db_mb} MB")
+            col_tel2.metric("Arquivo de Banco", "dados_qg.db")
+            col_tel3.metric("Status do Armazenamento", "🟢 Íntegro")
+
+            st.markdown("---")
+            st.write("##### 📋 Mapeamento de Tabelas Ativas:")
+            conn = sqlite3.connect("dados_qg.db")
+            c = conn.cursor()
+            c.execute("SELECT name FROM sqlite_master WHERE type='table';")
+            tbs = [r[0] for r in c.fetchall() if r[0] != "sqlite_sequence"]
+            
+            tele_data = []
+            for tb in tbs:
+                try:
+                    c.execute(f"SELECT COUNT(*) FROM {tb}")
+                    cnt = c.fetchone()[0]
+                    tele_data.append({"Tabela": tb, "Total de Registos": cnt, "Integridade": "OK"})
+                except Exception:
+                    pass
+            conn.close()
+
+            if tele_data:
+                st.dataframe(pd.DataFrame(tele_data), use_container_width=True)
+
+        # -------------------------------------------------------------------------
+        # ABA 7: MODO DE MANUTENÇÃO (LOCKOUT SWITCH)
+        # -------------------------------------------------------------------------
+        with aba_manutencao:
+            st.subheader("🚨 Modo de Manutenção (Bloqueio Geral do QG)")
+            
+            status_manutencao = get_config("modo_manutencao", "Desativado")
+
+            if status_manutencao == "Ativado":
+                st.error("🔴 **O MODO DE MANUTENÇÃO ESTÁ ATIVO!** O acesso aos outros módulos está bloqueado.")
+            else:
+                st.success("🟢 **SISTEMA OPERANDO NORMALMENTE.** Todos os módulos estão acessíveis.")
+
+            st.markdown("---")
+            col_lock1, col_lock2 = st.columns(2)
+
+            if col_lock1.button("🔒 ATIVAR Modo de Manutenção", use_container_width=True, type="primary"):
+                set_config("modo_manutencao", "Ativado")
+                registrar_log("MODO_MANUTENCAO", "Ativado pelo Administrador")
+                st.warning("Modo de manutenção ativado!")
+                st.rerun()
+
+            if col_lock2.button("🔓 DESATIVAR Modo de Manutenção", use_container_width=True):
+                set_config("modo_manutencao", "Desativado")
+                registrar_log("MODO_MANUTENCAO", "Desativado pelo Administrador")
+                st.success("Sistema restaurado para uso normal!")
+                st.rerun()
+
+        # -------------------------------------------------------------------------
+        # ABA 8: GERENCIADOR DE ARQUIVOS
+        # -------------------------------------------------------------------------
+        with aba_arquivos:
+            st.subheader("📂 Gerenciador de Arquivos do Projeto")
+            extensoes_permitidas = [".db", ".json", ".csv", ".pdf", ".txt", ".png", ".jpg", ".html"]
+            arquivos_pasta = [f for f in os.listdir(".") if os.path.isfile(f) and any(f.endswith(ext) for ext in extensoes_permitidas)]
+
+            if arquivos_pasta:
+                df_arq = []
+                for f in arquivos_pasta:
+                    size_kb = round(os.path.getsize(f) / 1024, 2)
+                    df_arq.append({"Nome do Arquivo": f, "Tamanho (KB)": size_kb})
+
+                st.dataframe(pd.DataFrame(df_arq), use_container_width=True)
+
+                st.markdown("---")
+                col_arq1, col_arq2 = st.columns(2)
+                arq_sel = col_arq1.selectbox("Selecione um Arquivo", arquivos_pasta)
+
+                if arq_sel:
+                    with open(arq_sel, "rb") as fp:
+                        col_arq2.download_button(
+                            label=f"📥 Baixar {arq_sel}",
+                            data=fp,
+                            file_name=arq_sel,
+                            use_container_width=True
+                        )
+            else:
+                st.info("Nenhum arquivo relevante encontrado no diretório.")
+
+        # -------------------------------------------------------------------------
+        # ABA 9: ALTERAR PIN MASTER
+        # -------------------------------------------------------------------------
+        with aba_pin:
+            st.subheader("🔑 Alterar PIN / Senha Master")
+            
+            with st.form("form_alterar_pin_master"):
+                novo_pin = st.text_input("Novo PIN Master", type="password")
+                confirma_pin = st.text_input("Confirmar Novo PIN Master", type="password")
+
+                if st.form_submit_button("💾 Salvar Novo PIN Master", use_container_width=True):
+                    if novo_pin.strip() != "" and novo_pin == confirma_pin:
+                        set_config("senha_admin", novo_pin)
+                        registrar_log("ALTERA_PIN_ADMIN", "PIN Master do Administrador alterado")
+                        st.success("✅ PIN Master atualizado com sucesso!")
+                        st.rerun()
+                    else:
+                        st.error("Os PINs informados não coincidem ou estão vazios.")
