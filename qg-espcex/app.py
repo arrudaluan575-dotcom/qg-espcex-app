@@ -7,19 +7,6 @@ import json
 import os
 import time
 import hashlib
-from supabase import create_client, Client
-
-# --- Inicialização Global do Supabase ---
-@st.cache_resource
-def init_supabase():
-    url = "https://agckdimywmujrtr.supabase.co"
-    key = "sb_publishable_P_JcgLMuU9kbC1JjBDN3Jg_HSLkE_cA"
-    if not url or not key:
-        return None
-    return create_client(url, key)
-
-supabase = init_supabase()
-
 # -----------------------------------------------------------------------------
 # Configuração da Página, Proteção Contra Tradução e Tema EsPCEx / EFA
 # -----------------------------------------------------------------------------
@@ -1049,50 +1036,189 @@ elif menu == "✍️ Módulo de Redação":
 # MÓDULO 7: Edital Verticalizado (com Chave Dinâmica)
 # -----------------------------------------------------------------------------
 elif menu == "📋 Edital Verticalizado EsPCEx":
+    import sqlite3
+    import pandas as pd
+
     st.title("📋 Edital Verticalizado EsPCEx")
-    df_edital = pd.DataFrame(db["edital"])
 
-    col_f1, col_f2 = st.columns(2)
-    dia_f = col_f1.selectbox("Dia da Prova", ["Todos", "1º Dia", "2º Dia"])
-    mat_f = col_f2.selectbox("Disciplina", ["Todas"] + list(df_edital["Matéria"].unique()))
+    # 1. Garante a criação da tabela no SQLite local
+    def init_db_edital():
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS edital_verticalizado (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dia TEXT,
+                materia TEXT,
+                topico TEXT UNIQUE,
+                status TEXT DEFAULT 'Não Iniciado',
+                prioridade TEXT DEFAULT 'Média'
+            )
+        ''')
+        conn.commit()
+        conn.close()
 
-    df_exib = df_edital.copy()
-    if dia_f != "Todos":
-        df_exib = df_exib[df_exib["Dia"] == dia_f]
-    if mat_f != "Todas":
-        df_exib = df_exib[df_exib["Matéria"] == mat_f]
+    init_db_edital()
 
-    edited_df = st.data_editor(
-        df_exib,
-        column_config={
-            "Status": st.column_config.SelectboxColumn("Status", options=["Não Iniciado", "Teoria Lida", "Exercícios Feitos", "Revisado / Dominado"], required=True),
-            "Prioridade": st.column_config.SelectboxColumn("Relevância", options=["Baixa", "Média", "Alta"], required=True)
-        },
-        use_container_width=True,
-        key=f"edital_edit_{dia_f}_{mat_f}"  # Key dinâmica previne erros no DOM ao filtrar
-    )
+    # 2. Migra/Popula os dados iniciais caso o banco local esteja vazio
+    conn = sqlite3.connect("dados_qg.db")
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM edital_verticalizado")
+    total_registos = c.fetchone()[0]
 
-    if st.button("💾 Salvar Edital"):
-        novos = edited_df.to_dict("records")
-        topicos_editados = [x["Tópico"] for x in novos]
-        preservados = [item for item in db["edital"] if item["Tópico"] not in topicos_editados]
-        db["edital"] = preservados + novos
-        salvar_dados_usuario(user_atual, db)
-        st.success("Edital atualizado com sucesso!")
+    if total_registos == 0 and "db" in globals() and isinstance(db, dict) and "edital" in db and db["edital"]:
+        for item in db["edital"]:
+            c.execute('''
+                INSERT OR IGNORE INTO edital_verticalizado (dia, materia, topico, status, prioridade)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (
+                item.get("Dia", "1º Dia"),
+                item.get("Matéria", "Geral"),
+                item.get("Tópico", "Tópico de Estudo"),
+                item.get("Status", "Não Iniciado"),
+                item.get("Prioridade", "Média")
+            ))
+        conn.commit()
+    conn.close()
+
+    # 3. Carrega os dados atualizados do banco SQLite local
+    conn = sqlite3.connect("dados_qg.db")
+    try:
+        df_edital = pd.read_sql_query('''
+            SELECT 
+                id,
+                dia AS "Dia",
+                materia AS "Matéria",
+                topico AS "Tópico",
+                status AS "Status",
+                prioridade AS "Prioridade"
+            FROM edital_verticalizado
+            ORDER BY id ASC
+        ''', conn)
+    except Exception:
+        df_edital = pd.DataFrame(columns=["id", "Dia", "Matéria", "Tópico", "Status", "Prioridade"])
+    finally:
+        conn.close()
+
+    if df_edital.empty:
+        st.info("Nenhum tópico de edital encontrado na base de dados.")
+    else:
+        # Filtros de visualização
+        col_f1, col_f2 = st.columns(2)
+        dias_disponiveis = ["Todos"] + sorted(list(df_edital["Dia"].unique()))
+        materias_disponiveis = ["Todas"] + sorted(list(df_edital["Matéria"].unique()))
+
+        dia_f = col_f1.selectbox("Dia da Prova", dias_disponiveis)
+        mat_f = col_f2.selectbox("Disciplina", materias_disponiveis)
+
+        df_exib = df_edital.copy()
+        if dia_f != "Todos":
+            df_exib = df_exib[df_exib["Dia"] == dia_f]
+        if mat_f != "Todas":
+            df_exib = df_exib[df_exib["Matéria"] == mat_f]
+
+        # Tabela editável (oculta a coluna id para o utilizador)
+        edited_df = st.data_editor(
+            df_exib,
+            column_config={
+                "id": None,  # Oculta a coluna ID técnica
+                "Status": st.column_config.SelectboxColumn(
+                    "Status",
+                    options=["Não Iniciado", "Teoria Lida", "Exercícios Feitos", "Revisado / Dominado"],
+                    required=True
+                ),
+                "Prioridade": st.column_config.SelectboxColumn(
+                    "Relevância",
+                    options=["Baixa", "Média", "Alta"],
+                    required=True
+                )
+            },
+            disabled=["Dia", "Matéria", "Tópico"],  # Impede a edição dos nomes dos tópicos por engano
+            use_container_width=True,
+            key=f"edital_edit_{dia_f}_{mat_f}"
+        )
+
+        # 4. Salvar as alterações diretamente no SQLite
+        if st.button("💾 Salvar Edital"):
+            novos_dados = edited_df.to_dict("records")
+            
+            conn = sqlite3.connect("dados_qg.db")
+            c = conn.cursor()
+            for row in novos_dados:
+                c.execute('''
+                    UPDATE edital_verticalizado
+                    SET status = ?, prioridade = ?
+                    WHERE id = ?
+                ''', (row["Status"], row["Prioridade"], row["id"]))
+            conn.commit()
+            conn.close()
+
+            st.success("✅ Edital atualizado com sucesso na base de dados local!")
+            st.rerun()
 
 # -----------------------------------------------------------------------------
 # MÓDULO 8: Registro de Questões
 # -----------------------------------------------------------------------------
 elif menu == "📝 Registro de Questões":
-    st.title("📝 Registro de Baterias de Questões")
-    df_edital = pd.DataFrame(db["edital"])
+    import sqlite3
+    import datetime
+    import pandas as pd
 
+    st.title("📝 Registro de Baterias de Questões")
+
+    # 1. Garante a criação da tabela no SQLite local
+    def init_db_questoes():
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS baterias_questoes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                data TEXT,
+                materia TEXT,
+                topico TEXT,
+                questoes INTEGER,
+                acertos INTEGER,
+                horas REAL
+            )
+        ''')
+        conn.commit()
+        conn.close()
+
+    init_db_questoes()
+
+    # 2. Carrega as matérias e tópicos do edital local do SQLite (ou usa lista padrão como fallback)
+    materias_disponiveis = ["Português", "Matemática", "História", "Geografia", "Inglês", "Física", "Química"]
+    df_edital_local = pd.DataFrame()
+
+    conn = sqlite3.connect("dados_qg.db")
+    try:
+        df_edital_local = pd.read_sql_query("SELECT materia AS 'Matéria', topico AS 'Tópico' FROM edital_verticalizado", conn)
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+    if not df_edital_local.empty and "Matéria" in df_edital_local.columns:
+        materias_disponiveis = sorted(list(df_edital_local["Matéria"].dropna().unique()))
+    elif "db" in globals() and isinstance(db, dict) and "edital" in db and db["edital"]:
+        try:
+            df_e = pd.DataFrame(db["edital"])
+            if "Matéria" in df_e.columns:
+                materias_disponiveis = sorted(list(df_e["Matéria"].dropna().unique()))
+                df_edital_local = df_e
+        except Exception:
+            pass
+
+    # 3. Formulário para registrar bateria de questões
     with st.form("form_q", clear_on_submit=True):
         col1, col2 = st.columns(2)
         data_q = col1.date_input("Data", datetime.date.today())
-        materia_q = col2.selectbox("Matéria", sorted(list(df_edital["Matéria"].unique())))
+        materia_q = col2.selectbox("Matéria", materias_disponiveis)
 
-        topicos_mat = df_edital[df_edital["Matéria"] == materia_q]["Tópico"].tolist()
+        topicos_mat = []
+        if not df_edital_local.empty and "Matéria" in df_edital_local.columns and "Tópico" in df_edital_local.columns:
+            topicos_mat = df_edital_local[df_edital_local["Matéria"] == materia_q]["Tópico"].dropna().tolist()
+
         topico_q = st.selectbox("Assunto", topicos_mat if topicos_mat else ["Geral"])
 
         col3, col4, col5 = st.columns(3)
@@ -1101,19 +1227,43 @@ elif menu == "📝 Registro de Questões":
         tempo_h = col5.number_input("Horas Dedicadas", min_value=0.1, max_value=10.0, value=1.0, step=0.1)
 
         if st.form_submit_button("⚔️ Salvar Bateria"):
-            nova_s = {
-                "Data": str(data_q), "Matéria": materia_q, "Tópico": topico_q,
-                "Questões": int(qtd_q), "Acertos": int(qtd_a), "Horas": float(tempo_h)
-            }
-            db["sessoes"].append(nova_s)
-            salvar_dados_usuario(user_atual, db)
-            st.success("Bateria registrada!")
+            conn = sqlite3.connect("dados_qg.db")
+            c = conn.cursor()
+            c.execute('''
+                INSERT INTO baterias_questoes (data, materia, topico, questoes, acertos, horas)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (str(data_q), materia_q, topico_q, int(qtd_q), int(qtd_a), float(tempo_h)))
+            conn.commit()
+            conn.close()
+
+            st.success("⚔️ Bateria registrada com sucesso no banco de dados local!")
             st.rerun()
 
     st.markdown("---")
-    if db["sessoes"]:
-        st.dataframe(pd.DataFrame(db["sessoes"]).sort_values(by="Data", ascending=False), use_container_width=True)
 
+    # 4. Histórico de Baterias Salvas no SQLite
+    conn = sqlite3.connect("dados_qg.db")
+    try:
+        df_sessoes = pd.read_sql_query('''
+            SELECT 
+                data AS "Data",
+                materia AS "Matéria",
+                topico AS "Tópico",
+                questoes AS "Questões",
+                acertos AS "Acertos",
+                horas AS "Horas"
+            FROM baterias_questoes
+            ORDER BY id DESC
+        ''', conn)
+    except Exception:
+        df_sessoes = pd.DataFrame()
+    finally:
+        conn.close()
+
+    if not df_sessoes.empty:
+        st.dataframe(df_sessoes, use_container_width=True)
+    else:
+        st.info("Nenhuma bateria de questões registrada até o momento.")
 # -----------------------------------------------------------------------------
 # MÓDULO 9: Caderno de Bizus & Erros
 # -----------------------------------------------------------------------------
