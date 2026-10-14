@@ -1321,74 +1321,124 @@ elif menu == "📕 Caderno de Bizus & Erros":
 # -----------------------------------------------------------------------------
 # MÓDULO 10: Simulados
 # -----------------------------------------------------------------------------
-elif menu == "🎯 Simulados (1º e 2º Dia)":
+elif menu == "📌 Módulo 10 - Quadro Tático (Kanban)":
     import sqlite3
     import datetime
     import pandas as pd
 
-    st.title("🎯 Simulados EsPCEx (1º e 2º Dia)")
+    st.title("📌 Módulo 10 - Quadro Tático (Kanban)")
+    st.caption("Organização tática de tarefas e metas divididas por colunas de status.")
 
-    # 1. Garante a criação da tabela no SQLite local
-    def init_db_simulados():
+    # 1. Cria a tabela no SQLite local se não existir
+    def init_db_kanban():
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS simulados (
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS kanban_tarefas (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                nome TEXT,
-                data TEXT,
-                portugues INTEGER,
-                fisica INTEGER,
-                quimica INTEGER,
-                redacao REAL,
-                matematica INTEGER,
-                geografia INTEGER,
-                historia INTEGER,
-                ingles INTEGER,
-                tot_objetiva INTEGER,
-                aprovado TEXT
+                titulo TEXT,
+                categoria TEXT,
+                prioridade TEXT,
+                status TEXT DEFAULT 'A Fazer',
+                data_criacao TEXT
             )
-        ''')
+        """)
         conn.commit()
         conn.close()
 
-    init_db_simulados()
+    init_db_kanban()
 
-    # 2. Formuário para cadastro e avaliação do simulado
-    with st.expander("➕ Lançar Simulado", expanded=True):
-        with st.form("form_sim", clear_on_submit=True):
-            nome_sim = st.text_input("Nome do Simulado (Ex: 1º Simulado Inédito EsPCEx 2026)")
-            data_sim = st.date_input("Data do Simulado", datetime.date.today())
+    # 2. Formulário para adicionar nova tarefa
+    with st.expander("➕ Nova Tarefa Tática", expanded=False):
+        with st.form("form_kanban", clear_on_submit=True):
+            col_k1, col_k2 = st.columns(2)
+            titulo_k = col_k1.text_input("Título / Descrição da Tarefa")
+            categoria_k = col_k2.selectbox("Categoria", ["EsPCEx / Estudos", "EFA / AMSP", "TAF", "Geral"])
 
-            st.markdown("#### 1º DIA DE PROVA")
-            c1a, c1b, c1c, c1d = st.columns(4)
-            p_port = c1a.number_input("Português (0 a 20 q)", 0, 20, 14)
-            p_fis = c1b.number_input("Física (0 a 12 q)", 0, 12, 7)
-            p_qui = c1c.number_input("Química (0 a 12 q)", 0, 12, 8)
-            p_red = c1d.number_input("Redação (0 a 100)", 0.0, 100.0, 80.0, step=5.0)
+            col_k3, col_k4 = st.columns(2)
+            prioridade_k = col_k3.selectbox("Prioridade", ["Alta", "Média", "Baixa"])
+            status_k = col_k4.selectbox("Coluna Inicial", ["A Fazer", "Em Andamento", "Concluído"])
 
-            st.markdown("#### 2º DIA DE PROVA")
-            c2a, c2b, c2c, c2d = st.columns(4)
-            p_mat = c2a.number_input("Matemática (0 a 20 q)", 0, 20, 13)
-            p_geo = c2b.number_input("Geografia (0 a 12 q)", 0, 12, 8)
-            p_hist = c2c.number_input("História (0 a 12 q)", 0, 12, 9)
-            p_ing = c2d.number_input("Inglês (0 a 12 q)", 0, 12, 10)
+            if st.form_submit_button("📌 Salvar Tarefa"):
+                if titulo_k.strip():
+                    conn = sqlite3.connect("dados_qg.db")
+                    c = conn.cursor()
+                    c.execute("""
+                        INSERT INTO kanban_tarefas (titulo, categoria, prioridade, status, data_criacao)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (titulo_k, categoria_k, prioridade_k, status_k, str(datetime.date.today())))
+                    conn.commit()
+                    conn.close()
+                    st.success("Tarefa registrada no Quadro Tático!")
+                    st.rerun()
+                else:
+                    st.warning("Preencha a descrição da tarefa antes de salvar.")
 
-            if st.form_submit_button("🏆 Avaliar Desempenho"):
-                minimos = {
-                    "Português": p_port >= 10, "Física": p_fis >= 6, "Química": p_qui >= 6,
-                    "Matemática": p_mat >= 10, "Geografia": p_geo >= 6, "História": p_hist >= 6,
-                    "Inglês": p_ing >= 6, "Redação": p_red >= 50.0
-                }
-                tot_obj = p_port + p_fis + p_qui + p_mat + p_geo + p_hist + p_ing
-                aprovado_bool = all(minimos.values())
-                aprovado_str = "✅ SIM" if aprovado_bool else "❌ NÃO"
+    st.markdown("---")
 
-                # Insere o simulado no SQLite local
-                conn = sqlite3.connect("dados_qg.db")
-                c = conn.cursor()
-                sql = "INSERT INTO tabela (coluna1, coluna2) VALUES (?, ?)"
-c.execute(sql, (val1, val2))
+    # 3. Leitura dos dados salvos no SQLite
+    conn = sqlite3.connect("dados_qg.db")
+    try:
+        df_kanban = pd.read_sql_query("SELECT id, titulo, categoria, prioridade, status FROM kanban_tarefas", conn)
+    except Exception:
+        df_kanban = pd.DataFrame()
+    finally:
+        conn.close()
+
+    # Layout das 3 colunas Kanban
+    col_afazer, col_andamento, col_concluido = st.columns(3)
+
+    colunas_map = [
+        ("📝 A Fazer", "A Fazer", col_afazer),
+        ("⚡ Em Andamento", "Em Andamento", col_andamento),
+        ("✅ Concluído", "Concluído", col_concluido)
+    ]
+
+    for nome_coluna, status_alvo, col_streamlit in colunas_map:
+        with col_streamlit:
+            st.subheader(nome_coluna)
+            if not df_kanban.empty:
+                sub_df = df_kanban[df_kanban["status"] == status_alvo]
+                if sub_df.empty:
+                    st.caption("Nenhuma tarefa nesta coluna.")
+                else:
+                    for _, row in sub_df.iterrows():
+                        t_id = int(row["id"])
+                        with st.expander(f"[{row['categoria']}] {row['titulo']}", expanded=True):
+                            st.caption(f"Prioridade: **{row['prioridade']}**")
+                            
+                            c_m1, c_m2, c_m3 = st.columns(3)
+                            
+                            # Mover para a esquerda
+                            if status_alvo != "A Fazer" and c_m1.button("⬅️", key=f"btn_left_{t_id}"):
+                                novo_st = "A Fazer" if status_alvo == "Em Andamento" else "Em Andamento"
+                                conn = sqlite3.connect("dados_qg.db")
+                                c = conn.cursor()
+                                c.execute("UPDATE kanban_tarefas SET status = ? WHERE id = ?", (novo_st, t_id))
+                                conn.commit()
+                                conn.close()
+                                st.rerun()
+
+                            # Excluir tarefa
+                            if c_m2.button("🗑️", key=f"btn_del_{t_id}"):
+                                conn = sqlite3.connect("dados_qg.db")
+                                c = conn.cursor()
+                                c.execute("DELETE FROM kanban_tarefas WHERE id = ?", (t_id,))
+                                conn.commit()
+                                conn.close()
+                                st.rerun()
+
+                            # Mover para a direita
+                            if status_alvo != "Concluído" and c_m3.button("➡️", key=f"btn_right_{t_id}"):
+                                novo_st = "Em Andamento" if status_alvo == "A Fazer" else "Concluído"
+                                conn = sqlite3.connect("dados_qg.db")
+                                c = conn.cursor()
+                                c.execute("UPDATE kanban_tarefas SET status = ? WHERE id = ?", (novo_st, t_id))
+                                conn.commit()
+                                conn.close()
+                                st.rerun()
+            else:
+                st.caption("Nenhuma tarefa registrada.")
         # -----------------------------------------------------------------------------
 # MÓDULO 11: Cronograma Integrado EFA & EsPCEx
 # -----------------------------------------------------------------------------
