@@ -1268,52 +1268,95 @@ elif menu == "📝 Registro de Questões":
 # MÓDULO 9: Caderno de Bizus & Erros
 # -----------------------------------------------------------------------------
 elif menu == "📕 Caderno de Bizus & Erros":
+    import sqlite3
+    import datetime
+    import pandas as pd
+
     st.title("📕 Caderno de Bizus Táticos e Erros")
 
+    # 1. Garante a criação da tabela no SQLite local
+    def init_db_erros():
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS caderno_erros (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                data TEXT,
+                materia TEXT,
+                assunto TEXT,
+                motivo TEXT,
+                bisu TEXT,
+                sanado INTEGER DEFAULT 0
+            )
+        ''')
+        conn.commit()
+        conn.close()
+
+    init_db_erros()
+
+    # Obtém matérias cadastradas no edital local do SQLite ou fallback seguro
+    materias_padrao = ["Português", "Matemática", "História", "Geografia", "Inglês", "Física", "Química"]
+    conn = sqlite3.connect("dados_qg.db")
+    try:
+        df_edital = pd.read_sql_query("SELECT DISTINCT materia AS 'Matéria' FROM edital_verticalizado", conn)
+        if not df_edital.empty and "Matéria" in df_edital.columns:
+            materias_padrao = sorted(df_edital["Matéria"].dropna().tolist())
+    except Exception:
+        if "db" in globals() and isinstance(db, dict) and "edital" in db and db["edital"]:
+            try:
+                df_e = pd.DataFrame(db["edital"])
+                if "Matéria" in df_e.columns:
+                    materias_padrao = sorted(list(df_e["Matéria"].dropna().unique()))
+            except Exception:
+                pass
+    finally:
+        conn.close()
+
+    # 2. Formulário para cadastrar novo Bisu
     with st.expander("➕ Cadastrar Novo Bisu", expanded=True):
         with st.form("form_e", clear_on_submit=True):
-            df_edital = pd.DataFrame(db["edital"])
             c1, c2 = st.columns(2)
-            mat_e = c1.selectbox("Matéria", sorted(list(df_edital["Matéria"].unique())))
-            assunto_e = c2.text_input("Assunto / Questão")
-
-            motivo = st.text_area("Qual foi a pegadinha / erro?")
-            bisu = st.text_area("Bisu de Correção Tática")
-
-            if st.form_submit_button("📌 Salvar Bisu"):
-                novo_e = {
-                    "id": len(db["erros"]) + 1, "Data": str(datetime.date.today()),
-                    "Matéria": mat_e, "Assunto": assunto_e, "Motivo": motivo,
-                    "Bisu": bisu, "Sanado": False
-                }
-                db["erros"].append(novo_e)
-                salvar_dados_usuario(user_atual, db)
-                st.success("Bisu registrado!")
-                st.rerun()
-
-    st.markdown("---")
-    erros_pendentes = [e for e in db.get("erros", []) if not e.get("Sanado", False)]
-    if not erros_pendentes:
-        st.success("🎉 Nenhum bisu pendente de revisão!")
-    else:
-        for err in erros_pendentes:
-            st.markdown(f"### ⚔️ [{err['Matéria']}] - {err['Assunto']}")
-            st.markdown(f"**Causa:** {err['Motivo']}")
-            st.info(f"💡 **BISU:** {err['Bisu']}")
-            if st.button(f"✅ Marcar como Sanado #{err['id']}", key=f"btn_s_{err['id']}"):
-                err["Sanado"] = True
-                salvar_dados_usuario(user_atual, db)
-                st.rerun()
-            st.markdown("---")
-
+            mat_e = c1.selectbox("Matéria", materias_padrao)
+            assunto_e = c
 # -----------------------------------------------------------------------------
 # MÓDULO 10: Simulados
 # -----------------------------------------------------------------------------
 elif menu == "🎯 Simulados (1º e 2º Dia)":
+    import sqlite3
+    import datetime
+    import pandas as pd
+
     st.title("🎯 Simulados EsPCEx (1º e 2º Dia)")
 
+    # 1. Garante a criação da tabela no SQLite local
+    def init_db_simulados():
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS simulados (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome TEXT,
+                data TEXT,
+                portugues INTEGER,
+                fisica INTEGER,
+                quimica INTEGER,
+                redacao REAL,
+                matematica INTEGER,
+                geografia INTEGER,
+                historia INTEGER,
+                ingles INTEGER,
+                tot_objetiva INTEGER,
+                aprovado TEXT
+            )
+        ''')
+        conn.commit()
+        conn.close()
+
+    init_db_simulados()
+
+    # 2. Formuário para cadastro e avaliação do simulado
     with st.expander("➕ Lançar Simulado", expanded=True):
-        with st.form("form_sim"):
+        with st.form("form_sim", clear_on_submit=True):
             nome_sim = st.text_input("Nome do Simulado (Ex: 1º Simulado Inédito EsPCEx 2026)")
             data_sim = st.date_input("Data do Simulado", datetime.date.today())
 
@@ -1338,27 +1381,15 @@ elif menu == "🎯 Simulados (1º e 2º Dia)":
                     "Inglês": p_ing >= 6, "Redação": p_red >= 50.0
                 }
                 tot_obj = p_port + p_fis + p_qui + p_mat + p_geo + p_hist + p_ing
-                pct_obj = (tot_obj / 100) * 100
-                aprovado = all(minimos.values())
+                aprovado_bool = all(minimos.values())
+                aprovado_str = "✅ SIM" if aprovado_bool else "❌ NÃO"
 
-                novo_s = {
-                    "Nome": nome_sim, "Data": str(data_sim),
-                    "Objetiva": f"{tot_obj}/100 ({pct_obj:.1f}%)",
-                    "Redação": p_red, "Mínimos Atingidos": "✅ SIM" if aprovado else "❌ NÃO"
-                }
-                db["simulados"].append(novo_s)
-                salvar_dados_usuario(user_atual, db)
-
-                if aprovado:
-                    st.success(f"🎉 APROVADO NOS MÍNIMOS! {tot_obj}/100 acertos e Redação {p_red}.")
-                else:
-                    reprov = [m for m, ok in minimos.items() if not ok]
-                    st.error(f"⚠️ Mínimo não atingido em: {', '.join(reprov)}")
-                st.rerun()
-
-    st.markdown("---")
-    if db["simulados"]:
-        st.dataframe(pd.DataFrame(db["simulados"]), use_container_width=True)
+                # Insere o simulado no SQLite local
+                conn = sqlite3.connect("dados_qg.db")
+                c = conn.cursor()
+                c.execute('''
+                    INSERT INTO simulados (
+                        nome, data, portugues, fisica
         # -----------------------------------------------------------------------------
 # MÓDULO 11: Cronograma Integrado EFA & EsPCEx
 # -----------------------------------------------------------------------------
