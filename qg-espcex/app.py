@@ -1709,21 +1709,23 @@ elif menu == "📖 Diário de Bordo":
 
     st.info(f"💡 **Frase do Dia:** {random.choice(frases_eb)}")
 
-    # 1. Lista local na sessão (fallback / cache)
-    if "historico_diario" not in st.session_state:
-        st.session_state.historico_diario = []
+    # Captura a conexão do Supabase do escopo global ou session_state
+    client_supabase = globals().get("supabase", st.session_state.get("supabase", None))
 
-    # 2. CARREGAR REGISTROS DA NUVEM (SUPABASE)
+    # 1. CARREGAR REGISTROS DA NUVEM (SUPABASE)
     registos_nuvem = []
-    if "supabase" in globals() and supabase:
+    if client_supabase:
         try:
-            res = supabase.table("diario_bordo").select("*").order("id", ascending=False).execute()
+            res = client_supabase.table("diario_bordo").select("*").order("id", ascending=False).execute()
             if res.data:
                 registos_nuvem = res.data
         except Exception as e:
-            st.warning(f"⚠️ Não foi possível carregar o histórico da nuvem: {e}")
+            st.error(f"⚠️ Erro ao carregar histórico do Supabase: {e}")
 
-    # Usa os registros da nuvem se disponíveis; caso contrário, usa a memória da sessão
+    # Fallback para a sessão local caso a nuvem não retorne dados
+    if "historico_diario" not in st.session_state:
+        st.session_state.historico_diario = []
+
     historico_exibicao = registos_nuvem if registos_nuvem else st.session_state.historico_diario
 
     st.markdown("---")
@@ -1765,24 +1767,25 @@ elif menu == "📖 Diário de Bordo":
                     "resumo_dia": resumo_dia
                 }
                 
-                if "user_id" in globals() and user_id:
-                    novo_registro["user_id"] = user_id
+                uid = globals().get("user_id", st.session_state.get("user_id", None))
+                if uid:
+                    novo_registro["user_id"] = uid
 
                 # SALVAR NO SUPABASE (NUVEM)
                 salvo_na_nuvem = False
-                if "supabase" in globals() and supabase:
+                if client_supabase:
                     try:
-                        supabase.table("diario_bordo").insert(novo_registro).execute()
+                        client_supabase.table("diario_bordo").insert(novo_registro).execute()
                         salvo_na_nuvem = True
                         st.success("✅ Reflexão salva com sucesso no Supabase!")
                     except Exception as e:
-                        st.error(f"Erro ao salvar na nuvem: {e}")
+                        st.error(f"❌ Falha ao gravar no Supabase: {e}")
 
-                # REGISTRO NA SESSÃO LOCAL (FALLBACK)
+                # Também guarda localmente para atualização imediata na tela
                 st.session_state.historico_diario.insert(0, novo_registro)
-                
+
                 if not salvo_na_nuvem:
-                    st.info("ℹ️ Guardado na memória da sessão local.")
+                    st.warning("⚠️ Atenção: Não foi possível gravar na nuvem. Os dados sumirão se recarregar a página.")
 
                 st.rerun()
             else:
