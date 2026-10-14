@@ -843,30 +843,77 @@ elif menu == "🌾 Alternância EFA & AMSP (15/15)":
         st.markdown("---")
         st.subheader("📋 Painel de AMSP (Filtro por Matéria da EFA)")
 
-        # Carregar tarefas da base de dados local
+        # Carregar tarefas da base de dados local de forma segura
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute("SELECT id, disciplina, titulo, categoria, prazo, prioridade, detalhes, concluida FROM tarefas_amsp ORDER BY id DESC")
-        tarefas_rows = c.fetchall()
+        rows = c.fetchall()
         conn.close()
 
-        if not tarefas_rows:
+        # Estruturação para dicionário explícito
+        tarefas_list = [
+            {
+                "id": r[0],
+                "disciplina": r[1],
+                "titulo": r[2],
+                "categoria": r[3],
+                "prazo": r[4],
+                "prioridade": r[5],
+                "detalhes": r[6],
+                "concluida": bool(r[7])
+            }
+            for r in rows
+        ]
+
+        if not tarefas_list:
             st.info("Nenhuma AMSP cadastrada até o momento.")
         else:
             filtro_disc = st.selectbox("Filtrar AMSP por Matéria da EFA", ["Todas as Matérias"] + MATERIAS_EFA)
             
             # Filtro por disciplina
-            tarefas_exibir = tarefas_rows if filtro_disc == "Todas as Matérias" else [t for t in tarefas_rows if t[1] == filtro_disc]
+            tarefas_exibir = tarefas_list if filtro_disc == "Todas as Matérias" else [t for t in tarefas_list if t["disciplina"] == filtro_disc]
 
             p_tab1, p_tab2 = st.tabs(["⏳ AMSP Pendentes", "✅ AMSP Concluídas"])
 
             with p_tab1:
-                pendentes = [t for t in tarefas_exibir if t[7] == 0]
+                pendentes = [t for t in tarefas_exibir if not t["concluida"]]
                 if not pendentes:
                     st.success("🎉 Nenhuma AMSP pendente para a seleção atual!")
                 else:
                     for t in pendentes:
-                        t_id, disc_nome, t_titulo, t_cat, t_prazo, t_prioridade, t_det
+                        with st.container():
+                            st.markdown(f"### 🌾 [{t['disciplina']}] - {t['titulo']}")
+                            st.markdown(f"**Tipo:** `{t['categoria']}` | **Prazo:** `{t['prazo']}` | **Prioridade:** `{t['prioridade']}`")
+                            st.write(t["detalhes"])
+
+                            if st.button(f"✅ Marcar AMSP Concluída #{t['id']}", key=f"btn_tf_{t['id']}"):
+                                conn = sqlite3.connect("dados_qg.db")
+                                c = conn.cursor()
+                                c.execute("UPDATE tarefas_amsp SET concluida = 1 WHERE id = ?", (t["id"],))
+                                conn.commit()
+                                conn.close()
+                                st.success("AMSP concluída!")
+                                st.rerun()
+                            st.markdown("---")
+
+            with p_tab2:
+                concluidas = [t for t in tarefas_exibir if t["concluida"]]
+                if not concluidas:
+                    st.info("Nenhuma AMSP concluída nesta seleção.")
+                else:
+                    for t in concluidas:
+                        st.markdown(f"~~**[{t['disciplina']}]** - {t['titulo']} ({t['categoria']})~~ ✅ Concluída")
+
+    # 5. Modo NA ESCOLA
+    else:
+        st.subheader("🏫 Período NA ESCOLA - Aulas Presenciais")
+        st.success("ℹ️ **Módulo de tarefas AMSP de casa ocultado durante o período presencial na EFA.**")
+        st.markdown("""
+        Durante os **15 dias de permanência na EFA**:
+        - 📖 Acompanhamento direto de aulas teóricas e práticas com professores e monitores;
+        - 🤝 Vivência comunitária e trabalhos práticos nos setores de produção;
+        - 📚 Liberação da noite para focar nos blocos de Pomodoro e LDI da EsPCEx.
+        """)
 # -----------------------------------------------------------------------------
 # MÓDULO 5: Pomodoro Tático (Com Alarme Sonoro)
 # -----------------------------------------------------------------------------
