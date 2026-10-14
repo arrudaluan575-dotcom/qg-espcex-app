@@ -2016,36 +2016,27 @@ elif menu == "🔗 Hub de Links":
 # ====================================================
 # MÓDULO 20: DIÁRIO DE BORDO
 # ====================================================
-elif menu == "📖 Diário de Bordo":
+elif menu == "📖 Módulo 20 - Diário de Bordo Tático":
     import sqlite3
-    import random
-    from datetime import datetime
+    import datetime
+    import pandas as pd
 
-    st.header("📖 Módulo 20: Diário de Bordo Tático")
+    st.title("📖 Módulo 20 - Diário de Bordo Tático")
+    st.caption("Registro diário de combate, reflexões táticas e estado físico/mental.")
 
-    frases_eb = [
-        "\"A farda não é uma veste que se despe com facilidade e indiferença, mas uma outra pele, que adere à própria alma.\" — Gen. Leônidas Pires Gonçalves",
-        "\"O êxito é a soma de pequenos esforços repetidos dia após dia.\"",
-        "\"A vitória sorri para aqueles que estão dispostos a pagar o preço do suor no treinamento.\"",
-        "\"Brasil acima de tudo!\"",
-        "\"Na selva, a disciplina não é apenas uma virtude, é a diferença entre a vida e a derrota.\""
-    ]
-
-    st.info(f"💡 **Frase do Dia:** {random.choice(frases_eb)}")
-
-    # Garante a criação da tabela SQLite local do Diário de Bordo
+    # 1. Cria a tabela no SQLite local
     def init_db_diario():
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute('''
             CREATE TABLE IF NOT EXISTS diario_bordo (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                data TEXT,
-                foco INTEGER,
-                cansaco INTEGER,
-                pontos_fortes TEXT,
-                pontos_melhorar TEXT,
-                resumo TEXT
+                data_registro TEXT,
+                foco_dia TEXT,
+                cansaco_fisico INTEGER,
+                o_que_foi_bem TEXT,
+                o_que_ajustar TEXT,
+                resumo_dia TEXT
             )
         ''')
         conn.commit()
@@ -2053,64 +2044,59 @@ elif menu == "📖 Diário de Bordo":
 
     init_db_diario()
 
-    st.markdown("---")
-    st.subheader("📝 Reflexão do Fim de Dia")
+    # 2. Formuário de entrada do Diário
+    with st.form("form_diario", clear_on_submit=True):
+        col_d1, col_d2 = st.columns(2)
+        data_registro = col_d1.date_input("Data do Registro", datetime.date.today())
+        foco_dia = col_d2.text_input("Foco Tático do Dia", placeholder="Ex: Meta de Pomodoros de Exatas + TAF")
 
-    with st.form("form_diario_bordo"):
-        col1, col2 = st.columns(2)
-        with col1:
-            foco_dia = st.slider("Nível de Foco nos Estudos (1 a 5)", 1, 5, 4)
-        with col2:
-            cansaco_fisico = st.slider("Desgaste Físico da Roça/Treino (1 a 5)", 1, 5, 3)
+        cansaco_fisico = st.slider("Nível de Cansaço Físico/Mental (1 = Descansado, 10 = Exausto)", 1, 10, 5)
 
-        o_que_foi_bem = st.text_area("🌟 O que correu bem hoje?", placeholder="Ex.: Cumpri a meta de questões e mantive o ritmo no TAF.")
-        o_que_ajustar = st.text_area("🛠️ O que precisa ser ajustado / editado para amanhã?", placeholder="Ex.: Focar mais no bloco de exatas e acordar sem adiar o alarme.")
+        o_que_foi_bem = st.text_area("O que funcionou bem hoje?")
+        o_que_ajustar = st.text_area("O que precisa ser adjusted amanhã?")
+        resumo_dia = st.text_area("Resumo Geral / Notas do Dia")
 
-        resumo_dia = st.text_area("📝 Resumo geral do dia / Observações:")
-
-        btn_salvar_diario = st.form_submit_button("💾 Salvar Diário de Bordo")
-
-        if btn_salvar_diario:
-            if o_que_foi_bem.strip() or o_que_ajustar.strip() or resumo_dia.strip():
-                data_registro = datetime.now().strftime("%d/%m/%Y às %H:%M")
-                
-                conn = sqlite3.connect("dados_qg.db")
-                c = conn.cursor()
-                c.execute('''
-                    INSERT INTO diario_bordo (data, foco, cansaco, pontos_fortes, pontos_melhorar, resumo)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (data_registro, foco_dia, cansaco_fisico, o_que_foi_bem, o_que_ajustar, resumo_dia))
-                conn.commit()
-                conn.close()
-
-                st.success("✅ Reflexão salva com sucesso no banco de dados local!")
-                st.rerun()
-            else:
-                st.warning("Escreva sua reflexão antes de clicar em salvar.")
+        if st.form_submit_button("🎖️ Registrar no Diário"):
+            conn = sqlite3.connect("dados_qg.db")
+            c = conn.cursor()
+            
+            # Consulta SQL corrigida com fechamento correto de aspas
+            c.execute('''
+                INSERT INTO diario_bordo (data_registro, foco_dia, cansaco_fisico, o_que_foi_bem, o_que_ajustar, resumo_dia)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (str(data_registro), foco_dia, cansaco_fisico, o_que_foi_bem, o_que_ajustar, resumo_dia))
+            
+            conn.commit()
+            conn.close()
+            st.success("✅ Diário de Bordo registrado com sucesso!")
+            st.rerun()
 
     st.markdown("---")
-    st.subheader("📜 Histórico de Reflexões Salvas")
+    st.subheader("📜 Histórico do Diário de Bordo")
 
+    # 3. Leitura dos dados salvos no SQLite
     conn = sqlite3.connect("dados_qg.db")
-    c = conn.cursor()
-    c.execute("SELECT data, foco, cansaco, pontos_fortes, pontos_melhorar, resumo FROM diario_bordo ORDER BY id DESC")
-    historico = c.fetchall()
-    conn.close()
+    try:
+        df_diario = pd.read_sql_query('''
+            SELECT 
+                data_registro AS "Data",
+                foco_dia AS "Foco",
+                cansaco_fisico AS "Cansaço",
+                o_que_foi_bem AS "Pontos Fortes",
+                o_que_ajustar AS "Ajustes",
+                resumo_dia AS "Resumo"
+            FROM diario_bordo
+            ORDER BY id DESC
+        ''', conn)
+    except Exception:
+        df_diario = pd.DataFrame()
+    finally:
+        conn.close()
 
-    if not historico:
-        st.info("Nenhuma reflexão registrada ainda. Preencha o formulário acima para salvar sua primeira anotação.")
+    if not df_diario.empty:
+        st.dataframe(df_diario, use_container_width=True)
     else:
-        for idx, reg in enumerate(historico):
-            data_disp, foco_disp, cansaco_disp, fortes_disp, melhorar_disp, resumo_disp = reg
-
-            with st.expander(f"📅 Registro de {data_disp} — Foco: {foco_disp}/5 | Cansaço: {cansaco_disp}/5", expanded=(idx == 0)):
-                if fortes_disp:
-                    st.success(f"**🌟 O que correu bem:**\n\n{fortes_disp}")
-                if melhorar_disp:
-                    st.warning(f"**🛠️ O que precisa ser ajustado para amanhã:**\n\n{melhorar_disp}")
-                if resumo_disp:
-                    st.write("**💬 Resumo / Reflexão:**")
-                    st.write(resumo_disp)
+        st.info("Nenhum registro no Diário de Bordo até o momento.")
 # ====================================================
 # MÓDULO 21: PLAYER DE ÁUDIO
 # ====================================================
