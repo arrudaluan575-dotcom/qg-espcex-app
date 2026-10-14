@@ -7,9 +7,19 @@ import json
 import os
 import time
 import hashlib
-import sqlite3
-import random
-from datetime import datetime
+from supabase import create_client, Client
+
+# --- Inicialização Global do Supabase ---
+@st.cache_resource
+def init_supabase():
+    url = "https://agckdimywmujrtr.supabase.co"
+    key = "sb_publishable_P_JcgLMuU9kbC1JjBDN3Jg_HSLkE_cA"
+    if not url or not key:
+        return None
+    return create_client(url, key)
+
+supabase = init_supabase()
+
 # -----------------------------------------------------------------------------
 # Configuração da Página, Proteção Contra Tradução e Tema EsPCEx / EFA
 # -----------------------------------------------------------------------------
@@ -1685,7 +1695,10 @@ elif menu == "🔗 Hub de Links":
 # MÓDULO 20: DIÁRIO DE BORDO
 # ====================================================
 elif menu == "📖 Diário de Bordo":
-   
+    import sqlite3
+    import random
+    from datetime import datetime
+
     st.header("📖 Módulo 20: Diário de Bordo Tático")
 
     frases_eb = [
