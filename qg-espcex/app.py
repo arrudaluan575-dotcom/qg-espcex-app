@@ -61,18 +61,16 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 """, unsafe_allow_html=True)
-
 # --- Inicialização Global do Supabase ---
 @st.cache_resource
 def init_supabase():
-    URL = "https://agckdimywmujrtr.supabase.co"
-    Chave = "sb_publishable_P_JcgLMuU9kbC1JjBDN3Jg_HSLkE_cA"
-    if not URL or not Chave:
+    url = "https://agckdimywmujrtr.supabase.co"
+    key = "sb_publishable_P_JcgLMuU9kbC1JjBDN3Jg_HSLkE_cA"
+    if not url or not key:
         return None
-    return create_client(URL, Chave)
+    return create_client(url, key)
 
 supabase = init_supabase()
-
 
 USERS_FILE = "usuarios.json"
 
