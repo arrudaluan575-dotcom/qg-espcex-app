@@ -529,8 +529,36 @@ elif menu == "🦉 Portal Estratégia Militares":
 # MÓDULO 3: Treino TAF + Player de Música Spotify
 # -----------------------------------------------------------------------------
 elif menu == "🏋️ Treino TAF + Spotify":
+    import sqlite3
+    import datetime
+    import pandas as pd
+    import plotly.express as px
+    import streamlit.components.v1 as components
+
     st.title("🏋️ Treinamento Físico Militar - TAF EsPCEx")
     st.caption("Acompanhamento dos treinos das 05h00 e player oficial do Spotify integrado.")
+
+    # 1. Garante a criação da tabela SQLite local do Treino TAF
+    def init_db_taf():
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS treinos_taf (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                data TEXT,
+                foco TEXT,
+                flexoes INTEGER,
+                abdominais INTEGER,
+                barras INTEGER,
+                corrida_m INTEGER,
+                indice_minimo TEXT,
+                observacoes TEXT
+            )
+        ''')
+        conn.commit()
+        conn.close()
+
+    init_db_taf()
 
     aba_registro, aba_evolucao, aba_spotify = st.tabs([
         "➕ Cadastrar Treino (05h)",
@@ -538,6 +566,9 @@ elif menu == "🏋️ Treino TAF + Spotify":
         "🎧 Spotify Player Integrado"
     ])
 
+    # ----------------------------------------------------
+    # ABA 1: CADASTRAR TREINO (05H)
+    # ----------------------------------------------------
     with aba_registro:
         st.markdown("""
         **Índices Mínimos Masculinos (EsPCEx):**
@@ -550,7 +581,12 @@ elif menu == "🏋️ Treino TAF + Spotify":
         with st.form("form_taf", clear_on_submit=True):
             col_t1, col_t2 = st.columns(2)
             data_treino = col_t1.date_input("Data do Treino", datetime.date.today())
-            modalidade = col_t2.selectbox("Foco Principal", ["Treino Completo TAF", "Corrida de Tiro/Resistência", "Calistenia (Barra/Flexão/Abs)", "Simulado TAF Oficial"])
+            modalidade = col_t2.selectbox("Foco Principal", [
+                "Treino Completo TAF",
+                "Corrida de Tiro/Resistência",
+                "Calistenia (Barra/Flexão/Abs)",
+                "Simulado TAF Oficial"
+            ])
 
             c_f1, c_f2, c_f3, c_f4 = st.columns(4)
             flexoes = c_f1.number_input("Flexões de Braço", min_value=0, value=22)
@@ -566,19 +602,17 @@ elif menu == "🏋️ Treino TAF + Spotify":
                 ok_bar = barras >= 3
                 ok_cor = corrida_m >= 2450
                 aprovado_taf = ok_flex and ok_abs and ok_bar and ok_cor
+                indice_str = "✅ APROVADO" if aprovado_taf else "⚠️ ABAIXO"
 
-                novo_t = {
-                    "Data": str(data_treino),
-                    "Foco": modalidade,
-                    "Flexões": flexoes,
-                    "Abdominais": abdominais,
-                    "Barra": barras,
-                    "Corrida (m)": corrida_m,
-                    "Índice Mínimo": "✅ APROVADO" if aprovado_taf else "⚠️ ABAIXO",
-                    "Observações": obs_taf
-                }
-                db["taf"].append(novo_t)
-                salvar_dados_usuario(user_atual, db)
+                # Guarda o registo na base de dados SQLite local
+                conn = sqlite3.connect("dados_qg.db")
+                c = conn.cursor()
+                c.execute('''
+                    INSERT INTO treinos_taf (data, foco, flexoes, abdominais, barras, corrida_m, indice_minimo, observacoes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (str(data_treino), modalidade, flexoes, abdominais, barras, corrida_m, indice_str, obs_taf))
+                conn.commit()
+                conn.close()
 
                 if aprovado_taf:
                     st.success("🎉 EXCELENTE! Atingiu todos os índices mínimos do TAF da EsPCEx!")
@@ -586,8 +620,30 @@ elif menu == "🏋️ Treino TAF + Spotify":
                     st.warning("Manter a constância nos treinos!")
                 st.rerun()
 
+    # ----------------------------------------------------
+    # ABA 2: EVOLUÇÃO FÍSICA (GRÁFICOS & TABELA)
+    # ----------------------------------------------------
     with aba_evolucao:
-        df_taf = pd.DataFrame(db.get("taf", []))
+        conn = sqlite3.connect("dados_qg.db")
+        try:
+            df_taf = pd.read_sql_query('''
+                SELECT 
+                    data AS "Data",
+                    foco AS "Foco",
+                    flexoes AS "Flexões",
+                    abdominais AS "Abdominais",
+                    barras AS "Barra",
+                    corrida_m AS "Corrida (m)",
+                    indice_minimo AS "Índice Mínimo",
+                    observacoes AS "Observações"
+                FROM treinos_taf
+                ORDER BY id ASC
+            ''', conn)
+        except Exception:
+            df_taf = pd.DataFrame()
+        finally:
+            conn.close()
+
         if not df_taf.empty:
             col_g_taf1, col_g_taf2 = st.columns(2)
             with col_g_taf1:
@@ -605,6 +661,9 @@ elif menu == "🏋️ Treino TAF + Spotify":
         else:
             st.info("Nenhum treino TAF cadastrado até o momento.")
 
+    # ----------------------------------------------------
+    # ABA 3: SPOTIFY PLAYER INTEGRADO
+    # ----------------------------------------------------
     with aba_spotify:
         st.subheader("🎧 Player Oficial do Spotify no QG EsPCEx")
         st.caption("Ouça suas músicas diretamente pelo Spotify na plataforma durante o treino das 05h00:")
