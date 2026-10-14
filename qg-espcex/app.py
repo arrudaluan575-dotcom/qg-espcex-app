@@ -1267,57 +1267,113 @@ elif menu == "📝 Registro de Questões":
 # -----------------------------------------------------------------------------
 # MÓDULO 9: Caderno de Bizus & Erros
 # -----------------------------------------------------------------------------
-elif menu == "📕 Caderno de Bizus & Erros":
+elif menu == "📅 Módulo 9 - Ciclo de Estudos & Cronograma":
     import sqlite3
     import datetime
     import pandas as pd
 
-    st.title("📕 Caderno de Bizus Táticos e Erros")
+    st.title("📅 Módulo 9 - Ciclo de Estudos & Cronograma Semanal")
+    st.caption("Planeamento e controlo de horas de estudo por matéria no ciclo tático.")
 
     # 1. Garante a criação da tabela no SQLite local
-    def init_db_erros():
+    def init_db_ciclo():
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS caderno_erros (
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS ciclo_estudos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                data TEXT,
                 materia TEXT,
-                assunto TEXT,
-                motivo TEXT,
-                bisu TEXT,
-                sanado INTEGER DEFAULT 0
+                horas_meta REAL,
+                horas_cumpridas REAL DEFAULT 0.0,
+                status TEXT DEFAULT 'Em Andamento',
+                data_atualizacao TEXT
             )
-        ''')
+        """)
         conn.commit()
         conn.close()
 
-    init_db_erros()
+    init_db_ciclo()
 
-    # Obtém matérias cadastradas no edital local do SQLite ou fallback seguro
-    materias_padrao = ["Português", "Matemática", "História", "Geografia", "Inglês", "Física", "Química"]
-    conn = sqlite3.connect("dados_qg.db")
-    try:
-        df_edital = pd.read_sql_query("SELECT DISTINCT materia AS 'Matéria' FROM edital_verticalizado", conn)
-        if not df_edital.empty and "Matéria" in df_edital.columns:
-            materias_padrao = sorted(df_edital["Matéria"].dropna().tolist())
-    except Exception:
-        if "db" in globals() and isinstance(db, dict) and "edital" in db and db["edital"]:
+    # 2. Formulário para Adicionar ou Ajustar Meta no Ciclo
+    with st.expander("➕ Adicionar Meta no Ciclo de Estudos", expanded=False):
+        with st.form("form_ciclo", clear_on_submit=True):
+            col_c1, col_c2 = st.columns(2)
+            
+            # Busca disciplinas cadastradas no edital local do SQLite ou usa lista padrão
+            materias_padrao = ["Português", "Matemática", "História", "Geografia", "Inglês", "Física", "Química", "EFA / Técnica"]
+            conn = sqlite3.connect("dados_qg.db")
             try:
-                df_e = pd.DataFrame(db["edital"])
-                if "Matéria" in df_e.columns:
-                    materias_padrao = sorted(list(df_e["Matéria"].dropna().unique()))
+                df_e = pd.read_sql_query("SELECT DISTINCT materia FROM edital_verticalizado", conn)
+                if not df_e.empty and "materia" in df_e.columns:
+                    materias_padrao = sorted(df_e["materia"].dropna().tolist())
             except Exception:
                 pass
+            finally:
+                conn.close()
+
+            materia_sel = col_c1.selectbox("Matéria / Disciplina", materias_padrao)
+            horas_meta_input = col_c2.number_input("Meta de Horas no Ciclo", min_value=0.5, value=4.0, step=0.5)
+
+            if st.form_submit_button("📌 Salvar Meta no Ciclo"):
+                conn = sqlite3.connect("dados_qg.db")
+                c = conn.cursor()
+                c.execute("""
+                    INSERT INTO ciclo_estudos (materia, horas_meta, horas_cumpridas, status, data_atualizacao)
+                    VALUES (?, ?, 0.0, 'Em Andamento', ?)
+                """, (materia_sel, float(horas_meta_input), str(datetime.date.today())))
+                conn.commit()
+                conn.close()
+                st.success("Meta adicionada ao Ciclo de Estudos!")
+                st.rerun()
+
+    st.markdown("---")
+
+    # 3. Exibição e Lançamento de Horas Estudadas
+    conn = sqlite3.connect("dados_qg.db")
+    try:
+        df_ciclo = pd.read_sql_query("SELECT id, materia, horas_meta, horas_cumpridas, status FROM ciclo_estudos WHERE status != 'Arquivado' ORDER BY id ASC", conn)
+    except Exception:
+        df_ciclo = pd.DataFrame()
     finally:
         conn.close()
 
-    # 2. Formulário para cadastrar novo Bisu
-    with st.expander("➕ Cadastrar Novo Bisu", expanded=True):
-        with st.form("form_e", clear_on_submit=True):
-            c1, c2 = st.columns(2)
-            mat_e = c1.selectbox("Matéria", materias_padrao)
-            assunto_e = c
+    if df_ciclo.empty:
+        st.info("Nenhuma matéria cadastrada no ciclo de estudos atual.")
+    else:
+        st.subheader("🎯 Progresso do Ciclo Ativo")
+        
+        for _, row in df_ciclo.iterrows():
+            c_id = int(row["id"])
+            mat = row["materia"]
+            meta = float(row["horas_meta"])
+            cumprido = float(row["horas_cumpridas"])
+            progresso = min(1.0, cumprido / meta) if meta > 0 else 0.0
+
+            with st.container():
+                col_m1, col_m2, col_m3 = st.columns([3, 2, 2])
+                col_m1.markdown(f"### 📖 {mat}")
+                col_m1.caption(f"Horas cumpridas: **{cumprido:.1f}h** / **{meta:.1f}h**")
+                col_m2.progress(progresso)
+
+                with col_m3:
+                    add_h = st.number_input(f"Adicionar Horas (+h)", min_value=0.25, max_value=10.0, value=1.0, step=0.25, key=f"inp_h_{c_id}")
+                    if st.button("➕ Registrar Horas", key=f"btn_add_{c_id}"):
+                        novas_horas = cumprido + add_h
+                        novo_status = "Concluído" if novas_horas >= meta else "Em Andamento"
+                        
+                        conn = sqlite3.connect("dados_qg.db")
+                        c = conn.cursor()
+                        c.execute("""
+                            UPDATE ciclo_estudos 
+                            SET horas_cumpridas = ?, status = ?, data_atualizacao = ?
+                            WHERE id = ?
+                        """, (novas_horas, novo_status, str(datetime.date.today()), c_id))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"Registradas +{add_h}h em {mat}!")
+                        st.rerun()
+
+                st.markdown("---")
 # -----------------------------------------------------------------------------
 # MÓDULO 10: Simulados
 # -----------------------------------------------------------------------------
