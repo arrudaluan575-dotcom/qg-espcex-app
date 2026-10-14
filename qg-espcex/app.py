@@ -2016,87 +2016,113 @@ elif menu == "🔗 Hub de Links":
 # ====================================================
 # MÓDULO 20: DIÁRIO DE BORDO
 # ====================================================
-elif menu == "📖 Módulo 20 - Diário de Bordo Tático":
+elif menu == "🎯 Simulados (1º e 2º Dia)":
     import sqlite3
     import datetime
     import pandas as pd
 
-    st.title("📖 Módulo 20 - Diário de Bordo Tático")
-    st.caption("Registro diário de combate, reflexões táticas e estado físico/mental.")
+    st.title("🎯 Simulados EsPCEx (1º e 2º Dia)")
 
-    # 1. Cria a tabela no SQLite local
-    def init_db_diario():
+    # 1. Garante a criação da tabela no SQLite local
+    def init_db_simulados():
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS diario_bordo (
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS simulados (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                data_registro TEXT,
-                foco_dia TEXT,
-                cansaco_fisico INTEGER,
-                o_que_foi_bem TEXT,
-                o_que_ajustar TEXT,
-                resumo_dia TEXT
+                nome TEXT,
+                data TEXT,
+                portugues INTEGER,
+                fisica INTEGER,
+                quimica INTEGER,
+                redacao REAL,
+                matematica INTEGER,
+                geografia INTEGER,
+                historia INTEGER,
+                ingles INTEGER,
+                tot_objetiva INTEGER,
+                aprovado TEXT
             )
-        ''')
+        """)
         conn.commit()
         conn.close()
 
-    init_db_diario()
+    init_db_simulados()
 
-    # 2. Formuário de entrada do Diário
-    with st.form("form_diario", clear_on_submit=True):
-        col_d1, col_d2 = st.columns(2)
-        data_registro = col_d1.date_input("Data do Registro", datetime.date.today())
-        foco_dia = col_d2.text_input("Foco Tático do Dia", placeholder="Ex: Meta de Pomodoros de Exatas + TAF")
+    # 2. Formulário para cadastro e avaliação do simulado
+    with st.expander("➕ Lançar Simulado", expanded=True):
+        with st.form("form_sim", clear_on_submit=True):
+            nome_sim = st.text_input("Nome do Simulado (Ex: 1º Simulado Inédito EsPCEx 2026)")
+            data_sim = st.date_input("Data do Simulado", datetime.date.today())
 
-        cansaco_fisico = st.slider("Nível de Cansaço Físico/Mental (1 = Descansado, 10 = Exausto)", 1, 10, 5)
+            st.markdown("#### 1º DIA DE PROVA")
+            c1a, c1b, c1c, c1d = st.columns(4)
+            p_port = c1a.number_input("Português (0 a 20 q)", 0, 20, 14)
+            p_fis = c1b.number_input("Física (0 a 12 q)", 0, 12, 7)
+            p_qui = c1c.number_input("Química (0 a 12 q)", 0, 12, 8)
+            p_red = c1d.number_input("Redação (0 a 100)", 0.0, 100.0, 80.0, step=5.0)
 
-        o_que_foi_bem = st.text_area("O que funcionou bem hoje?")
-        o_que_ajustar = st.text_area("O que precisa ser adjusted amanhã?")
-        resumo_dia = st.text_area("Resumo Geral / Notas do Dia")
+            st.markdown("#### 2º DIA DE PROVA")
+            c2a, c2b, c2c, c2d = st.columns(4)
+            p_mat = c2a.number_input("Matemática (0 a 20 q)", 0, 20, 13)
+            p_geo = c2b.number_input("Geografia (0 a 12 q)", 0, 12, 8)
+            p_hist = c2c.number_input("História (0 a 12 q)", 0, 12, 9)
+            p_ing = c2d.number_input("Inglês (0 a 12 q)", 0, 12, 10)
 
-        if st.form_submit_button("🎖️ Registrar no Diário"):
-            conn = sqlite3.connect("dados_qg.db")
-            c = conn.cursor()
-            
-            # Consulta SQL corrigida com fechamento correto de aspas
-            c.execute('''
-                INSERT INTO diario_bordo (data_registro, foco_dia, cansaco_fisico, o_que_foi_bem, o_que_ajustar, resumo_dia)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (str(data_registro), foco_dia, cansaco_fisico, o_que_foi_bem, o_que_ajustar, resumo_dia))
-            
-            conn.commit()
-            conn.close()
-            st.success("✅ Diário de Bordo registrado com sucesso!")
-            st.rerun()
+            if st.form_submit_button("🏆 Avaliar Desempenho"):
+                minimos = {
+                    "Português": p_port >= 10, "Física": p_fis >= 6, "Química": p_qui >= 6,
+                    "Matemática": p_mat >= 10, "Geografia": p_geo >= 6, "História": p_hist >= 6,
+                    "Inglês": p_ing >= 6, "Redação": p_red >= 50.0
+                }
+                tot_obj = p_port + p_fis + p_qui + p_mat + p_geo + p_hist + p_ing
+                aprovado_bool = all(minimos.values())
+                aprovado_str = "✅ SIM" if aprovado_bool else "❌ NÃO"
+
+                # Insere o simulado no SQLite local
+                conn = sqlite3.connect("dados_qg.db")
+                c = conn.cursor()
+                sql_insert = """
+                    INSERT INTO simulados (
+                        nome, data, portugues, fisica, quimica, redacao, 
+                        matematica, geografia, historia, ingles, tot_objetiva, aprovado
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+                c.execute(sql_insert, (
+                    nome_sim if nome_sim.strip() else "Simulado Sem Nome",
+                    str(data_sim), int(p_port), int(p_fis), int(p_qui), float(p_red),
+                    int(p_mat), int(p_geo), int(p_hist), int(p_ing), int(tot_obj), aprovado_str
+                ))
+                conn.commit()
+                conn.close()
+
+                if aprovado_bool:
+                    st.success(f"🎉 APROVADO NOS MÍNIMOS! {tot_obj}/100 acertos e Redação {p_red}.")
+                else:
+                    reprov = [m for m, ok in minimos.items() if not ok]
+                    st.error(f"⚠️ Mínimo não atingido em: {', '.join(reprov)}")
+                st.rerun()
 
     st.markdown("---")
-    st.subheader("📜 Histórico do Diário de Bordo")
 
-    # 3. Leitura dos dados salvos no SQLite
+    # 3. Exibição da tabela de simulados registrados no SQLite
     conn = sqlite3.connect("dados_qg.db")
     try:
-        df_diario = pd.read_sql_query('''
-            SELECT 
-                data_registro AS "Data",
-                foco_dia AS "Foco",
-                cansaco_fisico AS "Cansaço",
-                o_que_foi_bem AS "Pontos Fortes",
-                o_que_ajustar AS "Ajustes",
-                resumo_dia AS "Resumo"
-            FROM diario_bordo
-            ORDER BY id DESC
-        ''', conn)
+        sql_select = "SELECT nome AS 'Nome', data AS 'Data', tot_objetiva AS 'tot_obj', redacao AS 'Redação', aprovado AS 'Mínimos Atingidos' FROM simulados ORDER BY id DESC"
+        df_sim_raw = pd.read_sql_query(sql_select, conn)
     except Exception:
-        df_diario = pd.DataFrame()
+        df_sim_raw = pd.DataFrame()
     finally:
         conn.close()
 
-    if not df_diario.empty:
-        st.dataframe(df_diario, use_container_width=True)
+    if not df_sim_raw.empty:
+        # Formata a coluna de objetiva para exibir 'XX/100 (XX.0%)'
+        df_sim_raw["Objetiva"] = df_sim_raw["tot_obj"].apply(lambda x: f"{x}/100 ({x:.1f}%)")
+        df_exibicao = df_sim_raw[["Nome", "Data", "Objetiva", "Redação", "Mínimos Atingidos"]]
+        
+        st.dataframe(df_exibicao, use_container_width=True)
     else:
-        st.info("Nenhum registro no Diário de Bordo até o momento.")
+        st.info("Nenhum simulado registrado até o momento.")
 # ====================================================
 # MÓDULO 21: PLAYER DE ÁUDIO
 # ====================================================
