@@ -1682,6 +1682,7 @@ elif menu == "🔗 Hub de Links":
 # MÓDULO 20: DIÁRIO DE BORDO
 # ====================================================
 elif menu == "📖 Diário de Bordo":
+    import sqlite3
     import random
     from datetime import datetime
 
@@ -1697,47 +1698,84 @@ elif menu == "📖 Diário de Bordo":
 
     st.info(f"💡 **Frase do Dia:** {random.choice(frases_eb)}")
 
-    # 1. Lista que armazena os diários anteriores na memória da sessão
-    if "historico_diario" not in st.session_state:
-        st.session_state.historico_diario = []
+    # Garante a criação da tabela SQLite local do Diário de Bordo
+    def init_db_diario():
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS diario_bordo (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                data TEXT,
+                foco INTEGER,
+                cansaco INTEGER,
+                pontos_fortes TEXT,
+                pontos_melhorar TEXT,
+                resumo TEXT
+            )
+        ''')
+        conn.commit()
+        conn.close()
+
+    init_db_diario()
 
     st.markdown("---")
     st.subheader("📝 Reflexão do Fim de Dia")
 
     with st.form("form_diario_bordo"):
-        foco_dia = st.slider("Nível de Foco nos Estudos (1 a 5)", 1, 5, 4)
-        cansaco_fisico = st.slider("Desgaste Físico da Roça/Treino (1 a 5)", 1, 5, 3)
-        resumo_dia = st.text_area("O que correu bem hoje e o que precisa ser ajustado para amanhã?")
-        btn_salvar_diario = st.form_submit_button("Salvar Diário de Bordo")
+        col1, col2 = st.columns(2)
+        with col1:
+            foco_dia = st.slider("Nível de Foco nos Estudos (1 a 5)", 1, 5, 4)
+        with col2:
+            cansaco_fisico = st.slider("Desgaste Físico da Roça/Treino (1 a 5)", 1, 5, 3)
+
+        o_que_foi_bem = st.text_area("🌟 O que correu bem hoje?", placeholder="Ex.: Cumpri a meta de questões e mantive o ritmo no TAF.")
+        o_que_ajustar = st.text_area("🛠️ O que precisa ser ajustado / editado para amanhã?", placeholder="Ex.: Focar mais no bloco de exatas e acordar sem adiar o alarme.")
+
+        resumo_dia = st.text_area("📝 Resumo geral do dia / Observações:")
+
+        btn_salvar_diario = st.form_submit_button("💾 Salvar Diário de Bordo")
 
         if btn_salvar_diario:
-            if resumo_dia.strip():
-                # Captura a data e hora do registro
+            if o_que_foi_bem.strip() or o_que_ajustar.strip() or resumo_dia.strip():
                 data_registro = datetime.now().strftime("%d/%m/%Y às %H:%M")
                 
-                # Guarda o registro no topo da lista
-                st.session_state.historico_diario.insert(0, {
-                    "data": data_registro,
-                    "foco": foco_dia,
-                    "cansaco": cansaco_fisico,
-                    "resumo": resumo_dia
-                })
-                st.success("Reflexão salva com sucesso no histórico!")
+                conn = sqlite3.connect("dados_qg.db")
+                c = conn.cursor()
+                c.execute('''
+                    INSERT INTO diario_bordo (data, foco, cansaco, pontos_fortes, pontos_melhorar, resumo)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (data_registro, foco_dia, cansaco_fisico, o_que_foi_bem, o_que_ajustar, resumo_dia))
+                conn.commit()
+                conn.close()
+
+                st.success("✅ Reflexão salva com sucesso no banco de dados local!")
                 st.rerun()
             else:
                 st.warning("Escreva sua reflexão antes de clicar em salvar.")
 
-    # 2. EXIBIÇÃO DO HISTÓRICO DE ANOTAÇÕES SALVAS
     st.markdown("---")
     st.subheader("📜 Histórico de Reflexões Salvas")
 
-    if len(st.session_state.historico_diario) == 0:
+    conn = sqlite3.connect("dados_qg.db")
+    c = conn.cursor()
+    c.execute("SELECT data, foco, cansaco, pontos_fortes, pontos_melhorar, resumo FROM diario_bordo ORDER BY id DESC")
+    historico = c.fetchall()
+    conn.close()
+
+    if not historico:
         st.info("Nenhuma reflexão registrada ainda. Preencha o formulário acima para salvar sua primeira anotação.")
     else:
-        for idx, reg in enumerate(st.session_state.historico_diario):
-            with st.expander(f"📅 Registro de {reg['data']} — Foco: {reg['foco']}/5 | Cansaço: {reg['cansaco']}/5", expanded=(idx == 0)):
-                st.write("**💬 O que correu bem e o que precisa ser ajustado:**")
-                st.write(reg["resumo"])
+        for idx, reg in enumerate(historico):
+            data_disp, foco_disp, cansaco_disp, fortes_disp, melhorar_disp, resumo_disp = reg
+
+            with st.expander(f"📅 Registro de {data_disp} — Foco: {foco_disp}/5 | Cansaço: {cansaco_disp}/5", expanded=(idx == 0)):
+                if fortes_disp:
+                    st.success(f"**🌟 O que correu bem:**\n\n{fortes_disp}")
+                if melhorar_disp:
+                    st.warning(f"**🛠️ O que precisa ser ajustado para amanhã:**\n\n{melhorar_disp}")
+                if resumo_disp:
+                    st.write("**💬 Resumo / Reflexão:**")
+                    st.write(resumo_disp)
 # ====================================================
 # MÓDULO 21: PLAYER DE ÁUDIO
 # ====================================================
