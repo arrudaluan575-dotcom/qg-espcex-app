@@ -7,6 +7,36 @@ import json
 import os
 import time
 import hashlib
+import hashlib
+import sqlite3  # Certifique-se de que sqlite3 está importado
+
+# =============================================================================
+# TRAVA GLOBAL DE MANUTENÇÃO
+# =============================================================================
+def verificar_bloqueio_manutencao():
+    try:
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute("SELECT valor FROM config_qg WHERE chave = 'modo_manutencao'")
+        res = c.fetchone()
+        conn.close()
+
+        status_manutencao = res[0] if res else "Desativado"
+
+        if status_manutencao == "Ativado":
+            if not st.session_state.get("admin_autenticado", False):
+                st.error("🚨 **SISTEMA EM MANUTENÇÃO PROGRAMADA**")
+                st.warning("""
+                O QG EsPCEx está passando por atualizações e otimizações de segurança.
+                Apenas o Administrador possui permissão para acessar o sistema no momento.
+                """)
+                st.stop()
+    except Exception:
+        pass
+
+# Executa a verificação imediatamente antes de carregar o layout da página
+verificar_bloqueio_manutencao()
+
 # -----------------------------------------------------------------------------
 # Configuração da Página, Proteção Contra Tradução e Tema EsPCEx / EFA
 # -----------------------------------------------------------------------------
@@ -14,7 +44,7 @@ st.set_page_config(
     page_title="QG EsPCEx - Preparação de Cadetes",
     page_icon="⚔️",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 # Proteção contra erros de remoção de nós do DOM causados por tradução automática
@@ -520,48 +550,169 @@ elif menu == "🦉 Portal Estratégia Militares":
 # -----------------------------------------------------------------------------
 # MÓDULO 3: Treino TAF + Player de Música Spotify
 # -----------------------------------------------------------------------------
-elif menu == "🏋️ Treino TAF + Spotify":
+# #MODULO_TREINO_TAF_SPOTIFY
+elif "treino taf" in menu.lower() or "taf" in menu.lower():
     import sqlite3
     import datetime
     import pandas as pd
     import plotly.express as px
     import streamlit.components.v1 as components
+    import streamlit as st
 
     st.title("🏋️ Treinamento Físico Militar - TAF EsPCEx")
     st.caption("Acompanhamento dos treinos das 05h00 e player oficial do Spotify integrado.")
 
-    # 1. Garante a criação da tabela SQLite local do Treino TAF
+    # 1. BANCO DE DADOS LOCAL (SQLITE)
     def init_db_taf():
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS treinos_taf (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                data TEXT,
-                foco TEXT,
-                flexoes INTEGER,
-                abdominais INTEGER,
-                barras INTEGER,
-                corrida_m INTEGER,
-                indice_minimo TEXT,
+                data_treino TEXT NOT NULL,
+                modalidade TEXT NOT NULL,
+                flexoes INTEGER DEFAULT 0,
+                abdominais INTEGER DEFAULT 0,
+                barras INTEGER DEFAULT 0,
+                corrida_m INTEGER DEFAULT 0,
+                status_indice TEXT NOT NULL,
                 observacoes TEXT
             )
-        ''')
+        """)
+        conn.commit()
+        
+        c.execute("PRAGMA table_info(treinos_taf)")
+        cols = [col[1] for col in c.fetchall()]
+        if "data_treino" not in cols:
+            c.execute("DROP TABLE treinos_taf")
+            c.execute("""
+                CREATE TABLE treinos_taf (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    data_treino TEXT NOT NULL,
+                    modalidade TEXT NOT NULL,
+                    flexoes INTEGER DEFAULT 0,
+                    abdominais INTEGER DEFAULT 0,
+                    barras INTEGER DEFAULT 0,
+                    corrida_m INTEGER DEFAULT 0,
+                    status_indice TEXT NOT NULL,
+                    observacoes TEXT
+                )
+            """)
+            conn.commit()
+        conn.close()
+
+    try:
+        init_db_taf()
+    except Exception as e:
+        st.error(f"Erro ao inicializar tabela TAF: {e}")
+
+    def salvar_treino_taf(data_t, modalidade, flex, abs_rep, bar, corr, status_ind, obs):
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO treinos_taf (data_treino, modalidade, flexoes, abdominais, barras, corrida_m, status_indice, observacoes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (str(data_t), modalidade, flex, abs_rep, bar, corr, status_ind, obs))
         conn.commit()
         conn.close()
 
-    init_db_taf()
+    def carregar_treinos_taf():
+        try:
+            conn = sqlite3.connect("dados_qg.db")
+            df = pd.read_sql_query("""
+                SELECT 
+                    data_treino AS Data, 
+                    modalidade AS Foco, 
+                    flexoes AS Flexões, 
+                    abdominais AS Abdominais, 
+                    barras AS Barra, 
+                    corrida_m AS [Corrida (m)], 
+                    status_indice AS [Índice Mínimo], 
+                    observacoes AS Observações 
+                FROM treinos_taf 
+                ORDER BY data_treino ASC
+            """, conn)
+            conn.close()
+            return df
+        except Exception:
+            return pd.DataFrame()
 
+    # 2. ESTRUTURA DE ABAS
     aba_registro, aba_evolucao, aba_spotify = st.tabs([
         "➕ Cadastrar Treino (05h)",
         "📈 Evolução Física",
         "🎧 Spotify Player Integrado"
     ])
 
+    # ABA 1: CADASTRAR TREINO
+    with aba_registro:
+        st.markdown("""
+        **Índices Mínimos Masculinos (EsPCEx):**
+        - 🏃‍♂️ **Corrida 12 min:** Mínimo `2.450 metros`
+        - 💪 **Flexão de Braço:** Mínimo `21 repetições`
+        - 🧘‍♂️ **Abdominal Supra:** Mínimo `30 repetições` (em 1 minuto)
+        - 🏋️‍♂️ **Barra Fixa:** Mínimo `3 repetições`
+        """)
 
-    # ----------------------------------------------------
-    # ABA 3: SPOTIFY PLAYER INTEGRADO
-    # ----------------------------------------------------
+        with st.form("form_taf_novo", clear_on_submit=True):
+            col_t1, col_t2 = st.columns(2)
+            data_treino = col_t1.date_input("Data do Treino", datetime.date.today())
+            modalidade = col_t2.selectbox("Foco Principal", ["Treino Completo TAF", "Corrida de Tiro/Resistência", "Calistenia (Barra/Flexão/Abs)", "Simulado TAF Oficial"])
+
+            c_f1, c_f2, c_f3, c_f4 = st.columns(4)
+            flexoes = c_f1.number_input("Flexões de Braço", min_value=0, value=22)
+            abdominais = c_f2.number_input("Abdominais (1 min)", min_value=0, value=32)
+            barras = c_f3.number_input("Barra Fixa", min_value=0, value=4)
+            corrida_m = c_f4.number_input("Corrida 12 min (Metros)", min_value=0, value=2500, step=50)
+
+            obs_taf = st.text_input("Observações do Treino")
+
+            if st.form_submit_button("⚔️ Registrar Treino TAF", use_container_width=True):
+                ok_flex = flexoes >= 21
+                ok_abs = abdominais >= 30
+                ok_bar = barras >= 3
+                ok_cor = corrida_m >= 2450
+                aprovado_taf = ok_flex and ok_abs and ok_bar and ok_cor
+                status_str = "✅ APROVADO" if aprovado_taf else "⚠️ ABAIXO"
+
+                salvar_treino_taf(
+                    data_t=data_treino,
+                    modalidade=modalidade,
+                    flex=flexoes,
+                    abs_rep=abdominais,
+                    bar=barras,
+                    corr=corrida_m,
+                    status_ind=status_str,
+                    obs=obs_taf
+                )
+
+                if aprovado_taf:
+                    st.success("🎉 EXCELENTE! Atingiu todos os índices mínimos do TAF da EsPCEx!")
+                else:
+                    st.warning("Manter a constância nos treinos!")
+                st.rerun()
+
+    # ABA 2: EVOLUÇÃO FÍSICA
+    with aba_evolucao:
+        df_taf = carregar_treinos_taf()
+        if not df_taf.empty:
+            col_g_taf1, col_g_taf2 = st.columns(2)
+            with col_g_taf1:
+                fig_cor = px.line(df_taf, x="Data", y="Corrida (m)", markers=True, title="Evolução na Corrida de 12 Minutos")
+                fig_cor.add_hline(y=2450, line_dash="dash", line_color="green", annotation_text="Mínimo EsPCEx (2450m)")
+                fig_cor.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="#e0e6ed")
+                st.plotly_chart(fig_cor, use_container_width=True)
+
+            with col_g_taf2:
+                fig_rep = px.line(df_taf, x="Data", y=["Flexões", "Abdominais", "Barra"], markers=True, title="Repetições nos Exercícios de Força")
+                fig_rep.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="#e0e6ed")
+                st.plotly_chart(fig_rep, use_container_width=True)
+
+            st.dataframe(df_taf, use_container_width=True)
+        else:
+            st.info("Nenhum treino TAF cadastrado até o momento.")
+
+    # ABA 3: SPOTIFY
     with aba_spotify:
         st.subheader("🎧 Player Oficial do Spotify no QG EsPCEx")
         st.caption("Ouça suas músicas diretamente pelo Spotify na plataforma durante o treino das 05h00:")
@@ -606,7 +757,6 @@ elif menu == "🏋️ Treino TAF + Spotify":
                     components.iframe(embed_url, height=380)
                 else:
                     st.warning("Insira uma URL válida do Spotify.")
-
 # -----------------------------------------------------------------------------
 # MÓDULO 4: Alternância EFA & AMSP (15/15) - Disciplinas da EFA
 # -----------------------------------------------------------------------------
@@ -2148,6 +2298,7 @@ elif menu == "🎧 Player de Áudio":
         st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3")
 # ====================================================
 # #MODULO_22_CENTRAL_DE_CONFIGURACOES
+# ====================================================
 elif "módulo 22" in menu.lower() or "configurações" in menu.lower():
     import sqlite3
     import datetime
@@ -2605,81 +2756,68 @@ elif "módulo 23" in menu.lower() or "calendário" in menu.lower():
 #==========================================================================
 # #MODULO_24_PAINEL_ADMINISTRADOR_EXPANDIDO
 #===========================================================================
+# #MODULO_24_PAINEL_ADMINISTRADOR_DISCORD_ULTRA_COMPLETO
 elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" in menu.lower():
+    import sqlite3
+    import datetime
+    import os
+    import json
+    import pandas as pd
+    import streamlit as st
+    import urllib.request
+    import streamlit.components.v1 as components
+
     st.markdown("### `#Modulo24_Painel_Administrador`")
     st.title("🛡️ Módulo 24 - Central Restrita do Administrador")
-    st.caption("Painel de controlo exclusivo: gestão de alertas Telegram, emissão de relatórios master, auditoria e manutenção avançada.")
+    st.caption("Painel de comando master: gestão de alertas via Discord, bloqueio por manutenção, rastreamento de acessos e telemetria.")
 
     # -----------------------------------------------------------------------------
-    # 1. REGISTO DE LOGS E CONFIGURAÇÃO INICIAL
+    # 1. INFRAESTRUTURA DE BANCO DE DADOS, LOGS E DISPAROS PARA DISCORD
     # -----------------------------------------------------------------------------
-    import sqlite3
-
-    def init_db_config():
-        conn = sqlite3.connect("dados_qg.db")
-        conn.execute("CREATE TABLE IF NOT EXISTS config_qg (chave TEXT PRIMARY KEY, valor TEXT)")
-        conn.commit()
-        conn.close()
-
-    def get_config(chave, padrao=""):
+    def init_db_admin_completo():
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
-        c.execute("SELECT valor FROM config_qg WHERE chave = ?", (chave,))
-        res = c.fetchone()
-        conn.close()
-        return res[0] if res else padrao
-
-    def set_config(chave, valor):
-        conn = sqlite3.connect("dados_qg.db")
-        conn.execute("CREATE TABLE IF NOT EXISTS config_qg (chave TEXT PRIMARY KEY, valor TEXT)")
-        conn.execute("INSERT OR REPLACE INTO config_qg (chave, valor) VALUES (?, ?)", (chave, str(valor)))
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS config_qg (
+                chave TEXT PRIMARY KEY,
+                valor TEXT
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS logs_sistema (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                data_hora TEXT NOT NULL,
+                acao TEXT NOT NULL,
+                detalhe TEXT
+            )
+        """)
         conn.commit()
         conn.close()
 
-    def get_all_configs():
-        conn = sqlite3.connect("dados_qg.db")
-        conn.execute("CREATE TABLE IF NOT EXISTS config_qg (chave TEXT PRIMARY KEY, valor TEXT)")
-        rows = conn.execute("SELECT chave, valor FROM config_qg").fetchall()
-        conn.close()
-        return dict(rows)
+    init_db_admin_completo()
 
-    def get_total_registros(tabela):
-        tabelas_permitidas = {
-            "simulados",
-            "baterias_questoes",
-            "caderno_erros",
-            "diario_bordo",
-            "calendario_qg",
-        }
-        if tabela not in tabelas_permitidas:
-            return 0
-
-        conn = sqlite3.connect("dados_qg.db")
+    def get_config_adm(chave, padrao=""):
         try:
-            existe = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-                (tabela,)
-            ).fetchone()
-            if not existe:
-                return 0
-            return conn.execute(f'SELECT COUNT(*) FROM "{tabela}"').fetchone()[0]
-        finally:
+            conn = sqlite3.connect("dados_qg.db")
+            c = conn.cursor()
+            c.execute("SELECT valor FROM config_qg WHERE chave = ?", (chave,))
+            res = c.fetchone()
             conn.close()
+            return res[0] if res and res[0].strip() != "" else padrao
+        except Exception:
+            return padrao
 
-    init_db_config()
+    def set_config_adm(chave, valor):
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO config_qg (chave, valor) VALUES (?, ?)", (chave, str(valor)))
+        conn.commit()
+        conn.close()
 
     def registrar_log(acao, detalhe=""):
         try:
             conn = sqlite3.connect("dados_qg.db")
             c = conn.cursor()
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS logs_sistema (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    data_hora TEXT NOT NULL,
-                    acao TEXT NOT NULL,
-                    detalhe TEXT
-                )
-            """)
             c.execute(
                 "INSERT INTO logs_sistema (data_hora, acao, detalhe) VALUES (?, ?, ?)",
                 (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), acao, detalhe)
@@ -2689,45 +2827,151 @@ elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" 
         except Exception:
             pass
 
-    pin_admin_salvo = set_config("senha_admin", "1911")
+    def get_total_registros_adm(tabela):
+        try:
+            conn = sqlite3.connect("dados_qg.db")
+            c = conn.cursor()
+            c.execute(f"SELECT COUNT(*) FROM {tabela}")
+            res = c.fetchone()[0]
+            conn.close()
+            return res
+        except Exception:
+            return 0
+
+    def obter_usuario_atual():
+        """Recupera o login/identificação exata do usuário ativo na sessão."""
+        if "usuario_logado" in st.session_state and st.session_state["usuario_logado"]:
+            return st.session_state["usuario_logado"]
+        elif "nome_usuario" in st.session_state and st.session_state["nome_usuario"]:
+            return st.session_state["nome_usuario"]
+        
+        usuario_banco = get_config_adm("nome_guerra", "")
+        if usuario_banco:
+            return f"{usuario_banco} (Cadete)"
+            
+        return "Usuário Visitante / Não Identificado"
+
+    def enviar_discord_webhook(webhook_url, titulo, mensagem, cor=0x2e7d32, campos=None):
+        try:
+            if not webhook_url:
+                return False, "URL do Webhook não configurada."
+
+            payload = {
+                "username": "QG EsPCEx — Central de Alertas",
+                "avatar_url": "https://i.imgur.com/4M34hi2.png",
+                "embeds": [
+                    {
+                        "title": titulo,
+                        "description": mensagem,
+                        "color": cor,
+                        "fields": campos if campos else [],
+                        "footer": {"text": f"QG EsPCEx | Cadete {get_config_adm('nome_guerra', 'Arruda')}"},
+                        "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+                    }
+                ]
+            }
+
+            data = json.dumps(payload).encode('utf-8')
+            req = urllib.request.Request(
+                webhook_url,
+                data=data,
+                headers={'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0'}
+            )
+            with urllib.request.urlopen(req, timeout=10) as response:
+                return True, "Enviado com sucesso"
+        except Exception as e:
+            return False, str(e)
+
+    def notificar_avaria_discord(modulo_nome, erro_detalhado):
+        try:
+            webhook_url = get_config_adm("discord_webhook_url", "").strip()
+            if webhook_url:
+                data_hora = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                campos = [
+                    {"name": "📅 Data / Hora", "value": data_hora, "inline": True},
+                    {"name": "🧩 Módulo Afetado", "value": modulo_nome, "inline": True},
+                    {"name": "❌ Detalhe do Erro", "value": f"```{str(erro_detalhado)[:1000]}```", "inline": False}
+                ]
+                enviar_discord_webhook(
+                    webhook_url,
+                    titulo="🚨 ALERTA DE AVARIA NO QG",
+                    mensagem="Ocorreu uma falha na execução do sistema. Verifique os logs de auditoria.",
+                    cor=0xFF0000,
+                    campos=campos
+                )
+        except Exception:
+            pass
+
+    def notificar_acesso_discord(detalhe_acesso="Acesso Geral à Plataforma Web"):
+        try:
+            webhook_url = get_config_adm("discord_webhook_url", "").strip()
+            if webhook_url:
+                data_hora = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                usuario_identificado = obter_usuario_atual()
+                campos = [
+                    {"name": "👤 Login / Usuário", "value": f"`{usuario_identificado}`", "inline": True},
+                    {"name": "📅 Data / Hora", "value": data_hora, "inline": True},
+                    {"name": "🔓 Detalhes", "value": detalhe_acesso, "inline": False}
+                ]
+                enviar_discord_webhook(
+                    webhook_url,
+                    titulo="👤 NOVO USUÁRIO ACESSOU O SITE",
+                    mensagem=f"O usuário **{usuario_identificado}** iniciou uma sessão na plataforma.",
+                    cor=0x1E88E5,
+                    campos=campos
+                )
+        except Exception:
+            pass
+
+    # Alerta de primeiro acesso do usuário ao abrir o site
+    if "acesso_plataforma_notificado" not in st.session_state:
+        st.session_state["acesso_plataforma_notificado"] = True
+        notificar_acesso_discord("Acesso inicial do usuário ao site")
+
+    # -----------------------------------------------------------------------------
+    # 2. AUTENTICAÇÃO E CONTROLE DE ACESSO POR PIN MASTER
+    # -----------------------------------------------------------------------------
+    pin_admin_salvo = str(get_config_adm("senha_admin", "1911")).strip()
+    if not pin_admin_salvo:
+        pin_admin_salvo = "1911"
 
     if "admin_autenticado" not in st.session_state:
         st.session_state["admin_autenticado"] = False
 
-    # -----------------------------------------------------------------------------
-    # 2. AUTENTICAÇÃO RESTRITA (TELA DE DESBLOQUEIO)
-    # -----------------------------------------------------------------------------
     if not st.session_state["admin_autenticado"]:
-        st.warning("🔒 **Acesso Restrito:** Digite o PIN / Senha Master do Administrador para desbloquear as ferramentas restritas.")
+        st.warning("🔒 **Acesso Restrito ao Comando Master:** Digite o PIN de Administrador (PIN Padrão: `1911`).")
         
         with st.form("form_login_admin_master"):
-            pin_digitado = st.text_input("🔑 PIN / Senha Master", type="password", placeholder="Digite o PIN master")
+            pin_digitado = st.text_input("🔑 PIN / Senha Master", type="password", placeholder="Digite 1911")
             
             if st.form_submit_button("🔓 Desbloquear Painel Restrito", use_container_width=True):
-                if pin_digitado == pin_admin_salvo:
+                pin_clean = pin_digitado.strip()
+                if pin_clean == pin_admin_salvo or pin_clean == "1911":
                     st.session_state["admin_autenticado"] = True
+                    set_config_adm("senha_admin", pin_clean if pin_clean else "1911")
                     registrar_log("LOGIN_ADMIN", "Acesso autorizado ao Painel Master")
+                    notificar_acesso_discord("🔓 Entrada autorizada no Painel Master (Módulo 24)")
                     st.success("✅ Acesso de Administrador concedido!")
                     st.rerun()
                 else:
-                    registrar_log("FALHA_LOGIN_ADMIN", "Tentativa com PIN incorreto")
-                    st.error("❌ PIN incorreto! Acesso negado.")
+                    registrar_log("FALHA_LOGIN_ADMIN", f"Tentativa com PIN incorreto: '{pin_clean}'")
+                    st.error("❌ PIN incorreto! Utilize o PIN padrão: 1911.")
 
     # -----------------------------------------------------------------------------
-    # 3. PAINEL RESTRITO DESBLOQUEADO (TODAS AS FUNCIONALIDADES EXCLUSIVAS)
+    # 3. PAINEL DESBLOQUEADO — 9 ABAS MASTER
     # -----------------------------------------------------------------------------
     else:
         col_adm_h1, col_adm_h2 = st.columns([3, 1])
-        col_adm_h1.success("🟢 **Sessão de Administrador Ativa**")
-        if col_adm_h2.button("🔒 Bloquear Painel", use_container_width=True):
+        col_adm_h1.success("🟢 **Sessão do Administrador Ativa**")
+        if col_adm_h2.button("🔒 Encerrar Sessão Master", use_container_width=True):
             st.session_state["admin_autenticado"] = False
-            registrar_log("LOGOUT_ADMIN", "Sessão encerrada")
+            registrar_log("LOGOUT_ADMIN", "Sessão encerrada pelo utilizador")
             st.rerun()
 
         st.markdown("---")
 
-        aba_telegram, aba_relatorio, aba_import, aba_terminal, aba_logs, aba_telemetria, aba_manutencao, aba_arquivos, aba_pin = st.tabs([
-            "🤖 Bot Telegram",
+        aba_discord, aba_relatorio, aba_import, aba_terminal, aba_logs, aba_telemetria, aba_manutencao, aba_arquivos, aba_pin = st.tabs([
+            "🎮 Discord Bot",
             "📄 Relatório Master",
             "📥 Carga Massiva",
             "💻 Console SQL",
@@ -2739,161 +2983,140 @@ elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" 
         ])
 
         # -------------------------------------------------------------------------
-        # ABA 1: CONFIGURAÇÃO DO BOT TELEGRAM (ENVIO DE NOTIFICAÇÕES)
+        # ABA 1: DISCORD BOT
         # -------------------------------------------------------------------------
-        with aba_telegram:
-            st.subheader("🤖 Configuração e Disparo de Alertas via Telegram")
-            st.caption("Configure as credenciais do seu bot para enviar alertas de simulados, metas e lemas direto para o telemóvel.")
+        with aba_discord:
+            st.subheader("🎮 Central de Alertas, Acessos e Notificações no Discord")
+            st.caption("Receba relatórios táticos, avisos de acesso e alertas de avaria direto no Discord.")
 
-            with st.form("form_config_telegram"):
-                bot_token = st.text_input("Token do Bot Telegram", value=get_config("telegram_bot_token", ""), type="password", placeholder="Ex: 123456789:ABCdefGhIJKlmNoPQRstuVWXyz")
-                chat_id = st.text_input("ID do Chat / Canal Telegram", value=get_config("telegram_chat_id", ""), placeholder="Ex: 987654321 ou @meuchanal")
+            with st.form("form_config_discord"):
+                url_discord_input = st.text_input(
+                    "URL do Webhook do Discord", 
+                    value=get_config_adm("discord_webhook_url", ""), 
+                    type="password",
+                    placeholder="https://discord.com/api/webhooks/..."
+                )
 
-                if st.form_submit_button("💾 Salvar Configurações do Telegram"):
-                    set_config("telegram_bot_token", bot_token)
-                    set_config("telegram_chat_id", chat_id)
-                    registrar_log("CONFIG_TELEGRAM", "Credenciais do Telegram atualizadas")
-                    st.success("✅ Credenciais do Telegram salvas no banco local!")
-                    st.rerun()
+                if st.form_submit_button("💾 Salvar Webhook do Discord", use_container_width=True):
+                    try:
+                        set_config_adm("discord_webhook_url", url_discord_input.strip())
+                        registrar_log("CONFIG_DISCORD", "URL do Webhook atualizada")
+                        st.success("✅ Webhook do Discord salvo no SQLite!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao salvar Webhook: {e}")
 
             st.markdown("---")
-            st.markdown("##### 🚀 Testar Disparo de Alerta Instantâneo")
-            mensagem_teste = st.text_area("Mensagem do Alerta", value=f"🎖️ *QG EsPCEx — Mensagem de Teste*\n\nCadete {get_config('nome_guerra', 'Arruda')}, o sistema de notificações restritas está operacional!")
+            webhook_atual = get_config_adm("discord_webhook_url", "").strip()
+            col_d1, col_d2 = st.columns(2)
 
-            if st.button("📲 Enviar Notificação de Teste", type="primary", use_container_width=True):
-                token_atual = get_config("telegram_bot_token", "")
-                chat_atual = get_config("telegram_chat_id", "")
+            with col_d1:
+                st.markdown("**1️⃣ Notificação Personalizada**")
+                titulo_custom = st.text_input("Título do Alerta", value="🎖️ Notificação Tática do QG")
+                msg_custom = st.text_area("Mensagem", value=f"Cadete {get_config_adm('nome_guerra', 'Arruda')}, sistema sincronizado com o Discord.")
+                cor_custom = st.color_picker("Cor do Cartão", "#2E7D32")
 
-                if not token_atual or not chat_atual:
-                    st.error("Configure e salve o Token e Chat ID do Telegram antes de enviar!")
-                else:
-                    try:
-                        import urllib.parse
-                        import urllib.request
-                        
-                        texto_encoded = urllib.parse.quote(mensagem_teste)
-                        url = f"https://api.telegram.org/bot{token_atual}/sendMessage?chat_id={chat_atual}&text={texto_encoded}&parse_mode=Markdown"
-                        
-                        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                        with urllib.request.urlopen(req) as response:
-                            if response.status == 200:
-                                registrar_log("ENVIO_TELEGRAM_SUCESSO", "Mensagem enviada com sucesso")
-                                st.success("✅ Notificação enviada com sucesso para o Telegram!")
-                            else:
-                                st.error(f"Erro ao enviar: Código {response.status}")
-                    except Exception as e:
-                        registrar_log("ENVIO_TELEGRAM_ERRO", str(e))
-                        st.error(f"❌ Falha no disparo do Telegram: {e}")
+                if st.button("📲 Disparar Notificação Única", type="primary", use_container_width=True):
+                    if not webhook_atual:
+                        st.error("Configure a URL do Webhook do Discord primeiro!")
+                    else:
+                        cor_int = int(cor_custom.replace("#", ""), 16)
+                        ok, res = enviar_discord_webhook(webhook_atual, titulo_custom, msg_custom, cor=cor_int)
+                        if ok:
+                            registrar_log("DISCORD_SUCESSO", f"Enviado: {titulo_custom}")
+                            st.success("✅ Alerta enviado para o Discord!")
+                        else:
+                            notificar_avaria_discord("Envio Discord Único", res)
+                            st.error(f"Erro ao enviar: {res}")
+
+            with col_d2:
+                st.markdown("**2️⃣ Testar Alertas Específicos**")
+                if st.button("🔔 Simular Alerta de Novo Acesso", use_container_width=True):
+                    if not webhook_atual:
+                        st.error("Configure o Webhook do Discord primeiro!")
+                    else:
+                        notificar_acesso_discord("Teste manual de alerta de acesso de usuário")
+                        st.info("🔔 Alerta de teste de acesso enviado para o Discord!")
+
+                if st.button("🚀 Disparar Vários Alertas em Lote", use_container_width=True):
+                    if not webhook_atual:
+                        st.error("Configure o Webhook do Discord primeiro!")
+                    else:
+                        nome_cadete = get_config_adm("nome_guerra", "Arruda")
+                        campos_e1 = [
+                            {"name": "📝 Simulados", "value": str(get_total_registros_adm('simulados')), "inline": True},
+                            {"name": "📚 Baterias", "value": str(get_total_registros_adm('baterias_questoes')), "inline": True},
+                            {"name": "🏋️ Treinos TAF", "value": str(get_total_registros_adm('treinos_taf')), "inline": True}
+                        ]
+                        enviar_discord_webhook(webhook_atual, "📊 Boletim de Desempenho Diário", f"Resumo do Cadete **{nome_cadete}** no QG EsPCEx.", cor=0x2E7D32, campos=campos_e1)
+                        enviar_discord_webhook(webhook_atual, "🎖️ Lema Tático do Dia", f"*{get_config_adm('lema_tatico', 'A vitória ama a preparação!')}*", cor=0xD4AF37)
+                        st.success("🎉 **Alertas em lote enviados para o Discord!**")
 
         # -------------------------------------------------------------------------
-        # ABA 2: GERADOR DE RELATÓRIO MASTER
+        # ABA 2: RELATÓRIO MASTER
         # -------------------------------------------------------------------------
         with aba_relatorio:
-            st.subheader("📄 Emissão de Relatório Geral de Desempenho")
-            st.caption("Compila o status de todos os módulos num documento formatado pronto para impressão.")
+            st.subheader("📄 Emissão de Relatório Master Tático")
+            try:
+                nome_c = get_config_adm("nome_guerra", "Arruda")
+                nome_comp = get_config_adm("nome_completo", "Luan de Cristo Arruda")
+                meta_c = get_config_adm("meta_concurso", "EsPCEx")
+                data_hoje = datetime.date.today().strftime("%d/%m/%Y")
 
-            nome_c = get_config("nome_guerra", "Arruda")
-            meta_c = get_config("meta_concurso", "EsPCEx")
-            arma_c = get_config("arma_interesse", "Infantaria (Selva)")
-            data_hoje = datetime.date.today().strftime("%d/%m/%Y")
-
-            html_relatorio = f"""
-            <html>
-            <head>
-                <style>
-                    body {{ font-family: Arial, sans-serif; margin: 20px; color: #111; }}
-                    h1 {{ color: #2e7d32; border-bottom: 2px solid #2e7d32; padding-bottom: 5px; }}
-                    h2 {{ color: #1b5e20; margin-top: 20px; }}
-                    .box {{ background: #f4f6f4; border-left: 4px solid #2e7d32; padding: 12px; margin-bottom: 15px; }}
-                    table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
-                    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-                    th {{ background-color: #e8f5e9; }}
-                </style>
-            </head>
-            <body>
-                <h1>🎖️ BOLETIM DE DESEMPENHO E TELEMETRIA DO QG</h1>
-                <div class="box">
-                    <p><b>Cadete:</b> {nome_c} | <b>Alvo:</b> {meta_c} | <b>Especialização:</b> {arma_c}</p>
-                    <p><b>Data de Emissão:</b> {data_hoje} | <b>Status do QG:</b> Operacional</p>
-                </div>
-
-                <h2>📊 Resumo das Bases do SQLite (`dados_qg.db`)</h2>
-                <table>
-                    <tr><th>Módulo / Tabela</th><th>Total de Registos</th></tr>
-                    <tr><td>Simulados Cadastrados</td><td>{get_total_registros('simulados')}</td></tr>
-                    <tr><td>Baterias de Questões</td><td>{get_total_registros('baterias_questoes')}</td></tr>
-                    <tr><td>Bizus & Erros Salvos</td><td>{get_total_registros('caderno_erros')}</td></tr>
-                    <tr><td>Notas no Diário de Bordo</td><td>{get_total_registros('diario_bordo')}</td></tr>
-                    <tr><td>Eventos no Calendário</td><td>{get_total_registros('calendario_qg')}</td></tr>
-                </table>
-
-                <h2>🏋️ Índices Configurados para o TAF</h2>
-                <ul>
-                    <li><b>Corrida 12 min:</b> {get_config('taf_corrida', '2450')} metros</li>
-                    <li><b>Flexões de Braço:</b> {get_config('taf_flexao', '21')} repetições</li>
-                    <li><b>Barra Fixa:</b> {get_config('taf_barra', '3')} repetições</li>
-                    <li><b>Abdominais:</b> {get_config('taf_abdominal', '30')} repetições</li>
-                </ul>
-            </body>
-            </html>
-            """
-
-            st.components.v1.html(html_relatorio, height=380, scrolling=True)
-
-            st.download_button(
-                label="📥 Baixar Relatório Master em HTML (Imprimível)",
-                data=html_relatorio,
-                file_name=f"relatorio_master_qg_{datetime.date.today()}.html",
-                mime="text/html",
-                use_container_width=True
-            )
+                html_relatorio = f"""
+                <html>
+                <body style="font-family: monospace; padding: 20px;">
+                    <h2>🎖️ BOLETIM TÁTICO DO QG — {nome_c} ({nome_comp})</h2>
+                    <p><b>Alvo:</b> {meta_c} | <b>Data:</b> {data_hoje}</p>
+                    <hr>
+                    <p>Simulados Registrados: {get_total_registros_adm('simulados')}</p>
+                    <p>Treinos TAF Registrados: {get_total_registros_adm('treinos_taf')}</p>
+                </body>
+                </html>
+                """
+                components.html(html_relatorio, height=300, scrolling=True)
+                st.download_button("📥 Baixar Relatório HTML", data=html_relatorio, file_name=f"relatorio_master_{datetime.date.today()}.html", mime="text/html", use_container_width=True)
+            except Exception as e:
+                notificar_avaria_discord("Relatório Master", e)
 
         # -------------------------------------------------------------------------
-        # ABA 3: CARGA MASSIVA DE DADOS (CSV / EXCEL)
+        # ABA 3: CARGA MASSIVA
         # -------------------------------------------------------------------------
         with aba_import:
-            st.subheader("📥 Carga Massiva de Dados (Upload CSV / Excel)")
-            st.caption("Suba planilhas prontas para alimentar as tabelas do sistema em lote.")
+            st.subheader("📥 Carga Massiva de Dados (CSV / Excel)")
+            try:
+                conn = sqlite3.connect("dados_qg.db")
+                c = conn.cursor()
+                c.execute("SELECT name FROM sqlite_master WHERE type='table';")
+                tabelas_alvo = [r[0] for r in c.fetchall() if r[0] != "sqlite_sequence"]
+                conn.close()
 
-            conn = sqlite3.connect("dados_qg.db")
-            c = conn.cursor()
-            c.execute("SELECT name FROM sqlite_master WHERE type='table';")
-            tabelas_alvo = [r[0] for r in c.fetchall() if r[0] != "sqlite_sequence"]
-            conn.close()
+                if tabelas_alvo:
+                    tabela_destino = st.selectbox("Tabela de Destino", tabelas_alvo)
+                    arquivo_upload = st.file_uploader("Upload da Planilha (.csv ou .xlsx)", type=["csv", "xlsx"])
 
-            if tabelas_alvo:
-                tabela_destino = st.selectbox("Selecione a Tabela de Destino", tabelas_alvo)
-                arquivo_upload = st.file_uploader("Selecione o arquivo CSV ou Excel", type=["csv", "xlsx"])
-
-                if arquivo_upload is not None:
-                    try:
-                        if arquivo_upload.name.endswith(".csv"):
-                            df_import = pd.read_csv(arquivo_upload)
-                        else:
-                            df_import = pd.read_excel(arquivo_upload)
-
-                        st.write("🔍 **Pré-visualização dos dados a importar:**")
+                    if arquivo_upload is not None:
+                        df_import = pd.read_csv(arquivo_upload) if arquivo_upload.name.endswith(".csv") else pd.read_excel(arquivo_upload)
                         st.dataframe(df_import.head(5), use_container_width=True)
 
                         if st.button("🚀 Confirmar Importação em Lote", type="primary", use_container_width=True):
                             conn = sqlite3.connect("dados_qg.db")
                             df_import.to_sql(tabela_destino, conn, if_exists="append", index=False)
                             conn.close()
-                            
-                            registrar_log("CARGA_MASSIVA", f"Importados {len(df_import)} registos para {tabela_destino}")
-                            st.success(f"✅ {len(df_import)} registos importados com sucesso para a tabela `{tabela_destino}`!")
+                            registrar_log("CARGA_MASSIVA", f"Importados {len(df_import)} registros em {tabela_destino}")
+                            st.success(f"✅ {len(df_import)} registros gravados em `{tabela_destino}`!")
                             st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Erro ao processar arquivo: {e}")
+            except Exception as e_db:
+                notificar_avaria_discord("Carga Massiva", e_db)
 
         # -------------------------------------------------------------------------
-        # ABA 4: CONSOLE SQL DIRETO
+        # ABA 4: CONSOLE SQL
         # -------------------------------------------------------------------------
         with aba_terminal:
-            st.subheader("💻 Execução SQL e Inspeção Direta")
-            query_sql = st.text_area("Comando SQL", value="SELECT name FROM sqlite_master WHERE type='table';", height=90)
+            st.subheader("💻 Execução SQL & Console Interativo")
+            query_sql = st.text_area("Instrução SQL", value="SELECT name FROM sqlite_master WHERE type='table';", height=100)
 
-            if st.button("⚡ Executar Query no SQLite", type="primary", use_container_width=True):
+            if st.button("⚡ Executar Comando SQL", type="primary", use_container_width=True):
                 if query_sql.strip():
                     try:
                         conn = sqlite3.connect("dados_qg.db")
@@ -2904,143 +3127,78 @@ elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" 
                             c = conn.cursor()
                             c.execute(query_sql)
                             conn.commit()
-                            registrar_log("EXEC_SQL_DIRECT", f"Query: {query_sql[:50]}...")
                             st.success(f"✅ Comando executado! Linhas afetadas: {c.rowcount}")
                         conn.close()
-                    except Exception as e:
-                        st.error(f"❌ Erro ao executar SQL: {e}")
+                    except Exception as e_sql:
+                        notificar_avaria_discord("Console SQL", e_sql)
+                        st.error(f"Erros no SQL: {e_sql}")
 
         # -------------------------------------------------------------------------
-        # ABA 5: LOGS E AUDITORIA DE ATIVIDADES
+        # ABA 5: LOGS & AUDITORIA
         # -------------------------------------------------------------------------
         with aba_logs:
-            st.subheader("📜 Logs & Registo de Auditoria")
+            st.subheader("📜 Logs de Atividades & Auditoria")
             try:
                 conn = sqlite3.connect("dados_qg.db")
                 df_logs = pd.read_sql_query("SELECT * FROM logs_sistema ORDER BY id DESC", conn)
                 conn.close()
-
-                if df_logs.empty:
-                    st.info("Nenhum log registrado até o momento.")
-                else:
-                    st.dataframe(df_logs, use_container_width=True)
-                    if st.button("🧹 Limpar Histórico de Logs", use_container_width=True):
-                        conn = sqlite3.connect("dados_qg.db"); c = conn.cursor()
-                        c.execute("DELETE FROM logs_sistema"); conn.commit(); conn.close()
-                        st.success("Logs apagados com sucesso!")
-                        st.rerun()
-            except Exception:
-                st.info("A tabela de logs será criada no primeiro evento do sistema.")
+                st.dataframe(df_logs, use_container_width=True)
+            except Exception as e_log:
+                notificar_avaria_discord("Logs", e_log)
 
         # -------------------------------------------------------------------------
-        # ABA 6: TELEMETRIA DO SISTEMA
+        # ABA 6: TELEMETRIA
         # -------------------------------------------------------------------------
         with aba_telemetria:
-            st.subheader("📊 Telemetria do Sistema e Base de Dados")
-            
-            tamanho_db_mb = 0
+            st.subheader("📊 Telemetria do Banco de Dados")
             if os.path.exists("dados_qg.db"):
-                tamanho_db_mb = round(os.path.getsize("dados_qg.db") / (1024 * 1024), 2)
-
-            col_tel1, col_tel2, col_tel3 = st.columns(3)
-            col_tel1.metric("Tamanho da Base SQLite", f"{tamanho_db_mb} MB")
-            col_tel2.metric("Arquivo de Banco", "dados_qg.db")
-            col_tel3.metric("Status do Armazenamento", "🟢 Íntegro")
-
-            st.markdown("---")
-            st.write("##### 📋 Mapeamento de Tabelas Ativas:")
-            conn = sqlite3.connect("dados_qg.db")
-            c = conn.cursor()
-            c.execute("SELECT name FROM sqlite_master WHERE type='table';")
-            tbs = [r[0] for r in c.fetchall() if r[0] != "sqlite_sequence"]
-            
-            tele_data = []
-            for tb in tbs:
-                try:
-                    c.execute(f"SELECT COUNT(*) FROM {tb}")
-                    cnt = c.fetchone()[0]
-                    tele_data.append({"Tabela": tb, "Total de Registos": cnt, "Integridade": "OK"})
-                except Exception:
-                    pass
-            conn.close()
-
-            if tele_data:
-                st.dataframe(pd.DataFrame(tele_data), use_container_width=True)
+                st.metric("Tamanho do Banco SQLite", f"{round(os.path.getsize('dados_qg.db') / (1024*1024), 2)} MB")
 
         # -------------------------------------------------------------------------
         # ABA 7: MODO DE MANUTENÇÃO (LOCKOUT SWITCH)
         # -------------------------------------------------------------------------
         with aba_manutencao:
             st.subheader("🚨 Modo de Manutenção (Bloqueio Geral do QG)")
-            
-            status_manutencao = get_config("modo_manutencao", "Desativado")
+            status_manutencao = get_config_adm("modo_manutencao", "Desativado")
 
             if status_manutencao == "Ativado":
-                st.error("🔴 **O MODO DE MANUTENÇÃO ESTÁ ATIVO!** O acesso aos outros módulos está bloqueado.")
+                st.error("🔴 **O MODO DE MANUTENÇÃO ESTÁ ATIVO!** Apenas o Administrador pode usar o sistema.")
             else:
-                st.success("🟢 **SISTEMA OPERANDO NORMALMENTE.** Todos os módulos estão acessíveis.")
+                st.success("🟢 **SISTEMA OPERANDO NORMALMENTE.** Todos os módulos estão liberados.")
 
             st.markdown("---")
             col_lock1, col_lock2 = st.columns(2)
 
-            if col_lock1.button("🔒 ATIVAR Modo de Manutenção", use_container_width=True, type="primary"):
-                set_config("modo_manutencao", "Ativado")
+            if col_lock1.button("🔒 ATIVAR Modo de Manutenção (Bloquear Sistema)", use_container_width=True, type="primary"):
+                set_config_adm("modo_manutencao", "Ativado")
                 registrar_log("MODO_MANUTENCAO", "Ativado pelo Administrador")
-                st.warning("Modo de manutenção ativado!")
+                st.warning("Modo de manutenção ativado com sucesso!")
                 st.rerun()
 
-            if col_lock2.button("🔓 DESATIVAR Modo de Manutenção", use_container_width=True):
-                set_config("modo_manutencao", "Desativado")
+            if col_lock2.button("🔓 DESATIVAR Modo de Manutenção (Liberar Sistema)", use_container_width=True):
+                set_config_adm("modo_manutencao", "Desativado")
                 registrar_log("MODO_MANUTENCAO", "Desativado pelo Administrador")
-                st.success("Sistema restaurado para uso normal!")
+                st.success("Sistema restaurado e liberado para todos!")
                 st.rerun()
 
         # -------------------------------------------------------------------------
         # ABA 8: GERENCIADOR DE ARQUIVOS
         # -------------------------------------------------------------------------
         with aba_arquivos:
-            st.subheader("📂 Gerenciador de Arquivos do Projeto")
-            extensoes_permitidas = [".db", ".json", ".csv", ".pdf", ".txt", ".png", ".jpg", ".html"]
-            arquivos_pasta = [f for f in os.listdir(".") if os.path.isfile(f) and any(f.endswith(ext) for ext in extensoes_permitidas)]
-
-            if arquivos_pasta:
-                df_arq = []
-                for f in arquivos_pasta:
-                    size_kb = round(os.path.getsize(f) / 1024, 2)
-                    df_arq.append({"Nome do Arquivo": f, "Tamanho (KB)": size_kb})
-
-                st.dataframe(pd.DataFrame(df_arq), use_container_width=True)
-
-                st.markdown("---")
-                col_arq1, col_arq2 = st.columns(2)
-                arq_sel = col_arq1.selectbox("Selecione um Arquivo", arquivos_pasta)
-
-                if arq_sel:
-                    with open(arq_sel, "rb") as fp:
-                        col_arq2.download_button(
-                            label=f"📥 Baixar {arq_sel}",
-                            data=fp,
-                            file_name=arq_sel,
-                            use_container_width=True
-                        )
-            else:
-                st.info("Nenhum arquivo relevante encontrado no diretório.")
+            st.subheader("📂 Gerenciador de Arquivos")
+            arquivos_pasta = [f for f in os.listdir(".") if os.path.isfile(f)]
+            st.write(arquivos_pasta)
 
         # -------------------------------------------------------------------------
         # ABA 9: ALTERAR PIN MASTER
         # -------------------------------------------------------------------------
         with aba_pin:
-            st.subheader("🔑 Alterar PIN / Senha Master")
-            
-            with st.form("form_alterar_pin_master"):
-                novo_pin = st.text_input("Novo PIN Master", type="password")
-                confirma_pin = st.text_input("Confirmar Novo PIN Master", type="password")
-
-                if st.form_submit_button("💾 Salvar Novo PIN Master", use_container_width=True):
-                    if novo_pin.strip() != "" and novo_pin == confirma_pin:
-                        set_config("senha_admin", novo_pin)
-                        registrar_log("ALTERA_PIN_ADMIN", "PIN Master do Administrador alterado")
-                        st.success("✅ PIN Master atualizado com sucesso!")
+            st.subheader("🔑 Alterar PIN Master")
+            with st.form("form_pin"):
+                np = st.text_input("Novo PIN", type="password")
+                cp = st.text_input("Confirmar PIN", type="password")
+                if st.form_submit_button("Salvar PIN"):
+                    if np and np == cp:
+                        set_config_adm("senha_admin", np.strip())
+                        st.success("PIN alterado!")
                         st.rerun()
-                    else:
-                        st.error("Os PINs informados não coincidem ou estão vazios.")
