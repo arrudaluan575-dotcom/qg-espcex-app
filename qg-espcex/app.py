@@ -1387,9 +1387,10 @@ elif menu == "🎯 Simulados (1º e 2º Dia)":
                 # Insere o simulado no SQLite local
                 conn = sqlite3.connect("dados_qg.db")
                 c = conn.cursor()
-                c.execute('''
-                    INSERT INTO simulados (
-                        nome, data, portugues, fisica
+               c.execute('''
+    INSERT INTO tabela (coluna1, coluna2)
+    VALUES (?, ?)
+''', (val1, val2))  # Aspas triplas fechadas corretamente
         # -----------------------------------------------------------------------------
 # MÓDULO 11: Cronograma Integrado EFA & EsPCEx
 # -----------------------------------------------------------------------------
