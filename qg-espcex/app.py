@@ -713,34 +713,95 @@ elif menu == "🏋️ Treino TAF + Spotify":
 # MÓDULO 4: Alternância EFA & AMSP (15/15) - Disciplinas da EFA
 # -----------------------------------------------------------------------------
 elif menu == "🌾 Alternância EFA & AMSP (15/15)":
+    import sqlite3
+    import datetime
+    import pandas as pd
+
     st.title("🌾 Gestão da Alternância EFA & AMSP")
     st.caption("Controle dos ciclos de 15 dias e gestão da AMSP focada nas matérias da EFA.")
 
+    # 1. Garante a criação das tabelas no SQLite local
+    def init_db_efa():
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        
+        # Tabela de controle do ciclo (Em Casa / Na Escola)
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS efa_ciclo (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                modo TEXT,
+                inicio_ciclo TEXT
+            )
+        ''')
+
+        # Tabela de tarefas AMSP
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS tarefas_amsp (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                disciplina TEXT,
+                titulo TEXT,
+                categoria TEXT,
+                prazo TEXT,
+                prioridade TEXT,
+                detalhes TEXT,
+                concluida INTEGER DEFAULT 0,
+                criada_em TEXT
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+
+    init_db_efa()
+
+    # Fallback para a lista de matérias técnicas da EFA
+    MATERIAS_EFA = globals().get("MATERIAS_TECNICAS_EFA", [
+        "Plano de Estudo (PEF) / Caderno da Realidade",
+        "Projeto Profissional do Jovem (PPJ)",
+        "Agricultura (Cafeicultura, Olericultura e Culturas)",
+        "Zootecnia (Manejo e Produção Animal)",
+        "Agroecologia, SAFs e Meio Ambiente",
+        "Solos e Manejo do Solo"
+    ])
+
+    # 2. Carrega o estado atual do ciclo a partir do SQLite
+    conn = sqlite3.connect("dados_qg.db")
+    c = conn.cursor()
+    c.execute("SELECT modo, inicio_ciclo FROM efa_ciclo ORDER BY id DESC LIMIT 1")
+    ciclo_atual = c.fetchone()
+    conn.close()
+
+    if ciclo_atual:
+        modo_atual, inicio_ciclo_str = ciclo_atual
+    else:
+        modo_atual = "Em Casa"
+        inicio_ciclo_str = str(datetime.date.today())
+
+    # 3. Configuração do Ciclo Atual
     with st.expander("⚙️ Configurar Ciclo Atual de Alternância", expanded=True):
         col_c1, col_c2, col_c3 = st.columns(3)
-        modo_selecionado = col_c1.selectbox("Período Ativo do Ciclo", ["Em Casa", "Na Escola"], index=0 if efa_info["modo"] == "Em Casa" else 1)
+        modo_selecionado = col_c1.selectbox("Período Ativo do Ciclo", ["Em Casa", "Na Escola"], index=0 if modo_atual == "Em Casa" else 1)
         
         try:
-            dt_init_val = datetime.datetime.strptime(efa_info["inicio_ciclo"], "%Y-%m-%d").date()
+            dt_init_val = datetime.datetime.strptime(inicio_ciclo_str, "%Y-%m-%d").date()
         except Exception:
             dt_init_val = datetime.date.today()
 
         data_inicio_input = col_c2.date_input("Data de Início dos 15 Dias", dt_init_val)
 
         if col_c3.button("💾 Atualizar Estado do Ciclo"):
-            db["efa_ciclo"] = {
-                "modo": modo_selecionado,
-                "inicio_ciclo": str(data_inicio_input)
-            }
-            salvar_dados_usuario(user_atual, db)
-            st.success("Estado do ciclo EFA salvo!")
+            conn = sqlite3.connect("dados_qg.db")
+            c = conn.cursor()
+            c.execute("INSERT INTO efa_ciclo (modo, inicio_ciclo) VALUES (?, ?)", (modo_selecionado, str(data_inicio_input)))
+            conn.commit()
+            conn.close()
+            st.success("Estado do ciclo EFA salvo com sucesso!")
             st.rerun()
 
     st.markdown("---")
 
-    modo_atual = db["efa_ciclo"]["modo"]
-
-    if modo_atual == "Em Casa":
+    # 4. Modo EM CASA - Central de AMSP
+    if modo_selecionado == "Em Casa":
         st.subheader("🏠 Período EM CASA - Central da AMSP (Atividades da EFA)")
         st.info("💡 Registre aqui as pesquisas do Caderno da Realidade, PEF e tarefas de todas as matérias da EFA para o horário das 17h00 - 18h30.")
 
@@ -748,7 +809,7 @@ elif menu == "🌾 Alternância EFA & AMSP (15/15)":
             st.markdown("#### ➕ Cadastrar Nova AMSP por Matéria da EFA")
             
             col_tf1, col_tf2 = st.columns(2)
-            disciplina_amsp = col_tf1.selectbox("Matéria da EFA", MATERIAS_TECNICAS_EFA)
+            disciplina_amsp = col_tf1.selectbox("Matéria da EFA", MATERIAS_EFA)
             titulo_tf = col_tf2.text_input("Título / Tema da AMSP (Ex: Diagnóstico de Pragas do Café / Análise de Solo)")
 
             col_tf3, col_tf4 = st.columns(2)
@@ -765,73 +826,47 @@ elif menu == "🌾 Alternância EFA & AMSP (15/15)":
             detalhes_tf = st.text_area("Descrição / Questões da AMSP")
 
             if st.form_submit_button("📌 Salvar AMSP"):
-                nova_tarefa = {
-                    "id": len(db.get("tarefas_casa", [])) + 1,
-                    "disciplina": disciplina_amsp,
-                    "titulo": titulo_tf,
-                    "categoria": categoria_tf,
-                    "prazo": str(prazo_tf),
-                    "prioridade": prioridade_tf,
-                    "detalhes": detalhes_tf,
-                    "concluida": False,
-                    "criada_em": str(datetime.date.today())
-                }
-                db["tarefas_casa"].append(nova_tarefa)
-                salvar_dados_usuario(user_atual, db)
-                st.success("AMSP cadastrada com sucesso!")
-                st.rerun()
+                if titulo_tf.strip():
+                    conn = sqlite3.connect("dados_qg.db")
+                    c = conn.cursor()
+                    c.execute('''
+                        INSERT INTO tarefas_amsp (disciplina, titulo, categoria, prazo, prioridade, detalhes, concluida, criada_em)
+                        VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+                    ''', (disciplina_amsp, titulo_tf, categoria_tf, str(prazo_tf), prioridade_tf, detalhes_tf, str(datetime.date.today())))
+                    conn.commit()
+                    conn.close()
+                    st.success("AMSP cadastrada com sucesso no banco de dados local!")
+                    st.rerun()
+                else:
+                    st.warning("Preencha o título da AMSP antes de salvar.")
 
         st.markdown("---")
         st.subheader("📋 Painel de AMSP (Filtro por Matéria da EFA)")
 
-        tarefas = db.get("tarefas_casa", [])
-        if not tarefas:
+        # Carregar tarefas da base de dados local
+        conn = sqlite3.connect("dados_qg.db")
+        c = conn.cursor()
+        c.execute("SELECT id, disciplina, titulo, categoria, prazo, prioridade, detalhes, concluida FROM tarefas_amsp ORDER BY id DESC")
+        tarefas_rows = c.fetchall()
+        conn.close()
+
+        if not tarefas_rows:
             st.info("Nenhuma AMSP cadastrada até o momento.")
         else:
-            filtro_disc = st.selectbox("Filtrar AMSP por Matéria da EFA", ["Todas as Matérias"] + MATERIAS_TECNICAS_EFA)
+            filtro_disc = st.selectbox("Filtrar AMSP por Matéria da EFA", ["Todas as Matérias"] + MATERIAS_EFA)
             
-            tarefas_exibir = tarefas if filtro_disc == "Todas as Matérias" else [t for t in tarefas if t.get("disciplina") == filtro_disc]
+            # Filtro por disciplina
+            tarefas_exibir = tarefas_rows if filtro_disc == "Todas as Matérias" else [t for t in tarefas_rows if t[1] == filtro_disc]
 
             p_tab1, p_tab2 = st.tabs(["⏳ AMSP Pendentes", "✅ AMSP Concluídas"])
 
             with p_tab1:
-                pendentes = [t for t in tarefas_exibir if not t.get("concluida", False)]
+                pendentes = [t for t in tarefas_exibir if t[7] == 0]
                 if not pendentes:
                     st.success("🎉 Nenhuma AMSP pendente para a seleção atual!")
                 else:
                     for t in pendentes:
-                        disc_nome = t.get("disciplina", "Geral")
-                        with st.container():
-                            st.markdown(f"### 🌾 [{disc_nome}] - {t['titulo']}")
-                            st.markdown(f"**Tipo:** `{t['categoria']}` | **Prazo:** `{t['prazo']}` | **Prioridade:** `{t['prioridade']}`")
-                            st.write(t["detalhes"])
-
-                            if st.button(f"✅ Marcar AMSP Concluída #{t['id']}", key=f"btn_tf_{t['id']}"):
-                                t["concluida"] = True
-                                salvar_dados_usuario(user_atual, db)
-                                st.success("AMSP concluída!")
-                                st.rerun()
-                            st.markdown("---")
-
-            with p_tab2:
-                concluidas = [t for t in tarefas_exibir if t.get("concluida", False)]
-                if not concluidas:
-                    st.info("Nenhuma AMSP concluída nesta seleção.")
-                else:
-                    for t in concluidas:
-                        disc_nome = t.get("disciplina", "Geral")
-                        st.markdown(f"~~**[{disc_nome}]** - {t['titulo']} ({t['categoria']})~~ ✅ Concluída")
-
-    else:
-        st.subheader("🏫 Período NA ESCOLA - Aulas Presenciais")
-        st.success("ℹ️ **Módulo de tarefas AMSP de casa ocultado durante o período presencial na EFA.**")
-        st.markdown("""
-        Durante os **15 dias de permanência na EFA**:
-        - 📖 Acompanhamento direto de aulas teóricas e práticas com professores e monitores;
-        - 🤝 Vivência comunitária e trabalhos práticos nos setores de produção;
-        - 📚 Liberação da noite para focar nos blocos de Pomodoro e LDI da EsPCEx.
-        """)
-
+                        t_id, disc_nome, t_titulo, t_cat, t_prazo, t_prioridade, t_det
 # -----------------------------------------------------------------------------
 # MÓDULO 5: Pomodoro Tático (Com Alarme Sonoro)
 # -----------------------------------------------------------------------------
