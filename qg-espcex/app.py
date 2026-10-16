@@ -802,6 +802,56 @@ if st.session_state.usuario_logado is None:
                     registrar_tentativa(chave_login, False)
                     st.error("Utilizador ou senha incorretos.")
 
+        with st.expander("🔑 Esqueceu sua senha?"):
+            st.caption("Redefina sua senha com seu utilizador e a chave de recuperação do responsável pelo sistema.")
+            try:
+                chave_recuperacao_configurada = str(st.secrets.get("QG_PASSWORD_RESET_KEY", "")).strip()
+            except Exception:
+                chave_recuperacao_configurada = ""
+            if not chave_recuperacao_configurada:
+                chave_recuperacao_configurada = os.environ.get("QG_PASSWORD_RESET_KEY", "").strip()
+    
+            recuperacao_ativa = len(chave_recuperacao_configurada) >= 32
+            if not recuperacao_ativa:
+                st.info("A recuperação ainda não foi ativada. Configure QG_PASSWORD_RESET_KEY em Secrets no Streamlit Cloud ou como variável de ambiente, usando uma chave aleatória com pelo menos 32 caracteres.")
+    
+            with st.form("form_recuperacao_senha", clear_on_submit=True):
+                usuario_recuperacao = st.text_input("Utilizador / Nome de Guerra", key="recuperacao_usuario")
+                chave_recuperacao = st.text_input("Chave de recuperação", type="password", key="recuperacao_chave")
+                nova_senha_recuperacao = st.text_input("Nova senha", type="password", key="recuperacao_nova_senha")
+                confirmar_senha_recuperacao = st.text_input("Confirmar nova senha", type="password", key="recuperacao_confirmar_senha")
+                solicitar_recuperacao = st.form_submit_button(
+                    "Redefinir senha", type="primary", use_container_width=True,
+                    disabled=not recuperacao_ativa,
+                )
+    
+            if solicitar_recuperacao:
+                usuario_recuperacao_limpo = normalizar_usuario(usuario_recuperacao)
+                chave_tentativa_recuperacao = f"recuperacao:{usuario_recuperacao_limpo or '__invalido__'}"
+                espera_recuperacao = tempo_bloqueio(chave_tentativa_recuperacao)
+                if espera_recuperacao:
+                    st.error(f"Muitas tentativas. Aguarde {espera_recuperacao}s antes de tentar novamente.")
+                elif not senha_forte(nova_senha_recuperacao):
+                    st.error("Use uma senha com pelo menos 12 caracteres, incluindo letras e números.")
+                elif nova_senha_recuperacao != confirmar_senha_recuperacao:
+                    st.error("As senhas não coincidem.")
+                else:
+                    usuarios_recuperacao = carregar_usuarios()
+                    conta_recuperacao = usuarios_recuperacao.get(usuario_recuperacao_limpo)
+                    chave_informada_ok = hmac.compare_digest(
+                        str(chave_recuperacao).encode("utf-8"),
+                        chave_recuperacao_configurada.encode("utf-8"),
+                    )
+                    if isinstance(conta_recuperacao, dict) and chave_informada_ok:
+                        conta_recuperacao["senha"] = hash_senha(nova_senha_recuperacao)
+                        usuarios_recuperacao[usuario_recuperacao_limpo] = conta_recuperacao
+                        salvar_usuarios(usuarios_recuperacao)
+                        registrar_tentativa(chave_tentativa_recuperacao, True)
+                        st.success("Senha redefinida. Agora você já pode entrar com a nova senha.")
+                    else:
+                        registrar_tentativa(chave_tentativa_recuperacao, False)
+                        st.error("Não foi possível validar a conta e a chave de recuperação.")
+    
     with tab_cadastrar:
         st.subheader("Cadastro de Novo Cadete")
         cad_nome = st.text_input("Nome Completo / Guerra", key="input_cad_nome")
