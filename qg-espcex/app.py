@@ -1,14 +1,338 @@
+from __future__ import annotations
+
+import hashlib
+import hmac
+import re
+import tempfile
+import uuid
+import html
+from pathlib import Path
+
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+import plotly.io as pio
+import random
+import urllib.request
+
+
+# --- Segurança local (antes security.py) ---
+import hashlib
+import hmac
+import json
+import os
+import re
+import tempfile
+from pathlib import Path
+
+_USERS_STORE_PATH = Path("usuarios.json")
+_ITERATIONS = 600_000
+_ATTEMPT_FILE = Path(".qg_login_attempts.json")
+_USER_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
+
+
+def normalizar_usuario(valor: str) -> str:
+    usuario = str(valor or "").strip().casefold()
+    return usuario if _USER_RE.fullmatch(usuario) else ""
+
+
+def senha_forte(senha: str) -> bool:
+    return len(senha) >= 12 and any(c.isalpha() for c in senha) and any(c.isdigit() for c in senha)
+
+
+def hash_senha(senha: str) -> str:
+    salt = os.urandom(16)
+    digest = hashlib.pbkdf2_hmac("sha256", senha.encode("utf-8"), salt, _ITERATIONS)
+    return f"pbkdf2_sha256${_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+
+def verificar_senha(senha: str, armazenada: str) -> bool:
+    """Valida hashes novos e hashes SHA-256 legados, para migração no login."""
+    try:
+        if armazenada.startswith("pbkdf2_sha256$"):
+            _, rounds, salt_hex, digest_hex = armazenada.split("$", 3)
+            digest = hashlib.pbkdf2_hmac("sha256", senha.encode("utf-8"), bytes.fromhex(salt_hex), int(rounds))
+            return hmac.compare_digest(digest.hex(), digest_hex)
+        # Compatibilidade com contas existentes; o app troca para PBKDF2 após login.
+        return hmac.compare_digest(hashlib.sha256(senha.encode("utf-8")).hexdigest(), armazenada)
+    except (ValueError, TypeError):
+        return False
+
+
+def carregar_usuarios() -> dict:
+    try:
+        data = json.loads(_USERS_STORE_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def salvar_usuarios(usuarios: dict) -> None:
+    _USERS_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix="usuarios-", suffix=".tmp", dir=str(_USERS_STORE_PATH.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(usuarios, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_name, _USERS_STORE_PATH)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def verificar_credencial(valor: str, armazenada: str) -> bool:
+    """Verifica segredo PBKDF2 e migra de forma transparente valores legados."""
+    if armazenada.startswith("pbkdf2_sha256$"):
+        return verificar_senha(valor, armazenada)
+    if len(armazenada) == 64 and all(c in "0123456789abcdef" for c in armazenada.casefold()):
+        return verificar_senha(valor, armazenada)
+    return hmac.compare_digest(str(valor).encode("utf-8"), str(armazenada).encode("utf-8"))
+
+
+def tempo_bloqueio(chave: str) -> int:
+    """Retorna segundos restantes do bloqueio por excesso de tentativas."""
+    try:
+        estado = json.loads(_ATTEMPT_FILE.read_text(encoding="utf-8"))
+        item = estado.get(str(chave), {})
+        ate = float(item.get("bloqueado_ate", 0))
+        return max(0, int(ate - __import__("time").time() + 0.999))
+    except (OSError, ValueError, json.JSONDecodeError, AttributeError):
+        return 0
+
+
+def registrar_tentativa(chave: str, sucesso: bool) -> None:
+    """Rate limit persistente e compartilhado entre sessões do app."""
+    import time
+    try:
+        estado = json.loads(_ATTEMPT_FILE.read_text(encoding="utf-8"))
+        if not isinstance(estado, dict):
+            estado = {}
+    except (OSError, json.JSONDecodeError):
+        estado = {}
+    agora = time.time()
+    item = estado.get(str(chave), {})
+    if sucesso:
+        estado.pop(str(chave), None)
+    else:
+        tentativas = [float(t) for t in item.get("tentativas", []) if agora - float(t) < 600]
+        tentativas.append(agora)
+        item = {"tentativas": tentativas, "bloqueado_ate": agora + 90 if len(tentativas) >= 5 else 0}
+        if item["bloqueado_ate"]:
+            item["tentativas"] = []
+        estado[str(chave)] = item
+    fd, temp_name = tempfile.mkstemp(prefix="qg-security-", suffix=".tmp", dir=str(_ATTEMPT_FILE.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(estado, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_name, _ATTEMPT_FILE)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+# --- Memória persistente e revisão espaçada (antes memory.py) ---
+import datetime
+import json
+import os
+import tempfile
+import uuid
+from pathlib import Path
+
+DATA_DIR = Path("dados_usuarios")
+SCHEMA_VERSION = 3
+INTERVALOS_REVISAO = (1, 3, 7, 14, 30)
+
+
+def _arquivo_usuario(username: str) -> Path:
+    user_id = normalizar_usuario(username)
+    if not user_id:
+        raise ValueError("Identificador de usuário inválido.")
+    base = DATA_DIR.resolve()
+    path = (DATA_DIR / f"dados_espcex_{user_id}.json").resolve()
+    if path.parent != base:
+        raise ValueError("Caminho de dados inválido.")
+    return path
+
+
+def _padrao(edital_factory):
+    hoje = datetime.date.today()
+    return {
+        "schema_version": SCHEMA_VERSION, "sessoes": [], "erros": [], "redacoes": [],
+        "taf": [], "tarefas_casa": [],
+        "efa_ciclo": {"modo": "Em Casa", "inicio_ciclo": str(hoje)},
+        "edital": edital_factory(), "simulados": [], "pomodoro_ciclos_totais": 0,
+        "data_prova": str(hoje + datetime.timedelta(days=320)), "memorias": [],
+    }
+
+
+def carregar_dados_usuario(username: str, edital_factory) -> dict:
+    path = _arquivo_usuario(username)
+    dados = _padrao(edital_factory)
+    fonte = path
+    legado = Path(f"dados_espcex_{normalizar_usuario(username)}.json")
+    if not path.exists() and legado.is_file() and legado.resolve().parent == Path.cwd().resolve():
+        fonte = legado
+    try:
+        carregados = json.loads(fonte.read_text(encoding="utf-8"))
+        if isinstance(carregados, dict):
+            dados.update(carregados)
+    except (OSError, json.JSONDecodeError):
+        pass
+    for chave, valor in _padrao(edital_factory).items():
+        dados.setdefault(chave, valor)
+    dados["schema_version"] = SCHEMA_VERSION
+    if not isinstance(dados.get("memorias"), list):
+        dados["memorias"] = []
+    # Upgrade entries made by the earlier notes-only memory panel.
+    for item in dados["memorias"]:
+        if isinstance(item, dict):
+            item.setdefault("id", uuid.uuid4().hex[:12])
+            item.setdefault("materia", "Geral")
+            item.setdefault("tipo", "Anotação")
+            item.setdefault("tags", [])
+            item.setdefault("prioridade", "Média")
+            item.setdefault("repeticoes", 0)
+            item.setdefault("acertos", 0)
+            item.setdefault("falhas", 0)
+            item.setdefault("revisao_em", str(datetime.date.today()))
+            item.setdefault("fixada", False)
+    return dados
+
+
+def salvar_dados_usuario(username: str, dados: dict) -> None:
+    path = _arquivo_usuario(username)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = dict(dados)
+    payload["schema_version"] = SCHEMA_VERSION
+    payload["atualizado_em"] = datetime.datetime.now().isoformat(timespec="seconds")
+    fd, temp_name = tempfile.mkstemp(prefix=f"{path.stem}-", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def listar_memorias(username: str, limite: int = 100, materia: str | None = None,
+                    busca: str = "", apenas_revisar: bool = False) -> list[dict]:
+    dados = carregar_dados_usuario(username, lambda: [])
+    itens = [x for x in dados.get("memorias", []) if isinstance(x, dict)]
+    hoje = datetime.date.today()
+    if materia and materia != "Todas":
+        itens = [x for x in itens if x.get("materia", "Geral") == materia]
+    termo = busca.strip().casefold()
+    if termo:
+        itens = [x for x in itens if termo in (str(x.get("texto", "")) + " " + str(x.get("materia", "")) + " " + " ".join(x.get("tags", []))).casefold()]
+    if apenas_revisar:
+        itens = [x for x in itens if _data(x.get("revisao_em")) <= hoje]
+    itens.sort(key=lambda x: (not bool(x.get("fixada")), _data(x.get("revisao_em")), x.get("criada_em", "")), reverse=False)
+    return itens[:max(1, min(int(limite), 500))]
+
+
+def _data(valor) -> datetime.date:
+    try:
+        return datetime.date.fromisoformat(str(valor)[:10])
+    except (TypeError, ValueError):
+        return datetime.date.today()
+
+
+def adicionar_memoria(username: str, texto: str, materia: str = "Geral", tipo: str = "Anotação",
+                      tags: list[str] | None = None, prioridade: str = "Média") -> str:
+    texto = str(texto).strip()
+    if not texto or len(texto) > 3000:
+        raise ValueError("A anotação deve ter entre 1 e 3000 caracteres.")
+    materia = str(materia).strip()[:80] or "Geral"
+    tags_limpas = list(dict.fromkeys(str(x).strip().lstrip("#")[:32] for x in (tags or []) if str(x).strip()))[:12]
+    dados = carregar_dados_usuario(username, lambda: [])
+    memoria_id = uuid.uuid4().hex[:12]
+    dados.setdefault("memorias", []).append({
+        "id": memoria_id, "texto": texto, "materia": materia, "tipo": str(tipo)[:40],
+        "tags": tags_limpas, "prioridade": prioridade if prioridade in {"Baixa", "Média", "Alta"} else "Média",
+        "criada_em": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "revisao_em": str(datetime.date.today()), "ultima_revisao": "", "repeticoes": 0,
+        "acertos": 0, "falhas": 0, "fixada": False,
+    })
+    salvar_dados_usuario(username, dados)
+    return memoria_id
+
+
+def registrar_revisao(username: str, memoria_id: str, lembrou: bool) -> None:
+    dados = carregar_dados_usuario(username, lambda: [])
+    hoje = datetime.date.today()
+    for item in dados.get("memorias", []):
+        if isinstance(item, dict) and item.get("id") == memoria_id:
+            item["ultima_revisao"] = str(hoje)
+            if lembrou:
+                item["acertos"] = int(item.get("acertos", 0)) + 1
+                item["repeticoes"] = min(int(item.get("repeticoes", 0)) + 1, len(INTERVALOS_REVISAO))
+                intervalo = INTERVALOS_REVISAO[item["repeticoes"] - 1]
+            else:
+                item["falhas"] = int(item.get("falhas", 0)) + 1
+                item["repeticoes"] = 0
+                intervalo = 1
+            item["revisao_em"] = str(hoje + datetime.timedelta(days=intervalo))
+            break
+    salvar_dados_usuario(username, dados)
+
+
+def alternar_memoria_fixada(username: str, memoria_id: str) -> None:
+    dados = carregar_dados_usuario(username, lambda: [])
+    for item in dados.get("memorias", []):
+        if isinstance(item, dict) and item.get("id") == memoria_id:
+            item["fixada"] = not bool(item.get("fixada", False))
+            break
+    salvar_dados_usuario(username, dados)
+
+
+def remover_memoria(username: str, memoria_id: str) -> None:
+    dados = carregar_dados_usuario(username, lambda: [])
+    dados["memorias"] = [x for x in dados.get("memorias", []) if not isinstance(x, dict) or x.get("id") != memoria_id]
+    salvar_dados_usuario(username, dados)
+
+
+def estatisticas_memoria(username: str) -> dict:
+    dados = carregar_dados_usuario(username, lambda: [])
+    itens = [x for x in dados.get("memorias", []) if isinstance(x, dict)]
+    hoje = datetime.date.today()
+    acertos = sum(int(x.get("acertos", 0)) for x in itens)
+    falhas = sum(int(x.get("falhas", 0)) for x in itens)
+    revisoes = acertos + falhas
+    return {
+        "total": len(itens),
+        "para_revisar": sum(_data(x.get("revisao_em")) <= hoje for x in itens),
+        "fixadas": sum(bool(x.get("fixada")) for x in itens),
+        "taxa_acerto": round(acertos / revisoes * 100, 1) if revisoes else 0.0,
+        "por_materia": {m: sum(x.get("materia", "Geral") == m for x in itens) for m in sorted({x.get("materia", "Geral") for x in itens})},
+    }
+
 import datetime
 import json
 import os
 import time
-import hashlib
-import hashlib
-import sqlite3  # Certifique-se de que sqlite3 está importado
+import sqlite3
+
+
+pio.templates["qg_enterprise"] = go.layout.Template(layout=go.Layout(
+    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+    font={"family": "Inter, Manrope, sans-serif", "color": "#dbe9f7", "size": 12},
+    title={"font": {"size": 18, "color": "#f1f7ff"}, "x": 0.02, "xanchor": "left"},
+    margin={"t": 54, "r": 24, "b": 44, "l": 48},
+    hoverlabel={"bgcolor": "#0b1725", "bordercolor": "rgba(99,229,220,.4)", "font": {"color": "#eef5ff", "family": "Inter, sans-serif"}},
+    colorway=["#59e1d2", "#5d91ff", "#a88cff", "#f3bf62", "#ff7c9c", "#73d6a5"],
+    xaxis={"gridcolor": "rgba(141,181,212,.10)", "zerolinecolor": "rgba(141,181,212,.18)", "linecolor": "rgba(141,181,212,.18)", "tickfont": {"color": "#9aacc0"}},
+    yaxis={"gridcolor": "rgba(141,181,212,.10)", "zerolinecolor": "rgba(141,181,212,.18)", "linecolor": "rgba(141,181,212,.18)", "tickfont": {"color": "#9aacc0"}},
+    legend={"bgcolor": "rgba(0,0,0,0)", "font": {"color": "#b8c9d9"}},
+))
+pio.templates.default = "qg_enterprise"
 
 # =============================================================================
 # TRAVA GLOBAL DE MANUTENÇÃO
@@ -34,8 +358,6 @@ def verificar_bloqueio_manutencao():
     except Exception:
         pass
 
-# Executa a verificação imediatamente antes de carregar o layout da página
-verificar_bloqueio_manutencao()
 # =============================================================================
 # 2. RASTREAMENTO E CADASTRO AUTOMÁTICO DE USUÁRIOS
 # =============================================================================
@@ -81,47 +403,243 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Execute a trava após configurar a página Streamlit.
+verificar_bloqueio_manutencao()
+
 # Proteção contra erros de remoção de nós do DOM causados por tradução automática
 st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
 
 # Estilização CSS Verde Oliva / Exército / EFA
 st.markdown("""
     <style>
-    .main { background-color: #0f140d; color: #e0e6ed; }
-    .stMetric {
-        background-color: #1a2318;
-        padding: 14px;
-        border-radius: 8px;
-        border-left: 5px solid #4caf50;
-    }
-    .espcex-badge {
-        background-color: #2e4d25;
-        color: #d4af37;
-        padding: 6px 12px;
-        border-radius: 4px;
-        font-weight: bold;
-        font-family: monospace;
-        border: 1px solid #d4af37;
-    }
-    .routine-card {
-        background-color: #162014;
-        border: 1px solid #2e4d25;
-        border-radius: 8px;
-        padding: 14px;
-        margin-bottom: 10px;
-    }
-    .stButton>button {
-        background-color: #2e4d25;
-        color: #ffffff;
-        border: 1px solid #4caf50;
-        border-radius: 6px;
-        font-weight: bold;
-    }
-    .stButton>button:hover {
-        background-color: #3e6832;
-        border-color: #d4af37;
-    }
-    </style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap');
+:root { --bg:#07111f; --panel:#0d1b2a; --panel-2:#102338; --line:rgba(141,181,212,.16); --text:#e8f1fb; --muted:#8ba1b7; --cyan:#59e1d2; --blue:#5d91ff; --violet:#a88cff; --amber:#f3bf62; }
+.stApp { background:radial-gradient(ellipse at 15% -5%,rgba(36,103,141,.22),transparent 38%),radial-gradient(ellipse at 92% 9%,rgba(96,65,154,.16),transparent 32%),var(--bg); color:var(--text); font-family:'Manrope',sans-serif; }
+[data-testid="stHeader"] { background:rgba(7,17,31,.72); }
+.block-container { max-width:1500px; padding-top:2rem; padding-bottom:3rem; }
+[data-testid="stSidebar"] { background:linear-gradient(180deg,#0b1827 0%,#081321 100%); border-right:1px solid var(--line); }
+[data-testid="stSidebar"] * { color:var(--text); }
+[data-testid="stSidebar"] [data-testid="stMetric"] { background:#102338; border:1px solid var(--line); }
+[data-testid="stSidebar"] hr { border-color:var(--line); }
+h1,h2,h3,h4 { letter-spacing:-.035em; color:#f2f7ff; }
+h1 { font-weight:800; }
+[data-testid="stCaptionContainer"] p, [data-testid="stMarkdownContainer"] small { color:var(--muted); }
+[data-testid="stMetric"] { background:linear-gradient(145deg,rgba(17,39,60,.96),rgba(10,26,42,.95)); border:1px solid var(--line); border-radius:16px; padding:17px 18px; box-shadow:0 12px 32px rgba(0,0,0,.15); }
+[data-testid="stMetricLabel"] { color:#9ab0c6; font-size:.82rem; text-transform:uppercase; letter-spacing:.075em; }
+[data-testid="stMetricValue"] { color:#f4f8ff; font-family:'DM Mono',monospace; }
+[data-testid="stVerticalBlockBorderWrapper"] { border-radius:18px; border-color:var(--line); background:linear-gradient(145deg,rgba(15,32,50,.94),rgba(9,23,38,.94)); }
+[data-testid="stExpander"] { border:1px solid var(--line); border-radius:14px; background:rgba(13,27,42,.72); }
+.stButton>button, .stFormSubmitButton>button { border-radius:10px; font-weight:700; border:1px solid rgba(89,225,210,.35); background:#10283b; color:#eaf8ff; transition:all .2s ease; }
+.stButton>button[kind="primary"], .stFormSubmitButton>button[kind="primary"] { background:linear-gradient(110deg,#137f83,#315fbd); border:1px solid rgba(89,225,210,.8); color:white; box-shadow:0 0 22px rgba(62,190,205,.15); }
+.stButton>button:hover, .stFormSubmitButton>button:hover { border-color:var(--cyan); color:white; box-shadow:0 0 20px rgba(89,225,210,.16); transform:translateY(-1px); }
+.stTabs [data-baseweb="tab-list"] { gap:7px; border-bottom:1px solid var(--line); }
+.stTabs [data-baseweb="tab"] { border-radius:9px 9px 0 0; }
+.stTabs [aria-selected="true"] { color:var(--cyan)!important; }
+[data-testid="stDataFrame"] { border:1px solid var(--line); border-radius:13px; overflow:hidden; }
+[data-baseweb="input"] > div, [data-baseweb="select"] > div, [data-testid="stDateInput"] input, [data-testid="stTimeInput"] input, textarea { background:#0b1a2a!important; border-color:var(--line)!important; border-radius:10px!important; }
+[data-testid="stProgressBar"] > div > div { background:linear-gradient(90deg,var(--cyan),var(--blue),var(--violet)); }
+[data-testid="stAlert"] { border-radius:12px; }
+.espcex-badge { display:inline-flex; gap:8px; align-items:center; background:rgba(89,225,210,.08); color:var(--cyan); padding:7px 12px; border-radius:999px; font:600 .78rem 'DM Mono',monospace; border:1px solid rgba(89,225,210,.24); letter-spacing:.04em; }
+.routine-card, .insight-box { background:linear-gradient(145deg,rgba(17,39,60,.96),rgba(10,26,42,.96)); border:1px solid var(--line); border-left:3px solid var(--cyan); border-radius:14px; padding:17px 18px; margin:8px 0 12px; box-shadow:0 12px 26px rgba(0,0,0,.12); }
+.routine-card h4 { color:var(--cyan); font-family:'DM Mono',monospace; }
+.qg-hero { display:flex; justify-content:space-between; align-items:center; gap:18px; padding:19px 22px; margin:0 0 24px; border:1px solid rgba(89,225,210,.22); border-radius:18px; background:linear-gradient(112deg,rgba(13,37,56,.97),rgba(22,35,63,.82)); box-shadow:0 18px 46px rgba(0,0,0,.19); }
+.qg-hero-kicker { color:var(--cyan); font:500 .72rem 'DM Mono',monospace; text-transform:uppercase; letter-spacing:.16em; }
+.qg-hero-title { margin:5px 0 0; font-size:1.15rem; font-weight:800; color:#f4f8ff; }
+.qg-live { color:#a6b9cc; font:500 .72rem 'DM Mono',monospace; white-space:nowrap; }
+.qg-live:before { content:''; display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--cyan); box-shadow:0 0 12px var(--cyan); margin-right:8px; }
+@media (max-width:700px) { .block-container { padding-top:1rem; padding-left:1rem; padding-right:1rem; } .qg-hero { align-items:flex-start; flex-direction:column; } }
+
+[data-testid="stSidebar"] [data-testid="stRadio"] label { border-radius:10px; padding:7px 10px; transition:background .18s ease, border .18s ease; border:1px solid transparent; }
+[data-testid="stSidebar"] [data-testid="stRadio"] label:hover { background:rgba(89,225,210,.07); border-color:rgba(89,225,210,.18); }
+[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) { background:linear-gradient(100deg,rgba(24,125,131,.22),rgba(49,95,189,.13)); border-color:rgba(89,225,210,.24); }
+[data-testid="stPlotlyChart"] { border:1px solid rgba(141,181,212,.11); border-radius:15px; background:rgba(10,25,41,.30); padding:5px; }
+.diary-card { border-left:3px solid #59e1d2; }
+
+/* QG Enterprise: painel futurista, consistente e adaptável a telas pequenas. */
+:root {
+  color-scheme:dark; --bg:#07101b; --panel:#0b1725; --panel-raised:#102033;
+  --line:rgba(151,184,214,.15); --text:#eef5ff; --muted:#9aacc0;
+  --cyan:#63e5dc; --blue:#78a5ff; --violet:#b09aff; --radius:18px;
+}
+.stApp,[data-testid="stAppViewContainer"] {
+  background:radial-gradient(ellipse at 8% 0%,rgba(33,130,153,.16),transparent 34%),
+    radial-gradient(ellipse at 100% 18%,rgba(103,76,176,.13),transparent 31%),
+    linear-gradient(rgba(151,184,214,.025) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(151,184,214,.025) 1px,transparent 1px),#07101b;
+  background-size:auto,auto,48px 48px,48px 48px,auto;
+  color:var(--text); font-family:Inter,"Segoe UI",Manrope,system-ui,sans-serif;
+}
+.block-container { max-width:1600px; padding-top:1.45rem; padding-bottom:3.5rem; }
+[data-testid="stSidebar"] {
+  background:linear-gradient(180deg,rgba(11,24,39,.99),rgba(6,14,24,.99));
+  border-right:1px solid rgba(151,184,214,.13); box-shadow:16px 0 45px rgba(0,0,0,.12);
+}
+[data-testid="stSidebar"]>div:first-child { padding-top:1.1rem; }
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color:#dbe8f5; }
+[data-testid="stSidebar"] [data-testid="stRadio"]>label,
+[data-testid="stSidebar"] [data-testid="stExpander"] summary {
+  color:#aebed0; font-size:.72rem; font-weight:750; letter-spacing:.12em; text-transform:uppercase;
+}
+[data-testid="stSidebar"] [data-testid="stRadio"]>div { gap:4px; }
+[data-testid="stSidebar"] [data-testid="stRadio"] label {
+  min-height:38px; padding:8px 10px; border:1px solid transparent; border-radius:11px;
+  color:#b7c7d7; transition:background .18s ease,border-color .18s ease,transform .18s ease;
+}
+[data-testid="stSidebar"] [data-testid="stRadio"] label:hover {
+  background:rgba(99,229,220,.055); border-color:rgba(99,229,220,.16); transform:translateX(2px);
+}
+[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) {
+  color:#f4fbff; background:linear-gradient(100deg,rgba(32,140,146,.22),rgba(67,105,183,.14));
+  border-color:rgba(99,229,220,.28); box-shadow:inset 3px 0 var(--cyan),0 6px 20px rgba(0,0,0,.12);
+}
+.qg-nav-heading { margin:0 0 8px; color:#6ee3dc; font:750 .68rem "DM Mono",monospace; letter-spacing:.17em; }
+[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+  min-height:43px; border:1px solid rgba(99,229,220,.2); border-radius:12px;
+  background:linear-gradient(115deg,rgba(18,40,59,.96),rgba(14,27,45,.96)); color:#edf7ff;
+  box-shadow:inset 0 1px rgba(255,255,255,.025); transition:border-color .18s ease,box-shadow .18s ease;
+}
+[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div:hover {
+  border-color:rgba(99,229,220,.48); box-shadow:0 0 0 3px rgba(99,229,220,.06);
+}
+.qg-nav-heading + div { margin-top:0; }
+.qg-sidebar-brand { display:flex; align-items:center; gap:12px; margin:3px 0 17px; }
+.qg-sidebar-mark,.qg-brand-symbol {
+  display:grid; place-items:center; color:#efffff; border:1px solid rgba(99,229,220,.4);
+  background:linear-gradient(145deg,rgba(36,161,164,.34),rgba(67,90,170,.3));
+  box-shadow:0 0 26px rgba(99,229,220,.12),inset 0 1px rgba(255,255,255,.1);
+  font-family:Inter,"Segoe UI",sans-serif; font-weight:850; letter-spacing:.08em;
+}
+.qg-sidebar-mark { width:42px; height:42px; border-radius:14px; font-size:.86rem; }
+.qg-sidebar-name { color:#f4f8ff; font-size:.94rem; font-weight:850; letter-spacing:.08em; }
+.qg-sidebar-caption { margin-top:3px; color:#8299ae; font:600 .61rem "DM Mono",monospace; letter-spacing:.15em; text-transform:uppercase; }
+.qg-account-card {
+  display:flex; align-items:center; gap:10px; margin:0 0 14px; padding:11px 12px;
+  border:1px solid var(--line); border-radius:14px;
+  background:linear-gradient(135deg,rgba(20,43,63,.88),rgba(11,25,40,.86));
+}
+.qg-account-avatar { display:grid; flex:0 0 34px; place-items:center; width:34px; height:34px; border-radius:11px; color:#08202a; background:linear-gradient(135deg,var(--cyan),#82c7ff); font-weight:850; }
+.qg-account-label { color:#7991a8; font:600 .6rem "DM Mono",monospace; letter-spacing:.12em; text-transform:uppercase; }
+.qg-account-name { overflow:hidden; max-width:180px; color:#edf5ff; font-weight:750; text-overflow:ellipsis; white-space:nowrap; }
+.qg-hero {
+  position:relative; isolation:isolate; overflow:hidden; display:flex; justify-content:space-between; align-items:center;
+  gap:24px; min-height:142px; padding:24px 27px; margin:0 0 25px;
+  border:1px solid rgba(116,195,218,.21); border-radius:22px;
+  background:linear-gradient(112deg,rgba(11,31,48,.98),rgba(20,35,61,.95) 64%,rgba(23,29,52,.95));
+  box-shadow:0 22px 60px rgba(0,0,0,.22),inset 0 1px rgba(255,255,255,.035);
+}
+.qg-hero:before { content:""; position:absolute; z-index:-1; width:350px; height:350px; right:12%; top:-240px; border:1px solid rgba(99,229,220,.13); border-radius:50%; box-shadow:0 0 0 28px rgba(99,229,220,.025),0 0 0 58px rgba(99,229,220,.02); }
+.qg-hero:after { content:""; position:absolute; z-index:-1; inset:auto 0 0; height:2px; background:linear-gradient(90deg,transparent,var(--cyan),var(--blue),var(--violet),transparent); opacity:.75; }
+.qg-hero-brand { display:flex; align-items:center; gap:17px; min-width:0; }
+.qg-brand-symbol { flex:0 0 58px; width:58px; height:58px; border-radius:18px; font-size:1.05rem; }
+.qg-hero-kicker { color:var(--cyan); font:650 .67rem "DM Mono",monospace; text-transform:uppercase; letter-spacing:.17em; }
+.qg-hero-title { margin:7px 0 4px; color:#f4f8ff; font-size:clamp(1.2rem,2vw,1.68rem); font-weight:850; letter-spacing:-.045em; line-height:1.15; }
+.qg-hero-subtitle { color:#9aacc0; font-size:.83rem; }
+.qg-hero-meta { display:flex; flex:0 0 auto; flex-direction:column; align-items:flex-end; gap:10px; }
+.qg-live { display:inline-flex; align-items:center; gap:9px; padding:8px 11px; border:1px solid rgba(99,229,220,.2); border-radius:999px; color:#c5eee9; background:rgba(24,94,97,.19); font:650 .63rem "DM Mono",monospace; letter-spacing:.11em; white-space:nowrap; }
+.qg-live:before { content:""; display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--cyan); box-shadow:0 0 12px var(--cyan); animation:qg-pulse 2.2s ease-in-out infinite; }
+.qg-hero-date { color:#8196ab; font:500 .65rem "DM Mono",monospace; letter-spacing:.11em; text-transform:uppercase; }
+.qg-admin-console-hero {
+  position:relative; isolation:isolate; overflow:hidden; display:flex; align-items:center; gap:18px;
+  margin:3px 0 20px; padding:19px 22px; border:1px solid rgba(99,229,220,.22); border-radius:18px;
+  background:radial-gradient(circle at 82% 0%,rgba(72,127,230,.2),transparent 34%),linear-gradient(112deg,rgba(9,28,44,.98),rgba(17,35,59,.96) 62%,rgba(25,28,54,.96));
+  box-shadow:0 18px 48px rgba(0,0,0,.2),inset 0 1px rgba(255,255,255,.04);
+}
+.qg-admin-console-hero:after { content:""; position:absolute; z-index:-1; inset:auto 0 0; height:2px; background:linear-gradient(90deg,transparent,#63e5dc,#78a5ff,#b09aff,transparent); opacity:.85; }
+.qg-admin-console-mark { display:grid; flex:0 0 50px; place-items:center; width:50px; height:50px; border:1px solid rgba(99,229,220,.42); border-radius:15px; color:#edffff; background:linear-gradient(145deg,rgba(39,157,164,.35),rgba(75,91,175,.32)); box-shadow:0 0 24px rgba(99,229,220,.1); font:850 1rem "DM Mono",monospace; }
+.qg-admin-console-copy { min-width:0; }
+.qg-admin-console-kicker { color:#69e1d8; font:700 .64rem "DM Mono",monospace; letter-spacing:.17em; }
+.qg-admin-console-title { margin:5px 0 3px; color:#f3f8ff; font-size:1.13rem; font-weight:850; letter-spacing:-.035em; }
+.qg-admin-console-subtitle { color:#95aabd; font-size:.79rem; line-height:1.5; }
+.qg-admin-console-status { display:flex; flex:0 0 auto; align-items:center; gap:8px; margin-left:auto; padding:8px 10px; border:1px solid rgba(99,229,220,.19); border-radius:999px; color:#bcece7; background:rgba(27,105,102,.14); font:650 .58rem "DM Mono",monospace; letter-spacing:.08em; }
+.qg-admin-console-status span { width:7px; height:7px; border-radius:50%; background:#63e5dc; box-shadow:0 0 12px #63e5dc; }
+.qg-admin-console-hero:before { content:""; position:absolute; z-index:-1; right:18%; top:-128px; width:220px; height:220px; border:1px solid rgba(99,229,220,.13); border-radius:50%; box-shadow:0 0 0 22px rgba(99,229,220,.025),0 0 0 48px rgba(120,165,255,.025); animation:qg-orbit 24s linear infinite; }
+.qg-admin-console-mark { position:relative; overflow:hidden; }
+.qg-admin-console-mark:after { content:""; position:absolute; inset:-55%; background:linear-gradient(115deg,transparent 38%,rgba(255,255,255,.18) 49%,transparent 60%); transform:translateX(-70%); animation:qg-sheen 5.5s ease-in-out infinite; }
+.qg-admin-clock { font-variant-numeric:tabular-nums; }
+[data-testid="stMain"] [data-testid="stRadio"] > label { margin:0 0 7px; color:#8ca9bf; font:750 .66rem "DM Mono",monospace; letter-spacing:.12em; text-transform:uppercase; }
+[data-testid="stMain"] [data-testid="stRadio"] label { font-size:.76rem; font-weight:700; line-height:1.25; }
+[data-testid="stMain"] [data-testid="stRadio"] label:focus-within { outline:2px solid rgba(99,229,220,.62); outline-offset:2px; }
+[data-testid="stMain"] [data-testid="stRadio"] > div > label { box-shadow:0 7px 20px rgba(0,0,0,.1); }
+[data-testid="stSidebar"] [data-testid="stTextInput"] input { min-height:42px; padding-left:12px; border:1px solid rgba(99,229,220,.19)!important; border-radius:12px!important; background:rgba(8,20,33,.92)!important; }
+[data-testid="stSidebar"] [data-testid="stTextInput"] input:focus { border-color:rgba(99,229,220,.7)!important; box-shadow:0 0 0 3px rgba(99,229,220,.09)!important; }
+.stButton>button:focus-visible,.stFormSubmitButton>button:focus-visible,[data-testid="stDownloadButton"] button:focus-visible { outline:2px solid #63e5dc; outline-offset:3px; }
+[data-testid="stTooltipContent"] { border:1px solid rgba(99,229,220,.18); border-radius:10px; background:#0b1928; box-shadow:0 12px 34px rgba(0,0,0,.28); }
+@keyframes qg-orbit { to { transform:rotate(360deg); } }
+@keyframes qg-sheen { 0%,55%,100% { transform:translateX(-70%); } 75% { transform:translateX(70%); } }
+[data-testid="stMain"] [data-testid="stRadio"] > div { flex-wrap:wrap; gap:7px; }
+[data-testid="stMain"] [data-testid="stRadio"] label { min-height:38px; padding:8px 12px; border:1px solid rgba(151,184,214,.15); border-radius:11px; background:rgba(12,27,43,.7); transition:border-color .18s ease,background .18s ease,transform .18s ease; }
+[data-testid="stMain"] [data-testid="stRadio"] label:hover { border-color:rgba(99,229,220,.35); background:rgba(24,70,83,.32); transform:translateY(-1px); }
+[data-testid="stMain"] [data-testid="stRadio"] label:has(input:checked) { border-color:rgba(99,229,220,.48); color:#efffff; background:linear-gradient(110deg,rgba(29,124,132,.32),rgba(59,88,166,.26)); box-shadow:inset 0 0 0 1px rgba(99,229,220,.07),0 7px 20px rgba(0,0,0,.12); }
+@keyframes qg-pulse { 50% { opacity:.48; box-shadow:0 0 4px var(--cyan); } }
+h1,h2,h3,h4 { color:#f3f7ff; letter-spacing:-.04em; }
+h1 { margin:0 0 .3rem!important; font-size:clamp(1.7rem,3vw,2.35rem)!important; font-weight:850!important; }
+h2,h3 { font-weight:800!important; }
+[data-testid="stCaptionContainer"] p { color:#94a9bd; line-height:1.55; }
+[data-testid="stMetric"] {
+  position:relative; overflow:hidden; min-height:112px; padding:17px 18px;
+  border:1px solid rgba(151,184,214,.15); border-radius:17px;
+  background:linear-gradient(145deg,rgba(18,39,59,.96),rgba(9,22,36,.98));
+  box-shadow:0 12px 34px rgba(0,0,0,.17),inset 0 1px rgba(255,255,255,.025);
+  transition:transform .18s ease,border-color .18s ease;
+}
+[data-testid="stMetric"]:hover { transform:translateY(-2px); border-color:rgba(99,229,220,.3); }
+[data-testid="stMetric"]:after { content:""; position:absolute; top:0; left:18px; width:42px; height:2px; background:linear-gradient(90deg,var(--cyan),transparent); }
+[data-testid="stMetricLabel"] { color:#95abc0; font-size:.69rem; font-weight:750; text-transform:uppercase; letter-spacing:.105em; }
+[data-testid="stMetricValue"] { color:#f5f9ff; font:750 clamp(1.25rem,2vw,1.75rem) "DM Mono",ui-monospace,monospace; }
+[data-testid="stVerticalBlockBorderWrapper"] { border-radius:19px; border-color:rgba(151,184,214,.14); background:linear-gradient(145deg,rgba(15,32,50,.83),rgba(9,22,37,.84)); box-shadow:0 12px 34px rgba(0,0,0,.1); }
+[data-testid="stExpander"] { border:1px solid rgba(151,184,214,.14); border-radius:15px; background:rgba(11,25,40,.68); }
+[data-testid="stExpander"] summary { font-weight:700; }
+.stButton>button,.stFormSubmitButton>button,[data-testid="stDownloadButton"] button {
+  min-height:42px; border:1px solid rgba(117,163,196,.24); border-radius:11px;
+  color:#dceafb; background:linear-gradient(145deg,rgba(20,43,63,.96),rgba(13,30,48,.96));
+  font-weight:750; transition:all .18s ease;
+}
+.stButton>button:hover,.stFormSubmitButton>button:hover,[data-testid="stDownloadButton"] button:hover {
+  border-color:rgba(99,229,220,.72); color:#fff; box-shadow:0 8px 26px rgba(36,156,163,.13); transform:translateY(-1px);
+}
+.stButton>button[kind="primary"],.stFormSubmitButton>button[kind="primary"],[data-testid="stDownloadButton"] button[kind="primary"] {
+  border-color:rgba(99,229,220,.62); color:white;
+  background:linear-gradient(105deg,#137d83,#315bb0 72%,#5855a3);
+  box-shadow:0 8px 24px rgba(45,133,168,.18),inset 0 1px rgba(255,255,255,.1);
+}
+[data-baseweb="input"]>div,[data-baseweb="select"]>div,[data-testid="stDateInput"] input,[data-testid="stTimeInput"] input,textarea {
+  border-color:rgba(151,184,214,.19)!important; border-radius:11px!important; background:#091725!important;
+  transition:border-color .15s ease,box-shadow .15s ease;
+}
+[data-baseweb="input"]>div:focus-within,[data-baseweb="select"]>div:focus-within,textarea:focus {
+  border-color:rgba(99,229,220,.75)!important; box-shadow:0 0 0 3px rgba(99,229,220,.09)!important;
+}
+[data-testid="stCheckbox"] label,[data-testid="stRadio"] label { color:#c8d7e6; }
+[data-testid="stProgressBar"] { padding:3px; border:1px solid rgba(151,184,214,.12); border-radius:999px; background:rgba(255,255,255,.035); }
+[data-testid="stProgressBar"]>div>div { border-radius:999px; background:linear-gradient(90deg,#49cfc7,#5d91ff,#a88cff); box-shadow:0 0 14px rgba(89,225,210,.24); }
+[data-testid="stAlert"] { border:1px solid rgba(151,184,214,.14); border-radius:14px; background:rgba(13,28,44,.8); }
+.stTabs [data-baseweb="tab-list"] { gap:5px; padding:5px; border:1px solid rgba(151,184,214,.12); border-radius:13px; background:rgba(8,19,31,.72); }
+.stTabs [data-baseweb="tab"] { min-height:38px; border-radius:9px; color:#9cafc1; font-weight:700; }
+.stTabs [aria-selected="true"] { color:#eaffff!important; background:linear-gradient(100deg,rgba(38,135,142,.28),rgba(67,92,164,.22)); }
+[data-testid="stDataFrame"],[data-testid="stDataEditor"] { overflow:hidden; border:1px solid rgba(151,184,214,.15); border-radius:15px; background:rgba(9,22,36,.76); }
+[data-testid="stPlotlyChart"] { overflow:hidden; border:1px solid rgba(151,184,214,.13); border-radius:17px; background:linear-gradient(145deg,rgba(13,27,43,.62),rgba(9,20,33,.42)); padding:6px; }
+hr { border-color:rgba(151,184,214,.13)!important; }
+code { border:1px solid rgba(151,184,214,.12); border-radius:6px; color:#a9e8e4; background:rgba(13,29,45,.88); }
+::selection { color:#07101b; background:rgba(99,229,220,.75); }
+@media (max-width:900px) {
+  .qg-hero { align-items:flex-start; padding:20px; }
+  [data-testid="stHorizontalBlock"] { flex-wrap:wrap; gap:.8rem; }
+  [data-testid="stHorizontalBlock"]>[data-testid="column"] { min-width:min(100%,220px)!important; flex:1 1 220px!important; }
+}
+@media (max-width:640px) {
+  .block-container { padding:1rem .8rem 2rem; }
+  .qg-hero { flex-direction:column; gap:16px; min-height:0; padding:18px; border-radius:17px; }
+  .qg-hero-meta { align-items:flex-start; }
+  .qg-brand-symbol { flex-basis:46px; width:46px; height:46px; border-radius:14px; }
+  .qg-hero-title { font-size:1.24rem; }
+  [data-testid="stMetric"] { min-height:94px; padding:13px; }
+  .qg-admin-console-hero { align-items:flex-start; flex-wrap:wrap; padding:16px; }
+  .qg-admin-console-status { margin-left:0; }
+}
+@media (prefers-reduced-motion:reduce) {
+  *,*:before,*:after { scroll-behavior:auto!important; animation-duration:.01ms!important; animation-iteration-count:1!important; transition-duration:.01ms!important; }
+}
+</style>
 """, unsafe_allow_html=True)
 
 USERS_FILE = "usuarios.json"
@@ -177,28 +695,6 @@ def tocar_alarme_sonoro():
         setTimeout(function(){ playBeep(1046.50, 0.6); }, 800);
         </script>
     """, height=0)
-
-# -----------------------------------------------------------------------------
-# Autenticação e Gestão de Ficheiros
-# -----------------------------------------------------------------------------
-def hash_senha(senha):
-    return hashlib.sha256(senha.encode('utf-8')).hexdigest()
-
-def carregar_usuarios():
-    if os.path.exists(USERS_FILE):
-        try:
-            with open(USERS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
-
-def salvar_usuarios(usuarios):
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(usuarios, f, ensure_ascii=False, indent=4)
-
-def get_data_file(username):
-    return f"dados_espcex_{username.lower().strip()}.json"
 
 # -----------------------------------------------------------------------------
 # Edital Oficial EsPCEx
@@ -257,53 +753,25 @@ def get_edital_espcex():
         {"Matéria": "Inglês", "Dia": "2º Dia", "Tópico": "Gramática Aplicada", "Status": "Não Iniciado", "Prioridade": "Alta"}
     ]
 
-def carregar_dados_usuario(username):
-    data_file = get_data_file(username)
-    if os.path.exists(data_file):
-        try:
-            with open(data_file, "r", encoding="utf-8") as f:
-                dados = json.load(f)
-                if "redacoes" not in dados: dados["redacoes"] = []
-                if "taf" not in dados: dados["taf"] = []
-                if "tarefas_casa" not in dados: dados["tarefas_casa"] = []
-                if "efa_ciclo" not in dados:
-                    dados["efa_ciclo"] = {
-                        "modo": "Em Casa",
-                        "inicio_ciclo": str(datetime.date.today())
-                    }
-                return dados
-        except Exception:
-            pass
-    return {
-        "sessoes": [],
-        "erros": [],
-        "redacoes": [],
-        "taf": [],
-        "tarefas_casa": [],
-        "efa_ciclo": {
-            "modo": "Em Casa",
-            "inicio_ciclo": str(datetime.date.today())
-        },
-        "edital": get_edital_espcex(),
-        "simulados": [],
-        "pomodoro_ciclos_totais": 0,
-        "data_prova": str(datetime.date.today() + datetime.timedelta(days=320))
-    }
-
-def salvar_dados_usuario(username, dados):
-    data_file = get_data_file(username)
-    with open(data_file, "w", encoding="utf-8") as f:
-        json.dump(dados, f, ensure_ascii=False, indent=4)
-
 # -----------------------------------------------------------------------------
 # Autenticação de Utilizador
 # -----------------------------------------------------------------------------
 if "usuario_logado" not in st.session_state:
     st.session_state.usuario_logado = None
+if st.session_state.usuario_logado is not None:
+    agora_sessao = time.time()
+    ultima_atividade = st.session_state.get("auth_ultima_atividade", agora_sessao)
+    if agora_sessao - ultima_atividade > 8 * 60 * 60:
+        st.session_state.usuario_logado = None
+        st.session_state.pop("nome_exibicao", None)
+        st.session_state.pop("auth_ultima_atividade", None)
+        st.session_state.login_tentativas = 0
+    else:
+        st.session_state.auth_ultima_atividade = agora_sessao
 
 if st.session_state.usuario_logado is None:
-    st.title("🛡️ QG EsPCEx - Acesso Restrito")
-    st.caption("Sistema Tático de Estudos & Treinamento Físico Militar")
+    st.markdown("""<div class="qg-hero"><div><div class="qg-hero-kicker">QG EsPCEx · Acesso seguro</div><div class="qg-hero-title">Preparação de alto desempenho</div></div><div class="qg-live">PORTAL DE CADETES</div></div>""", unsafe_allow_html=True)
+    st.caption("Sistema de estudos, treino físico e planejamento tático.")
 
     tab_entrar, tab_cadastrar = st.tabs(["🔐 Entrar na Conta", "📝 Criar Nova Conta"])
 
@@ -313,30 +781,45 @@ if st.session_state.usuario_logado is None:
         login_pass = st.text_input("Senha", type="password", key="input_login_pass")
 
         if st.button("🔑 Entrar no QG"):
-            usuarios = carregar_usuarios()
-            u_clean = login_user.lower().strip()
-            if u_clean in usuarios and usuarios[u_clean]["senha"] == hash_senha(login_pass):
-                st.session_state.usuario_logado = u_clean
-                st.session_state.nome_exibicao = usuarios[u_clean].get("nome", login_user)
-                st.success(f"Bem-vindo, Cadete {st.session_state.nome_exibicao}!")
-                st.rerun()
+            u_clean = normalizar_usuario(login_user)
+            chave_login = u_clean or "__login_invalido__"
+            espera = tempo_bloqueio(chave_login)
+            if espera:
+                st.error(f"Muitas tentativas. Aguarde {espera}s antes de tentar novamente.")
             else:
-                st.error("Utilizador ou senha incorretos.")
+                usuarios = carregar_usuarios()
+                if u_clean in usuarios and verificar_senha(login_pass, usuarios[u_clean]["senha"]):
+                    registrar_tentativa(chave_login, True)
+                    if not usuarios[u_clean]["senha"].startswith("pbkdf2_sha256$"):
+                        usuarios[u_clean]["senha"] = hash_senha(login_pass)
+                        salvar_usuarios(usuarios)
+                    st.session_state.usuario_logado = u_clean
+                    st.session_state.nome_exibicao = usuarios[u_clean].get("nome", login_user)
+                    st.session_state.auth_ultima_atividade = time.time()
+                    st.success(f"Bem-vindo, Cadete {st.session_state.nome_exibicao}!")
+                    st.rerun()
+                else:
+                    registrar_tentativa(chave_login, False)
+                    st.error("Utilizador ou senha incorretos.")
 
     with tab_cadastrar:
         st.subheader("Cadastro de Novo Cadete")
         cad_nome = st.text_input("Nome Completo / Guerra", key="input_cad_nome")
-        cad_user = st.text_input("Nome de Utilizador (Login)", key="input_cad_user")
+        cad_user = st.text_input("Nome de Utilizador (3–32 caracteres: letras, números, . _ -)", key="input_cad_user")
         cad_pass = st.text_input("Criar Senha", type="password", key="input_cad_pass")
         cad_conf = st.text_input("Confirmar Senha", type="password", key="input_cad_conf")
 
         if st.button("📝 Criar Minha Conta"):
             usuarios = carregar_usuarios()
-            u_clean = cad_user.lower().strip()
+            u_clean = normalizar_usuario(cad_user)
             if not u_clean or not cad_pass:
                 st.warning("Preencha todos os campos.")
+            elif len(u_clean) < 3:
+                st.error("O nome de usuário precisa ter ao menos 3 caracteres.")
             elif u_clean in usuarios:
                 st.error("Nome de utilizador já existe.")
+            elif not senha_forte(cad_pass):
+                st.error("Use uma senha com pelo menos 12 caracteres, incluindo letras e números.")
             elif cad_pass != cad_conf:
                 st.error("Senhas não coincidem.")
             else:
@@ -354,56 +837,388 @@ if st.session_state.usuario_logado is None:
 # Carregamento do Utilizador Logado
 # -----------------------------------------------------------------------------
 user_atual = st.session_state.usuario_logado
-db = carregar_dados_usuario(user_atual)
+db = carregar_dados_usuario(user_atual, get_edital_espcex)
 nome_cadete = st.session_state.get("nome_exibicao", user_atual)
+
+
+def _eventos_proximos(dias=7):
+    """Carrega eventos pendentes da agenda, se o calendário já foi inicializado."""
+    try:
+        conn = sqlite3.connect("dados_qg.db")
+        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='calendario_qg'").fetchone()
+        if not exists:
+            conn.close()
+            return []
+        rows = conn.execute("SELECT data_evento, hora_evento, titulo, categoria, prioridade, status FROM calendario_qg WHERE COALESCE(status, 'Pendente') != 'Concluído' ORDER BY data_evento, hora_evento LIMIT 100").fetchall()
+        conn.close()
+        hoje_local = datetime.date.today()
+        limite = hoje_local + datetime.timedelta(days=dias)
+        saida = []
+        for row in rows:
+            try:
+                data_evt = datetime.date.fromisoformat(str(row[0])[:10])
+            except ValueError:
+                continue
+            if data_evt <= limite:
+                saida.append({"data": str(row[0]), "hora": str(row[1] or ""), "titulo": str(row[2] or "Evento"), "categoria": str(row[3] or "Geral"), "prioridade": str(row[4] or "Média"), "status": str(row[5] or "Pendente"), "atrasado": data_evt < hoje_local})
+        return saida[:20]
+    except sqlite3.Error:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return []
+
+
+eventos_proximos = _eventos_proximos()
+
+
+def _navegar_qg(destino):
+    """Seleciona uma tela do app a partir do guia inicial."""
+    st.session_state["qg_nav_menu"] = destino
+
+
+QG_MODULOS_NAVEGACAO = [
+    "📊 Painel & Rotina Diária",
+    "🧩 Quiz Diário Adaptativo",
+    "🎯 Missões Diárias",
+    "🎮 Mini Jogo de Pontos",
+    "🎛️ Personalizar Painel",
+    "👋 Guia Inicial",
+    "📲 Instalar como App",
+    "🆕 Novidades do QG",
+    "🦉 Portal Estratégia Militares",
+    "🏋️ Treino TAF + Spotify",
+    "🌾 Alternância EFA & AMSP (15/15)",
+    "⏱️ Pomodoro Tático (com Alarme)",
+    "✍️ Módulo de Redação",
+    "📋 Edital Verticalizado EsPCEx",
+    "📝 Registro de Questões",
+    "📕 Caderno de Bizus & Erros",
+    "🎯 Simulados (1º e 2º Dia)",
+    "📊 Visualizador de Planilhas",
+    "🎲 Sorteador de Temas & Textos Base",
+    "🏃 Módulo 13: Pacer TAF",
+    "🥗 Nutrição & Calorias",
+    "🌾 Calc. Agropecuária",
+    "📌 Kanban EFA",
+    "📌 Módulo 10 - Quadro Tático (Kanban)",
+    "🔥 Habit Tracker",
+    "📅 Cronograma Dinâmico",
+    "🔗 Hub de Links",
+    "📖 Diário de Bordo",
+    "🎧 Player de Áudio",
+    "⚙️ Configurações do QG",
+    "📅 Calendário Tático",
+    "💰 Controlo Financeiro",
+    "🧠 Memória Avançada",
+    "🗓️ Plano Semanal Automático",
+    "💾 Backup e Restauração",
+    "🎯 Modo Foco",
+    "🛡️ Módulo 24 · Central Administrativa",
+]
+QG_ADMIN_MODULOS_INTERNOS = [
+    "🛡️ Módulo 24 · Ajustes Privados",
+    "🎮 Admin · Discord Bot",
+    "📈 Admin · Relatórios",
+    "📥 Admin · Importação",
+    "💻 Admin · Console SQL",
+    "📜 Admin · Logs",
+    "📡 Admin · Telemetria",
+    "🛠️ Admin · Manutenção",
+    "🗄️ Admin · Banco de Dados",
+    "🐞 Admin · Diagnóstico & Bugs",
+    "🔐 Admin · Segurança",
+    "🧠 Admin · Inteligência do Efetivo",
+    "🎯 Admin · Campanhas QG",
+]
+QG_ROTAS_ADMIN_LEGADAS = set(
+    ["🛡️ Módulo 24 - Painel do Administrador", "🛡️ Módulo 24 · Ajustes Privados"]
+    + QG_ADMIN_MODULOS_INTERNOS
+)
+
+
+def _salvar_check_missao(username, data_iso, tarefa_id, widget_key):
+    estado = carregar_dados_usuario(username, get_edital_espcex)
+    missoes = estado.get("missoes_diarias", {})
+    if not isinstance(missoes, dict):
+        missoes = {}
+        estado["missoes_diarias"] = missoes
+    dia = missoes.get(data_iso, {})
+    if not isinstance(dia, dict):
+        dia = {}
+        missoes[data_iso] = dia
+    dia[tarefa_id] = bool(st.session_state.get(widget_key, False))
+    dia["atualizado_em"] = datetime.datetime.now().isoformat(timespec="seconds")
+    for chave_antiga in sorted(missoes)[:-90]:
+        missoes.pop(chave_antiga, None)
+    salvar_dados_usuario(username, estado)
+
+
+def _render_missao_diaria():
+    hoje = datetime.date.today().isoformat()
+    missao_config = db.get("config_missoes_diarias", {})
+    if not isinstance(missao_config, dict):
+        missao_config = {}
+    tarefas_padrao = {
+        "taf": "Cumprir o treino de TAF que você planejou",
+        "estudo": "Concluir o bloco principal de estudo",
+        "revisao": "Fazer a revisão programada",
+        "diario": "Registrar a evolução no Diário de Bordo",
+    }
+    ativas = missao_config.get("ativas", list(tarefas_padrao))
+    if not isinstance(ativas, list):
+        ativas = list(tarefas_padrao)
+    tarefas = [(chave, titulo) for chave, titulo in tarefas_padrao.items() if chave in ativas]
+    extras = missao_config.get("extras", [])
+    if isinstance(extras, list):
+        tarefas.extend((f"extra_{hashlib.sha256(str(titulo).strip().casefold().encode('utf-8')).hexdigest()[:8]}", str(titulo)[:100]) for titulo in extras if str(titulo).strip())
+
+    planos_catalogo = db.get("missoes_catalogo_por_dia", {})
+    ids_catalogo_hoje = planos_catalogo.get(hoje, []) if isinstance(planos_catalogo, dict) else []
+    if isinstance(ids_catalogo_hoje, list):
+        for missao_id in ids_catalogo_hoje:
+            missao = QG_MISSOES_POR_ID.get(str(missao_id))
+            if missao:
+                tarefas.append((f"catalogo_{missao['id']}", missao["titulo"]))
+
+    missoes_salvas = db.get("missoes_diarias", {})
+    estado_dia = missoes_salvas.get(hoje, {}) if isinstance(missoes_salvas, dict) else {}
+    if not isinstance(estado_dia, dict):
+        estado_dia = {}
+
+    with st.container(border=True):
+        st.markdown("#### 🏅 Missão diária · TAF e rotina")
+        st.caption("Marque as atividades que você planejou para hoje. O progresso é salvo na sua conta.")
+        descanso_key = f"missao_{user_atual}_{hoje}_descanso_taf"
+        if descanso_key not in st.session_state:
+            st.session_state[descanso_key] = bool(estado_dia.get("descanso_taf", False))
+        st.checkbox(
+            "Hoje é um dia sem treino de TAF planejado",
+            key=descanso_key, on_change=_salvar_check_missao,
+            args=(user_atual, hoje, "descanso_taf", descanso_key),
+        )
+
+        total = 0
+        concluidas = 0
+        colunas = st.columns(2)
+        for indice, (tarefa_id, titulo) in enumerate(tarefas):
+            if tarefa_id == "taf" and st.session_state[descanso_key]:
+                continue
+            total += 1
+            widget_key = f"missao_{user_atual}_{hoje}_{tarefa_id}"
+            if widget_key not in st.session_state:
+                st.session_state[widget_key] = bool(estado_dia.get(tarefa_id, False))
+            col = colunas[indice % 2]
+            col.checkbox(
+                titulo, key=widget_key, on_change=_salvar_check_missao,
+                args=(user_atual, hoje, tarefa_id, widget_key),
+            )
+            concluidas += int(bool(st.session_state[widget_key]))
+        if total:
+            st.progress(concluidas / total, text=f"Progresso de hoje: {concluidas} de {total} missões")
+        else:
+            st.info("Escolha as missões diárias em Personalizar Painel.")
+
+
+# Catálogo de desafios do Quiz. Os identificadores são estáveis para manter
+# seleção, conclusão e pontuação do usuário entre sessões.
+_QG_MISSOES_SEMENTES = [
+    ("Manhã", "Rotina matinal", 5, 5, [
+        "Começar no horário planejado", "Beber água ao iniciar o dia", "Organizar a mesa de estudos",
+        "Conferir a agenda e os compromissos", "Separar o material da primeira matéria",
+        "Revisar as três prioridades do dia", "Fazer a mobilidade leve prevista na sua rotina",
+        "Abrir o plano de estudos antes das notificações", "Preparar o uniforme ou material necessário",
+        "Registrar seu nível de foco para começar",
+    ]),
+    ("Manhã", "Arranque de estudos", 15, 10, [
+        "Revisar cinco cartões de memória", "Ler o resumo do assunto prioritário",
+        "Resolver três questões antes de consultar a teoria", "Estudar um tópico por 15 minutos sem interrupção",
+        "Recitar de memória os pontos da última aula", "Revisar uma fórmula e explicar quando usá-la",
+        "Fazer uma leitura curta de atualidades", "Escrever uma meta objetiva para o primeiro bloco",
+        "Conferir uma revisão vencida no quiz", "Registrar uma dúvida para investigar no estudo de hoje",
+    ]),
+    ("Dia", "Estudo e foco", 25, 15, [
+        "Concluir um bloco de estudo de 25 minutos", "Estudar um tópico difícil em etapas menores",
+        "Explicar um conceito em voz alta sem olhar o material", "Montar um mapa curto de um assunto",
+        "Comparar dois conceitos parecidos e anotar a diferença", "Fazer uma pausa planejada entre blocos",
+        "Fechar distrações durante um bloco de foco", "Registrar o tempo real de estudo no diário",
+        "Transformar uma dúvida em pergunta de revisão", "Concluir o próximo passo definido no plano semanal",
+    ]),
+    ("Dia", "Questões e simulados", 20, 15, [
+        "Resolver cinco questões da matéria prioritária", "Corrigir uma questão errada e explicar o motivo",
+        "Resolver questões sem consultar o gabarito antes", "Anotar o tema de cada erro do bloco",
+        "Refazer uma questão que errou anteriormente", "Completar um mini bloco cronometrado de questões",
+        "Conferir se entendeu cada alternativa de uma questão", "Resolver uma questão de interpretação de texto",
+        "Registrar acertos e tentativas no controle de questões", "Separar duas questões para revisar amanhã",
+    ]),
+    ("Dia", "Memória e revisão", 15, 12, [
+        "Revisar cartões que vencem hoje", "Fazer recordação ativa de um assunto sem consulta",
+        "Revisar um erro do Caderno de Bizus", "Criar um cartão para um conceito importante",
+        "Revisitar uma matéria estudada há sete dias", "Resumir um tópico em cinco linhas de memória",
+        "Explicar a solução de uma questão para si mesmo", "Revisar uma anotação fixada na memória",
+        "Marcar o que ainda precisa de nova explicação", "Agendar a próxima revisão de um assunto consolidado",
+    ]),
+    ("Dia", "Conteúdo e redação", 30, 18, [
+        "Escrever uma introdução de redação", "Produzir um parágrafo com tese e argumento",
+        "Revisar a clareza de um texto próprio", "Estudar um tópico do edital verticalizado",
+        "Relacionar um conteúdo a um exemplo concreto", "Reescrever uma resposta com mais precisão",
+        "Ler um texto e identificar a ideia central", "Registrar repertório para uma redação futura",
+        "Revisar uma regra gramatical com exemplos", "Atualizar o progresso de um item do edital",
+    ]),
+    ("Dia", "TAF planejado", 30, 20, [
+        "Cumprir somente o treino de TAF previsto no seu plano", "Registrar o treino realizado no histórico do TAF",
+        "Conferir o material necessário para o próximo treino", "Fazer o aquecimento que já faz parte da sua orientação",
+        "Respeitar o dia de descanso previsto no planejamento", "Anotar como se sentiu durante o treino planejado",
+        "Revisar uma meta física definida com seu orientador", "Conferir a hidratação e o material antes do treino",
+        "Atualizar uma marca do TAF sem alterar o plano de treino", "Preparar a agenda para a próxima sessão de TAF",
+    ]),
+    ("Dia", "Bem-estar e constância", 10, 8, [
+        "Fazer uma pausa longe da tela", "Organizar o espaço após o bloco de estudos",
+        "Fazer uma caminhada leve se ela estiver na sua rotina", "Manter o horário de descanso que você planejou",
+        "Preparar água e material para o próximo bloco", "Anotar uma pequena vitória do dia",
+        "Pedir ajuda ou registrar uma dúvida que travou seu estudo", "Fazer uma pausa breve entre matérias",
+        "Desconectar de notificações durante o período planejado", "Reconhecer uma tarefa concluída sem aumentar a carga de hoje",
+    ]),
+    ("Dia", "Organização e planejamento", 15, 10, [
+        "Atualizar o plano semanal com o que foi concluído", "Escolher a matéria prioritária para o próximo bloco",
+        "Separar materiais por matéria", "Conferir os compromissos da semana",
+        "Transformar uma meta ampla em uma tarefa pequena", "Remover uma tarefa duplicada da lista de hoje",
+        "Anotar o próximo passo antes de encerrar o estudo", "Conferir revisões pendentes no painel",
+        "Preparar uma lista curta para o próximo dia", "Revisar se o plano está compatível com o tempo disponível",
+    ]),
+    ("Noite", "Fechamento do dia", 10, 8, [
+        "Marcar as missões concluídas de hoje", "Registrar o principal aprendizado do dia",
+        "Escolher a primeira tarefa de amanhã", "Revisar uma anotação curta antes de encerrar",
+        "Guardar materiais e deixar o espaço organizado", "Anotar uma dificuldade para retomar amanhã",
+        "Conferir o progresso da semana sem se comparar com outras pessoas", "Registrar o estudo realizado no Diário de Bordo",
+        "Verificar se há revisão programada para amanhã", "Encerrar o planejamento e respeitar o horário de descanso",
+    ]),
+]
+QG_MISSOES = []
+_qg_indice_missao = 0
+for _periodo, _categoria, _minutos, _pontos, _titulos in _QG_MISSOES_SEMENTES:
+    for _titulo in _titulos:
+        _qg_indice_missao += 1
+        QG_MISSOES.append({
+            "id": f"M{_qg_indice_missao:03d}", "periodo": _periodo,
+            "categoria": _categoria, "minutos": _minutos,
+            "pontos": _pontos, "titulo": _titulo,
+        })
+QG_MISSOES_POR_ID = {missao["id"]: missao for missao in QG_MISSOES}
+
+
+def _carregar_campanha_missoes_qg():
+    """Lê o comunicado e missão em destaque publicados pelo proprietário."""
+    try:
+        with sqlite3.connect("dados_qg.db", timeout=5) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS config_qg (chave TEXT PRIMARY KEY, valor TEXT)")
+            row = conn.execute("SELECT valor FROM config_qg WHERE chave = ?", ("campanha_missoes_qg",)).fetchone()
+        dados = json.loads(row[0]) if row and row[0] else {}
+        return dados if isinstance(dados, dict) else {}
+    except (sqlite3.Error, OSError, json.JSONDecodeError, TypeError):
+        return {}
+
+st.markdown(f"""
+<section class="qg-hero" aria-label="Central de preparação">
+  <div class="qg-hero-brand">
+    <div class="qg-brand-symbol">QG</div>
+    <div>
+      <div class="qg-hero-kicker">QG EsPCEx · Centro de performance</div>
+      <div class="qg-hero-title">Central de preparação e inteligência</div>
+      <div class="qg-hero-subtitle">Estudos, rotina e evolução em uma única plataforma.</div>
+    </div>
+  </div>
+  <div class="qg-hero-meta">
+    <div class="qg-live">OPERAÇÕES ONLINE</div>
+    <div class="qg-hero-date">{datetime.date.today().strftime('%d/%m/%Y')} · AMBIENTE PESSOAL</div>
+  </div>
+</section>
+""", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
 # Barra Lateral
 # -----------------------------------------------------------------------------
-st.sidebar.title("⚔️ QG ESPCEX")
-st.sidebar.markdown(f"**Cadete:** `{nome_cadete}`")
+nome_sidebar_html = html.escape(str(nome_cadete))
+avatar_sidebar_html = html.escape((str(nome_cadete).strip()[:1] or "U").upper())
+st.sidebar.markdown(f"""
+<div class="qg-sidebar-brand">
+  <div class="qg-sidebar-mark">QG</div>
+  <div><div class="qg-sidebar-name">QG ESPCEX</div><div class="qg-sidebar-caption">Performance center</div></div>
+</div>
+<div class="qg-account-card">
+  <div class="qg-account-avatar">{avatar_sidebar_html}</div>
+  <div><div class="qg-account-label">Conta ativa</div><div class="qg-account-name">{nome_sidebar_html}</div></div>
+</div>
+""", unsafe_allow_html=True)
 
-if st.sidebar.button("🚪 Sair (Logout)"):
+if st.sidebar.button("🚪 Encerrar sessão", use_container_width=True):
     st.session_state.usuario_logado = None
+    st.session_state.pop("nome_exibicao", None)
+    st.session_state.pop("auth_ultima_atividade", None)
+    st.session_state["admin_autenticado"] = False
+    st.session_state.pop("admin_ultima_atividade", None)
     st.rerun()
 
 st.sidebar.markdown("---")
 
+if st.session_state.get("qg_nav_menu") in QG_ROTAS_ADMIN_LEGADAS:
+    st.session_state["qg_nav_menu"] = "🛡️ Módulo 24 · Central Administrativa"
+modulos_qg = QG_MODULOS_NAVEGACAO
+if st.session_state.get("qg_nav_menu") not in modulos_qg:
+    st.session_state["qg_nav_menu"] = "📊 Painel & Rotina Diária"
+st.sidebar.markdown("<div class='qg-nav-heading'>MÓDULOS DO QG</div>", unsafe_allow_html=True)
+busca_modulo_qg = st.sidebar.text_input(
+    "Buscar módulo",
+    placeholder="Digite para localizar...",
+    key="qg_nav_search",
+    label_visibility="collapsed",
+)
+menu_atual_qg = st.session_state.get("qg_nav_menu", "📊 Painel & Rotina Diária")
+modulos_filtrados_qg = [
+    modulo for modulo in modulos_qg
+    if busca_modulo_qg.strip().casefold() in modulo.casefold()
+]
+if busca_modulo_qg.strip() and not modulos_filtrados_qg:
+    st.sidebar.caption("Nenhum módulo encontrado. A tela atual continua aberta.")
+    modulos_filtrados_qg = [menu_atual_qg]
+elif menu_atual_qg not in modulos_filtrados_qg:
+    modulos_filtrados_qg = [menu_atual_qg] + modulos_filtrados_qg
 menu = st.sidebar.radio(
     "Central de Operações",
-    [
-        "📊 Painel & Rotina Diária",
-        "🦉 Portal Estratégia Militares",
-        "🏋️ Treino TAF + Spotify",
-        "🌾 Alternância EFA & AMSP (15/15)",
-        "⏱️ Pomodoro Tático (com Alarme)",
-        "✍️ Módulo de Redação",
-        "📋 Edital Verticalizado EsPCEx",
-        "📝 Registro de Questões",
-        "📕 Caderno de Bizus & Erros",
-        "🎯 Simulados (1º e 2º Dia)",
-        "📊 Visualizador de Planilhas",
-        "🎲 Sorteador de Temas & Textos Base",
-        "🏃 Módulo 13: Pacer TAF",
-        "🥗 Nutrição & Calorias",
-        "🌾 Calc. Agropecuária",
-        "📌 Kanban EFA",
-       "🔥 Habit Tracker",
-      "📅 Cronograma Dinâmico",
-      "🔗 Hub de Links",
-      "📖 Diário de Bordo",
-      "🎧 Player de Áudio",
-        "⚙️ Configurações do QG",
-        "📅 Calendário Tático",
-        "💰 Controlo Financeiro",
-        "🛡️ Módulo 24 - Painel do Administrador",
-        
-
-
-    ]
+    modulos_filtrados_qg,
+    key="qg_nav_menu",
+    help="Todos os módulos ficam listados aqui. Use a busca para filtrar a lista.",
+    label_visibility="collapsed",
 )
 
 st.sidebar.markdown("---")
+with st.sidebar.expander(f"🔔 Agenda · {len(eventos_proximos)} lembretes", expanded=any(e["atrasado"] for e in eventos_proximos)):
+    if eventos_proximos:
+        for evento in eventos_proximos[:8]:
+            data_legivel = datetime.date.fromisoformat(evento["data"][:10]).strftime("%d/%m")
+            prefixo = "⚠️ Atrasado" if evento["atrasado"] else f"📅 {data_legivel}"
+            st.markdown(f"**{prefixo} · {evento['titulo']}**")
+            st.caption(f"{evento['hora']} · {evento['categoria']} · {evento['prioridade']}")
+    else:
+        st.caption("Sem eventos pendentes para os próximos 7 dias.")
+
+with st.sidebar.expander("🧠 Memória de estudo", expanded=False):
+    with st.form("form_memoria_estudo", clear_on_submit=True):
+        nota_memoria = st.text_area("Anotação que deseja guardar", max_chars=1000, placeholder="Ex.: revisar cinemática na próxima sessão")
+        if st.form_submit_button("Guardar anotação", use_container_width=True):
+            if nota_memoria.strip():
+                adicionar_memoria(user_atual, nota_memoria.strip())
+                st.toast("Anotação guardada na sua memória de estudo.", icon="🧠")
+                st.rerun()
+    memorias = listar_memorias(user_atual, limite=5)
+    if memorias:
+        st.caption("Anotações recentes")
+        for item in memorias:
+            st.markdown(f"- {item['texto']}  ")
+            st.caption(item['criada_em'])
+    else:
+        st.caption("Suas anotações persistentes aparecerão aqui.")
 
 # Cálculo do ciclo EFA (15 dias)
 efa_info = db.get("efa_ciclo", {"modo": "Em Casa", "inicio_ciclo": str(datetime.date.today())})
@@ -443,6 +1258,10 @@ st.sidebar.markdown(f"**Ciclos Pomodoro:** `{db.get('pomodoro_ciclos_totais', 0)
 if menu == "📊 Painel & Rotina Diária":
     st.title(f"📊 QG EsPCEx - Painel de Prontidão de {nome_cadete}")
     st.caption("Visão integrada dos estudos noturnos, treino físico da madrugada, trabalho no campo e realização da AMSP.")
+    if not db.get("guia_inicial_concluido", False):
+        with st.container(border=True):
+            st.info("Primeiro acesso? O Guia Inicial ajuda a configurar o painel, o TAF e suas metas.")
+            st.button("👋 Abrir Guia Inicial", on_click=_navegar_qg, args=("👋 Guia Inicial",))
 
     modo_efa = efa_info["modo"]
 
@@ -456,15 +1275,91 @@ if menu == "📊 Painel & Rotina Diária":
     total_acertos = df_sessoes["Acertos"].sum() if not df_sessoes.empty else 0
     taxa_acerto = (total_acertos / total_questoes * 100) if total_questoes > 0 else 0.0
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("⏱️ Horas Noturnas", f"{total_horas:.1f} h")
-    c2.metric("📝 Questões Feitas", f"{total_questoes}")
-    c3.metric("🎯 Taxa de Acerto", f"{taxa_acerto:.1f}%")
-    c4.metric("🏋️ Treinos TAF (05h)", f"{len(df_taf)}")
-    if modo_efa == "Em Casa":
-        c5.metric("📚 AMSP Pendentes", f"{len(amsp_pendentes)}")
+    painel_config = db.get("painel_config", {})
+    if not isinstance(painel_config, dict):
+        painel_config = {}
+    opcoes_indicadores = [
+        "Horas de estudo", "Questões respondidas", "Taxa de acerto", "Treinos TAF",
+        "Dias até a prova", "AMSP pendentes", "Revisões pendentes", "Progresso do edital",
+    ]
+    indicadores_salvos = painel_config.get("indicadores", opcoes_indicadores[:5])
+    if not isinstance(indicadores_salvos, list):
+        indicadores_salvos = opcoes_indicadores[:5]
+    with st.expander("🎛️ Personalizar indicadores do painel", expanded=False):
+        with st.form("form_indicadores_painel"):
+            indicadores_escolhidos = st.multiselect(
+                "Escolha quais cartões aparecem no topo",
+                opcoes_indicadores, default=[x for x in indicadores_salvos if x in opcoes_indicadores],
+                help="A seleção fica salva na sua conta.",
+            )
+            if st.form_submit_button("Salvar meu painel", type="primary", use_container_width=True):
+                db["painel_config"] = {**painel_config, "indicadores": indicadores_escolhidos}
+                salvar_dados_usuario(user_atual, db)
+                st.rerun()
+
+    revisoes_pendentes_qtd = len(listar_memorias(user_atual, limite=1000, apenas_revisar=True))
+    itens_edital = [item for item in db.get("edital", []) if isinstance(item, dict)]
+    itens_edital_concluidos = sum(str(item.get("Status", "")).casefold() in {"revisado / dominado", "dominado"} for item in itens_edital)
+    progresso_edital_pct = round(itens_edital_concluidos / len(itens_edital) * 100) if itens_edital else 0
+    dados_indicadores = {
+        "Horas de estudo": ("⏱️ Horas de estudo", f"{total_horas:.1f} h"),
+        "Questões respondidas": ("📝 Questões respondidas", f"{total_questoes}"),
+        "Taxa de acerto": ("🎯 Taxa de acerto", f"{taxa_acerto:.1f}%"),
+        "Treinos TAF": ("🏋️ Treinos TAF", str(len(df_taf))),
+        "Dias até a prova": ("📆 Dias até a prova", str(dias_restantes)),
+        "AMSP pendentes": ("📚 AMSP pendentes", str(len(amsp_pendentes))),
+        "Revisões pendentes": ("🧠 Revisões pendentes", str(revisoes_pendentes_qtd)),
+        "Progresso do edital": ("📋 Progresso do edital", f"{progresso_edital_pct}%"),
+    }
+    indicadores_ativos = [item for item in indicadores_salvos if item in dados_indicadores]
+    if indicadores_ativos:
+        metric_cols = st.columns(min(len(indicadores_ativos), 6))
+        for indice, item in enumerate(indicadores_ativos):
+            rotulo, valor = dados_indicadores[item]
+            metric_cols[indice % len(metric_cols)].metric(rotulo, valor)
     else:
-        c5.metric("🏫 Período Ativo", "Na Escola")
+        st.info("Selecione pelo menos um indicador no cartão de personalização acima.")
+
+    hoje_iso = str(datetime.date.today())
+    plano_atual = db.get("plano_semanal", {})
+    tarefas_hoje = [t for t in plano_atual.get("tarefas", []) if t.get("data") == hoje_iso and not t.get("concluida", False)]
+    revisoes_hoje = listar_memorias(user_atual, limite=100, apenas_revisar=True)
+    eventos_hoje = [e for e in eventos_proximos if e.get("data", "")[:10] == hoje_iso]
+    materias_fracas = []
+    if not df_sessoes.empty and {"Matéria", "Questões", "Acertos"}.issubset(df_sessoes.columns):
+        resumo_materia = df_sessoes.groupby("Matéria")[["Questões", "Acertos"]].sum()
+        resumo_materia = resumo_materia[resumo_materia["Questões"] > 0]
+        if not resumo_materia.empty:
+            resumo_materia["Aproveitamento"] = resumo_materia["Acertos"] / resumo_materia["Questões"]
+            materias_fracas = list(resumo_materia.sort_values("Aproveitamento").head(2).index)
+
+    with st.container(border=True):
+        st.markdown("#### ✦ Missão do dia")
+        st.caption(datetime.date.today().strftime("%A, %d/%m/%Y") + " · construída a partir do seu plano, revisões e calendário")
+        missao_cols = st.columns(3)
+        missao_idx = 0
+        if tarefas_hoje:
+            tarefa = tarefas_hoje[0]
+            missao_cols[missao_idx].markdown("**Plano semanal**")
+            missao_cols[missao_idx].write(f"{tarefa.get('materia', 'Estudo')}: {tarefa.get('atividade', '')}")
+            missao_idx += 1
+        if revisoes_hoje:
+            item_revisao = revisoes_hoje[0]
+            missao_cols[missao_idx].markdown("**Revisão espaçada**")
+            missao_cols[missao_idx].write(f"Revisar {item_revisao.get('materia', 'Geral')}: {item_revisao.get('texto', '')[:100]}")
+            missao_idx += 1
+        if eventos_hoje and missao_idx < 3:
+            missao_cols[missao_idx].markdown("**Compromisso de hoje**")
+            missao_cols[missao_idx].write(f"{eventos_hoje[0]['hora']} · {eventos_hoje[0]['titulo']}")
+            missao_idx += 1
+        if materias_fracas and missao_idx < 3:
+            missao_cols[missao_idx].markdown("**Foco recomendado**")
+            missao_cols[missao_idx].write("Resolver questões de " + ", ".join(materias_fracas))
+            missao_idx += 1
+        if missao_idx == 0:
+            missao_cols[0].write("Gere seu plano semanal, faça uma revisão ou registre a primeira sessão para montar uma missão personalizada.")
+
+    _render_missao_diaria()
 
     st.markdown("---")
     st.subheader(f"📅 Estrutura da Sua Rotina - Período [{modo_efa.upper()}] (Dia {dia_no_ciclo}/15)")
@@ -558,6 +1453,65 @@ if menu == "📊 Painel & Rotina Diária":
             fig_edital = px.pie(df_status, names="Status", values="Quantidade", hole=0.4, color_discrete_map={"Não Iniciado": "#333333", "Teoria Lida": "#f57c00", "Exercícios Feitos": "#0288d1", "Revisado / Dominado": "#2e7d32"})
             fig_edital.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="#e0e6ed")
             st.plotly_chart(fig_edital, use_container_width=True)
+
+# -----------------------------------------------------------------------------
+# PERSONALIZAÇÃO DO PAINEL
+# -----------------------------------------------------------------------------
+elif menu == "🎛️ Personalizar Painel":
+    st.title("🎛️ Personalizar Painel")
+    st.caption("Escolha os indicadores e as tarefas que aparecem na sua rotina diária.")
+    painel_config = db.get("painel_config", {})
+    missao_config = db.get("config_missoes_diarias", {})
+    if not isinstance(painel_config, dict): painel_config = {}
+    if not isinstance(missao_config, dict): missao_config = {}
+    indicadores_disponiveis = [
+        "Horas de estudo", "Questões respondidas", "Taxa de acerto", "Treinos TAF",
+        "Dias até a prova", "AMSP pendentes", "Revisões pendentes", "Progresso do edital",
+    ]
+    missoes_disponiveis = {
+        "taf": "Treino TAF planejado",
+        "estudo": "Bloco principal de estudo",
+        "revisao": "Revisão programada",
+        "diario": "Registro no Diário de Bordo",
+    }
+    missoes_atuais = missao_config.get("ativas", list(missoes_disponiveis))
+    if not isinstance(missoes_atuais, list): missoes_atuais = list(missoes_disponiveis)
+    extras_atuais = missao_config.get("extras", [])
+    if not isinstance(extras_atuais, list): extras_atuais = []
+
+    with st.container(border=True):
+        st.markdown("#### Sua visão de acompanhamento")
+        with st.form("form_personalizar_painel_completo"):
+            indicadores_personalizados = st.multiselect(
+                "Cartões de indicadores", indicadores_disponiveis,
+                default=[x for x in painel_config.get("indicadores", indicadores_disponiveis[:5]) if x in indicadores_disponiveis],
+                help="Você pode escolher e reordenar os indicadores do topo do painel.",
+            )
+            missoes_personalizadas = st.multiselect(
+                "Missões que aparecem todo dia", list(missoes_disponiveis),
+                format_func=lambda chave: missoes_disponiveis[chave],
+                default=[x for x in missoes_atuais if x in missoes_disponiveis],
+            )
+            outras_missoes_texto = st.text_area(
+                "Outras missões diárias (uma por linha)",
+                value="\n".join(str(x) for x in extras_atuais[:5]), max_chars=500,
+                placeholder="Ex.: Separar material para amanhã\nConferir agenda da semana",
+            )
+            if st.form_submit_button("Salvar personalização", type="primary", use_container_width=True):
+                extras_limpos = list(dict.fromkeys(linha.strip()[:100] for linha in outras_missoes_texto.splitlines() if linha.strip()))[:5]
+                db["painel_config"] = {**painel_config, "indicadores": indicadores_personalizados}
+                db["config_missoes_diarias"] = {"ativas": missoes_personalizadas, "extras": extras_limpos}
+                salvar_dados_usuario(user_atual, db)
+                st.success("Seu painel e as missões diárias foram salvos.")
+                st.rerun()
+
+    with st.expander("Prévia dos indicadores", expanded=True):
+        if indicadores_personalizados:
+            st.caption("Os cartões escolhidos aparecerão no topo do Painel & Rotina Diária.")
+            st.markdown("**Missão diária:** TAF planejado, estudo, revisão, diário e tarefas extras que você ativou.")
+        else:
+            st.info("Nenhum indicador selecionado. Você ainda verá as missões e gráficos do painel.")
+    st.button("Voltar ao painel", on_click=_navegar_qg, args=("📊 Painel & Rotina Diária",))
 
 # -----------------------------------------------------------------------------
 # MÓDULO 2: Portal Estratégia Militares
@@ -1625,7 +2579,6 @@ elif menu == "📊 Visualizador de Planilhas":
 # MÓDULO 12: SORTEADOR DE TEMAS & TEXTOS BASE (DUPLO)
 # ====================================================
 elif menu == "🎲 Sorteador de Temas & Textos Base":
-    import random
 
     st.header("🎲 Módulo 12: Sorteador Tático de Temas & Textos Motivadores")
     st.markdown("Sorteie propostas completas de redação com **Textos Base Motivadores (Texto I e Texto II)**, eixos temáticos e repertórios para treino.")
@@ -1998,34 +2951,315 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
 # MÓDULO 14: NUTRIÇÃO & CALORIAS
 # ====================================================
 elif menu == "🥗 Nutrição & Calorias":
-    st.header("🥗 Módulo 14: Calculadora Nutricional & Gasto Calórico")
-    st.markdown("Ajuste o aporte calórico para conciliar o trabalho na roça com o rendimento no TAF e estudos.")
+    from zoneinfo import ZoneInfo
 
-    c_peso, c_altura, c_idade = st.columns(3)
-    peso = c_peso.number_input("Peso Atual (kg)", min_value=40.0, max_value=150.0, value=68.0, step=0.5)
-    altura = c_altura.number_input("Altura (cm)", min_value=130, max_value=220, value=175)
-    idade = c_idade.number_input("Idade", min_value=14, max_value=60, value=17)
+    st.header("🥗 Nutrição & Calorias")
+    st.markdown("Estimativas, alimentos e hidratação organizados em um só lugar.")
 
-    c_roca, c_taf = st.columns(2)
-    nivel_roca = c_roca.selectbox("Intensidade do Trabalho na Roça/Propriedade", ["Leve / Interno", "Moderado (Manejo/Café)", "Pesado (Capina/Carga)"])
-    treino_taf = c_taf.selectbox("Treino TAF do Dia", ["Nenhum / Descanso", "Corrida Moderada", "Treino Intenso (Corrida + Barra + Abdominal)"])
+    tab_estimativas, tab_catalogo, tab_planejador, tab_hidratacao = st.tabs([
+        "📊 Estimativas", "🥑 Catálogo de alimentos", "🍽️ Planejador de refeições", "💧 Hidratação"
+    ])
 
-    tmb = (10 * peso) + (6.25 * altura) - (5 * idade) + 5
-    fator_roca = 1.2 if "Leve" in nivel_roca else (1.45 if "Moderado" in nivel_roca else 1.7)
-    fator_taf = 0 if "Nenhum" in treino_taf else (250 if "Moderada" in treino_taf else 450)
-    
-    gasto_total = (tmb * fator_roca) + fator_taf
-    agua_ml = peso * 40
-    proteina_g = peso * 1.8
-    carbo_g = peso * 5.0
+    with tab_estimativas:
+        st.subheader("Estimativa diária")
+        st.caption("Os resultados são referências aproximadas; rotina, preparo e necessidades individuais variam.")
+        c_peso, c_altura, c_idade = st.columns(3)
+        peso = c_peso.number_input("Peso atual (kg)", min_value=40.0, max_value=150.0, value=68.0, step=0.5, key="nutri_peso")
+        altura = c_altura.number_input("Altura (cm)", min_value=130, max_value=220, value=175, key="nutri_altura")
+        idade = c_idade.number_input("Idade", min_value=14, max_value=60, value=17, key="nutri_idade")
 
-    st.markdown("---")
-    st.subheader("📊 Metas Diárias de Nutrição & Hidratação")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Gasto Calórico Estimado", f"{int(gasto_total)} kcal")
-    m2.metric("Meta de Água", f"{agua_ml / 1000:.2f} Litros")
-    m3.metric("Proteína Recomendada", f"{int(proteina_g)} g")
-    m4.metric("Carboidratos (Energia)", f"{int(carbo_g)} g")
+        c_roca, c_taf = st.columns(2)
+        nivel_roca = c_roca.selectbox(
+            "Intensidade do trabalho na propriedade",
+            ["Leve / Interno", "Moderado (Manejo/Café)", "Pesado (Capina/Carga)"], key="nutri_trabalho",
+        )
+        treino_taf = c_taf.selectbox(
+            "Treino TAF do dia",
+            ["Nenhum / Descanso", "Corrida Moderada", "Treino Intenso (Corrida + Barra + Abdominal)"], key="nutri_treino",
+        )
+
+        tmb = (10 * peso) + (6.25 * altura) - (5 * idade) + 5
+        fator_roca = 1.2 if "Leve" in nivel_roca else (1.45 if "Moderado" in nivel_roca else 1.7)
+        fator_taf = 0 if "Nenhum" in treino_taf else (250 if "Moderada" in treino_taf else 450)
+        gasto_total = (tmb * fator_roca) + fator_taf
+        agua_ml = peso * 40
+        proteina_g = peso * 1.8
+        carbo_g = peso * 5.0
+
+        st.markdown("#### Indicadores calculados")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Gasto estimado", f"{int(gasto_total)} kcal")
+        m2.metric("Referência de água", f"{agua_ml / 1000:.2f} L")
+        m3.metric("Proteína estimada", f"{int(proteina_g)} g")
+        m4.metric("Carboidratos estimados", f"{int(carbo_g)} g")
+        st.caption("As estimativas não substituem orientação nutricional. A meta de hidratação pode ser ajustada na aba Hidratação.")
+
+    # Valores médios de referência por 100 g, reunidos a partir da TACO/NEPA-Unicamp.
+    # A composição pode variar com marca, variedade, corte e método de preparo.
+    QG_CATALOGO_ALIMENTOS = [
+        {"Alimento": "Arroz branco cozido", "Grupo": "Grãos", "Porção comum (g)": 150, "kcal/100 g": 128, "Proteína (g)": 2.5, "Carboidratos (g)": 28.1, "Gorduras (g)": 0.2},
+        {"Alimento": "Feijão carioca cozido", "Grupo": "Leguminosas", "Porção comum (g)": 100, "kcal/100 g": 76, "Proteína (g)": 4.8, "Carboidratos (g)": 13.6, "Gorduras (g)": 0.5},
+        {"Alimento": "Peito de frango grelhado", "Grupo": "Proteínas", "Porção comum (g)": 100, "kcal/100 g": 159, "Proteína (g)": 32.0, "Carboidratos (g)": 0.0, "Gorduras (g)": 2.5},
+        {"Alimento": "Ovo cozido", "Grupo": "Proteínas", "Porção comum (g)": 50, "kcal/100 g": 146, "Proteína (g)": 13.3, "Carboidratos (g)": 0.6, "Gorduras (g)": 9.5},
+        {"Alimento": "Carne bovina magra grelhada", "Grupo": "Proteínas", "Porção comum (g)": 100, "kcal/100 g": 219, "Proteína (g)": 35.9, "Carboidratos (g)": 0.0, "Gorduras (g)": 7.3},
+        {"Alimento": "Leite integral", "Grupo": "Laticínios", "Porção comum (g)": 200, "kcal/100 g": 61, "Proteína (g)": 3.2, "Carboidratos (g)": 4.7, "Gorduras (g)": 3.3},
+        {"Alimento": "Queijo minas frescal", "Grupo": "Laticínios", "Porção comum (g)": 30, "kcal/100 g": 264, "Proteína (g)": 17.4, "Carboidratos (g)": 3.2, "Gorduras (g)": 20.2},
+        {"Alimento": "Aveia em flocos", "Grupo": "Grãos", "Porção comum (g)": 30, "kcal/100 g": 394, "Proteína (g)": 13.9, "Carboidratos (g)": 66.6, "Gorduras (g)": 8.5},
+        {"Alimento": "Pão francês", "Grupo": "Grãos", "Porção comum (g)": 50, "kcal/100 g": 300, "Proteína (g)": 8.0, "Carboidratos (g)": 58.6, "Gorduras (g)": 3.1},
+        {"Alimento": "Tapioca (beiju simples)", "Grupo": "Grãos", "Porção comum (g)": 60, "kcal/100 g": 288, "Proteína (g)": 0.2, "Carboidratos (g)": 71.9, "Gorduras (g)": 0.1},
+        {"Alimento": "Batata-doce cozida", "Grupo": "Tubérculos", "Porção comum (g)": 100, "kcal/100 g": 77, "Proteína (g)": 0.6, "Carboidratos (g)": 18.4, "Gorduras (g)": 0.1},
+        {"Alimento": "Batata inglesa cozida", "Grupo": "Tubérculos", "Porção comum (g)": 100, "kcal/100 g": 52, "Proteína (g)": 1.2, "Carboidratos (g)": 11.9, "Gorduras (g)": 0.1},
+        {"Alimento": "Banana-prata", "Grupo": "Frutas", "Porção comum (g)": 80, "kcal/100 g": 98, "Proteína (g)": 1.3, "Carboidratos (g)": 26.0, "Gorduras (g)": 0.1},
+        {"Alimento": "Maçã", "Grupo": "Frutas", "Porção comum (g)": 130, "kcal/100 g": 56, "Proteína (g)": 0.3, "Carboidratos (g)": 15.2, "Gorduras (g)": 0.0},
+        {"Alimento": "Tomate", "Grupo": "Verduras e legumes", "Porção comum (g)": 100, "kcal/100 g": 15, "Proteína (g)": 1.1, "Carboidratos (g)": 3.1, "Gorduras (g)": 0.2},
+        {"Alimento": "Alface", "Grupo": "Verduras e legumes", "Porção comum (g)": 50, "kcal/100 g": 11, "Proteína (g)": 1.3, "Carboidratos (g)": 1.7, "Gorduras (g)": 0.2},
+        {"Alimento": "Cenoura crua", "Grupo": "Verduras e legumes", "Porção comum (g)": 80, "kcal/100 g": 34, "Proteína (g)": 1.3, "Carboidratos (g)": 7.7, "Gorduras (g)": 0.2},
+    ]
+    QG_ALIMENTO_POR_NOME = {item["Alimento"]: item for item in QG_CATALOGO_ALIMENTOS}
+
+    with tab_catalogo:
+        st.subheader("Catálogo nutricional")
+        st.caption("Valores médios por 100 g e tamanhos de porção usuais. Confira o rótulo do produto quando disponível.")
+        df_alimentos = pd.DataFrame(QG_CATALOGO_ALIMENTOS)
+        grupos_alimentos = ["Todos"] + sorted(df_alimentos["Grupo"].unique().tolist())
+        filtro_col1, filtro_col2 = st.columns([1, 1.5])
+        grupo_escolhido = filtro_col1.selectbox("Grupo de alimentos", grupos_alimentos, key="qg_nutri_grupo")
+        busca_alimento = filtro_col2.text_input("Buscar alimento", placeholder="Ex.: arroz, ovo, banana", key="qg_nutri_busca")
+        df_filtrado = df_alimentos.copy()
+        if grupo_escolhido != "Todos":
+            df_filtrado = df_filtrado[df_filtrado["Grupo"] == grupo_escolhido]
+        if busca_alimento.strip():
+            df_filtrado = df_filtrado[df_filtrado["Alimento"].str.contains(busca_alimento.strip(), case=False, na=False)]
+        st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
+
+        st.markdown("#### Calcular uma porção")
+        alimento_calculo = st.selectbox("Alimento", list(QG_ALIMENTO_POR_NOME), key="qg_nutri_item_calculo")
+        item_calculo = QG_ALIMENTO_POR_NOME[alimento_calculo]
+        slug_alimento = re.sub(r"[^a-z0-9]+", "_", alimento_calculo.casefold()).strip("_")
+        gramas_calculo = st.number_input(
+            "Quantidade em gramas", min_value=1, max_value=2000,
+            value=int(item_calculo["Porção comum (g)"]), step=10, key=f"qg_nutri_gramas_{slug_alimento}",
+        )
+        proporcao_calculo = gramas_calculo / 100
+        calc1, calc2, calc3, calc4 = st.columns(4)
+        calc1.metric("Energia", f"{item_calculo['kcal/100 g'] * proporcao_calculo:.0f} kcal")
+        calc2.metric("Proteína", f"{item_calculo['Proteína (g)'] * proporcao_calculo:.1f} g")
+        calc3.metric("Carboidratos", f"{item_calculo['Carboidratos (g)'] * proporcao_calculo:.1f} g")
+        calc4.metric("Gorduras", f"{item_calculo['Gorduras (g)'] * proporcao_calculo:.1f} g")
+        st.caption("Referência: Tabela Brasileira de Composição de Alimentos (TACO/NEPA-Unicamp). Preparo e variedade podem alterar os valores.")
+        st.markdown("[Consultar a publicação TACO](https://nepa.unicamp.br/publicacoes/tabela-taco/)")
+
+    with tab_planejador:
+        st.subheader("Monte uma refeição com o que você tem")
+        st.caption("Escolha os ingredientes disponíveis. As combinações e quantidades são sugestões editáveis, não uma prescrição alimentar.")
+        nomes_alimentos = list(QG_ALIMENTO_POR_NOME)
+        ingredientes_disponiveis = st.multiselect(
+            "Selecione seus ingredientes",
+            options=nomes_alimentos,
+            placeholder="Escolha um ou mais alimentos do catálogo...",
+            key=f"qg_planejador_ingredientes_{user_atual}",
+        )
+        refeicao_escolhida = st.selectbox(
+            "Tipo de refeição", ["Café da manhã", "Almoço", "Lanche", "Jantar", "Qualquer refeição"],
+            key=f"qg_planejador_tipo_{user_atual}",
+        )
+
+        QG_RECEITAS_SIMPLES = [
+            {"nome": "Aveia cremosa com banana", "tipo": "Café da manhã", "itens": {"Aveia em flocos": 30, "Leite integral": 200, "Banana-prata": 80}, "preparo": "Misture a aveia ao leite e sirva com a banana fatiada."},
+            {"nome": "Pão com ovo e tomate", "tipo": "Café da manhã", "itens": {"Pão francês": 50, "Ovo cozido": 50, "Tomate": 50}, "preparo": "Monte o pão com o ovo e o tomate fatiado."},
+            {"nome": "Prato de arroz, feijão e frango", "tipo": "Almoço", "itens": {"Arroz branco cozido": 150, "Feijão carioca cozido": 100, "Peito de frango grelhado": 100, "Alface": 30, "Tomate": 50}, "preparo": "Sirva o arroz, o feijão e o frango com alface e tomate."},
+            {"nome": "Prato de arroz, feijão e carne", "tipo": "Almoço", "itens": {"Arroz branco cozido": 150, "Feijão carioca cozido": 100, "Carne bovina magra grelhada": 100, "Cenoura crua": 50}, "preparo": "Combine o arroz e o feijão com a carne e a cenoura."},
+            {"nome": "Banana com aveia e leite", "tipo": "Lanche", "itens": {"Banana-prata": 80, "Aveia em flocos": 20, "Leite integral": 150}, "preparo": "Fatie a banana e sirva com aveia e leite."},
+            {"nome": "Batata-doce com ovo e tomate", "tipo": "Jantar", "itens": {"Batata-doce cozida": 150, "Ovo cozido": 100, "Tomate": 50}, "preparo": "Sirva a batata-doce com ovos e tomate."},
+            {"nome": "Tapioca com ovo e queijo", "tipo": "Qualquer refeição", "itens": {"Tapioca (beiju simples)": 60, "Ovo cozido": 50, "Queijo minas frescal": 30}, "preparo": "Recheie a tapioca com ovo e queijo minas."},
+            {"nome": "Arroz com ovo e salada", "tipo": "Jantar", "itens": {"Arroz branco cozido": 120, "Ovo cozido": 100, "Alface": 30, "Tomate": 50}, "preparo": "Sirva o arroz com ovos e salada de alface e tomate."},
+        ]
+
+        if ingredientes_disponiveis:
+            st.markdown("#### Ajuste das porções")
+            quantidades_planejadas = {}
+            colunas_ingredientes = st.columns(2)
+            for indice_ingrediente, nome_ingrediente in enumerate(ingredientes_disponiveis):
+                item_ingrediente = QG_ALIMENTO_POR_NOME[nome_ingrediente]
+                slug_ingrediente = re.sub(r"[^a-z0-9]+", "_", nome_ingrediente.casefold()).strip("_")
+                quantidades_planejadas[nome_ingrediente] = colunas_ingredientes[indice_ingrediente % 2].number_input(
+                    f"{nome_ingrediente} (g)", min_value=1, max_value=2000,
+                    value=int(item_ingrediente["Porção comum (g)"]), step=10,
+                    key=f"qg_planejador_g_{user_atual}_{slug_ingrediente}",
+                )
+
+            total_prato = {"kcal": 0.0, "proteina": 0.0, "carboidratos": 0.0, "gorduras": 0.0}
+            linhas_prato = []
+            for nome_ingrediente, gramas_ingrediente in quantidades_planejadas.items():
+                item_ingrediente = QG_ALIMENTO_POR_NOME[nome_ingrediente]
+                fator_quantidade = gramas_ingrediente / 100
+                valores = {
+                    "kcal": item_ingrediente["kcal/100 g"] * fator_quantidade,
+                    "proteina": item_ingrediente["Proteína (g)"] * fator_quantidade,
+                    "carboidratos": item_ingrediente["Carboidratos (g)"] * fator_quantidade,
+                    "gorduras": item_ingrediente["Gorduras (g)"] * fator_quantidade,
+                }
+                for chave_valor, valor_nutricional in valores.items():
+                    total_prato[chave_valor] += valor_nutricional
+                linhas_prato.append({
+                    "Ingrediente": nome_ingrediente, "Quantidade (g)": gramas_ingrediente,
+                    "Energia (kcal)": round(valores["kcal"]), "Proteína (g)": round(valores["proteina"], 1),
+                    "Carboidratos (g)": round(valores["carboidratos"], 1), "Gorduras (g)": round(valores["gorduras"], 1),
+                })
+            st.dataframe(pd.DataFrame(linhas_prato), use_container_width=True, hide_index=True)
+            total1, total2, total3, total4 = st.columns(4)
+            total1.metric("Total estimado", f"{total_prato['kcal']:.0f} kcal")
+            total2.metric("Proteína", f"{total_prato['proteina']:.1f} g")
+            total3.metric("Carboidratos", f"{total_prato['carboidratos']:.1f} g")
+            total4.metric("Gorduras", f"{total_prato['gorduras']:.1f} g")
+
+            nomes_disponiveis = set(ingredientes_disponiveis)
+            receitas_compativeis = [
+                receita for receita in QG_RECEITAS_SIMPLES
+                if set(receita["itens"]).issubset(nomes_disponiveis)
+                and (refeicao_escolhida == "Qualquer refeição" or receita["tipo"] in (refeicao_escolhida, "Qualquer refeição"))
+            ]
+            if receitas_compativeis:
+                st.markdown("#### Combinações com os ingredientes selecionados")
+                for receita in receitas_compativeis:
+                    kcal_receita = sum(
+                        QG_ALIMENTO_POR_NOME[nome]["kcal/100 g"] * gramas / 100
+                        for nome, gramas in receita["itens"].items()
+                    )
+                    with st.container(border=True):
+                        st.markdown(f"**{receita['nome']}** · {receita['tipo']} · ~{kcal_receita:.0f} kcal")
+                        st.caption("Porções ilustrativas: " + " · ".join(f"{nome}: {gramas} g" for nome, gramas in receita["itens"].items()))
+                        st.write(receita["preparo"])
+            else:
+                st.info("Ainda não há uma combinação pronta para esse conjunto e tipo de refeição. O resumo acima calcula os ingredientes que você escolheu.")
+        else:
+            st.info("Selecione os alimentos disponíveis para montar e calcular uma refeição.")
+
+    with tab_hidratacao:
+        st.subheader("Registro de hidratação")
+        st.caption("Registre copos e garrafas e acompanhe seu histórico. A meta é editável e serve apenas como referência do app.")
+        try:
+            fuso_hidratacao = ZoneInfo("America/Sao_Paulo")
+        except Exception:
+            fuso_hidratacao = datetime.timezone(datetime.timedelta(hours=-3))
+
+        hidratacao_qg = db.get("nutricao_hidratacao", {})
+        if not isinstance(hidratacao_qg, dict):
+            hidratacao_qg = {}
+        registros_hidratacao = hidratacao_qg.get("registros", [])
+        if not isinstance(registros_hidratacao, list):
+            registros_hidratacao = []
+        registros_hidratacao = [
+            item for item in registros_hidratacao
+            if isinstance(item, dict) and str(item.get("ml", "")).isdigit() and 0 < int(item.get("ml", 0)) <= 5000
+        ]
+        hidratacao_qg["registros"] = registros_hidratacao
+
+        def _qg_data_hidratacao(registro):
+            try:
+                data_registro = datetime.datetime.fromisoformat(str(registro.get("data_hora", "")).replace("Z", "+00:00"))
+                if data_registro.tzinfo is None:
+                    data_registro = data_registro.replace(tzinfo=fuso_hidratacao)
+                return data_registro.astimezone(fuso_hidratacao)
+            except (TypeError, ValueError, OverflowError):
+                return None
+
+        def _qg_registrar_hidratacao(volume_ml, origem):
+            volume_ml = int(volume_ml)
+            if not 1 <= volume_ml <= 5000:
+                return
+            registros_hidratacao.append({
+                "data_hora": datetime.datetime.now(fuso_hidratacao).isoformat(timespec="seconds"),
+                "ml": volume_ml, "origem": str(origem)[:40],
+            })
+            hidratacao_qg["registros"] = registros_hidratacao[-1500:]
+            db["nutricao_hidratacao"] = hidratacao_qg
+            salvar_dados_usuario(user_atual, db)
+
+        meta_salva_ml = hidratacao_qg.get("meta_ml", int(round(agua_ml)))
+        try:
+            meta_salva_ml = max(500, min(10000, int(meta_salva_ml)))
+        except (TypeError, ValueError):
+            meta_salva_ml = int(round(agua_ml))
+        with st.form(f"qg_form_meta_hidratacao_{user_atual}"):
+            meta_nova_ml = st.number_input(
+                "Meta diária de referência (ml)", min_value=500, max_value=10000,
+                value=meta_salva_ml, step=100, help="Pode ajustar ou deixar a estimativa inicial do app."
+            )
+            salvar_meta_hidratacao = st.form_submit_button("Salvar meta", use_container_width=True)
+        if salvar_meta_hidratacao:
+            hidratacao_qg["meta_ml"] = int(meta_nova_ml)
+            db["nutricao_hidratacao"] = hidratacao_qg
+            salvar_dados_usuario(user_atual, db)
+            meta_salva_ml = int(meta_nova_ml)
+            st.success("Meta de referência salva na sua conta.")
+
+        st.markdown("#### Registro rápido")
+        agua_col1, agua_col2, agua_col3, agua_col4 = st.columns(4)
+        if agua_col1.button("🥛 Copo · 200 ml", use_container_width=True, key=f"qg_agua_copo_{user_atual}"):
+            _qg_registrar_hidratacao(200, "Copo")
+            st.toast("Copo registrado.")
+        if agua_col2.button("🥤 Copo grande · 300 ml", use_container_width=True, key=f"qg_agua_copo_grande_{user_atual}"):
+            _qg_registrar_hidratacao(300, "Copo grande")
+            st.toast("Copo grande registrado.")
+        if agua_col3.button("💧 Garrafa · 500 ml", use_container_width=True, key=f"qg_agua_garrafa_{user_atual}"):
+            _qg_registrar_hidratacao(500, "Garrafa")
+            st.toast("Garrafa registrada.")
+        if agua_col4.button("🚰 Garrafa · 750 ml", use_container_width=True, key=f"qg_agua_garrafa_750_{user_atual}"):
+            _qg_registrar_hidratacao(750, "Garrafa grande")
+            st.toast("Garrafa grande registrada.")
+
+        with st.expander("Registrar outra quantidade"):
+            with st.form(f"qg_form_hidratacao_manual_{user_atual}"):
+                volume_manual_ml = st.number_input("Volume consumido (ml)", min_value=50, max_value=3000, value=250, step=50)
+                origem_manual = st.text_input("Descrição opcional", value="Registro manual", max_chars=40)
+                registrar_manual = st.form_submit_button("Adicionar ao histórico", type="primary", use_container_width=True)
+            if registrar_manual:
+                _qg_registrar_hidratacao(volume_manual_ml, origem_manual.strip() or "Registro manual")
+                st.success("Consumo registrado.")
+
+        hoje_hidratacao = datetime.datetime.now(fuso_hidratacao).date()
+        registros_hoje = []
+        for registro_hidratacao in registros_hidratacao:
+            data_hidratacao = _qg_data_hidratacao(registro_hidratacao)
+            if data_hidratacao and data_hidratacao.date() == hoje_hidratacao:
+                registros_hoje.append((registro_hidratacao, data_hidratacao))
+        total_agua_hoje = sum(int(registro["ml"]) for registro, _ in registros_hoje)
+        progresso_agua = min(1.0, total_agua_hoje / max(1, meta_salva_ml))
+        st.progress(progresso_agua, text=f"Hoje: {total_agua_hoje:,} ml de {meta_salva_ml:,} ml")
+        h1, h2, h3 = st.columns(3)
+        h1.metric("Total registrado hoje", f"{total_agua_hoje / 1000:.2f} L")
+        h2.metric("Registros hoje", len(registros_hoje))
+        h3.metric("Falta para a meta", f"{max(0, meta_salva_ml - total_agua_hoje):,} ml")
+
+        datas_hidratacao = [hoje_hidratacao - datetime.timedelta(days=deslocamento) for deslocamento in range(6, -1, -1)]
+        totais_semana = {dia: 0 for dia in datas_hidratacao}
+        for registro_hidratacao in registros_hidratacao:
+            data_hidratacao = _qg_data_hidratacao(registro_hidratacao)
+            if data_hidratacao and data_hidratacao.date() in totais_semana:
+                totais_semana[data_hidratacao.date()] += int(registro_hidratacao["ml"])
+        df_hidratacao_semana = pd.DataFrame({
+            "Dia": [dia.strftime("%d/%m") for dia in datas_hidratacao],
+            "Água (ml)": [totais_semana[dia] for dia in datas_hidratacao],
+        })
+        st.markdown("#### Últimos sete dias")
+        fig_hidratacao = px.bar(df_hidratacao_semana, x="Dia", y="Água (ml)", text="Água (ml)")
+        fig_hidratacao.update_traces(marker_color="#63e5dc", texttemplate="%{text:,} ml", textposition="outside", cliponaxis=False)
+        fig_hidratacao.update_layout(
+            height=300, margin=dict(l=10, r=10, t=20, b=10),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#dceafb"), xaxis_title=None, yaxis_title="ml",
+            yaxis=dict(gridcolor="rgba(151,184,214,.12)", rangemode="tozero"),
+        )
+        st.plotly_chart(fig_hidratacao, use_container_width=True, config={"displayModeBar": False})
+
+        if registros_hoje:
+            st.markdown("#### Registros de hoje")
+            linhas_hidratacao = [
+                {"Horário": data_registro.strftime("%H:%M"), "Volume": f"{registro['ml']} ml", "Tipo": registro.get("origem", "Registro")}
+                for registro, data_registro in sorted(registros_hoje, key=lambda par: par[1], reverse=True)[:12]
+            ]
+            st.dataframe(pd.DataFrame(linhas_hidratacao), use_container_width=True, hide_index=True)
 
 
 # ====================================================
@@ -2140,6 +3374,504 @@ elif menu == "🔥 Habit Tracker":
     if total_cumprido == 5:
         st.balloons()
         st.success("Excelente! Missão cumprida no dia de hoje. Mantenha o padrão!")
+
+
+# ====================================================
+# MINI JOGO DE PONTOS: DESAFIOS, NÍVEIS E CONQUISTAS
+# ====================================================
+elif menu == "🎮 Mini Jogo de Pontos":
+    from zoneinfo import ZoneInfo
+
+    st.header("🎮 Mini Jogo de Pontos")
+    st.markdown("Complete um desafio, ganhe XP, suba de nível e desbloqueie conquistas. Seu progresso fica salvo na sua conta.")
+
+    QG_DESAFIOS_STAFF = [
+        {"id": "flexoes", "nome": "Flexões", "unidade": "repetições", "descricao": "Registre a variação de flexão adequada ao seu momento."},
+        {"id": "agachamentos", "nome": "Agachamentos", "unidade": "repetições", "descricao": "Faça apenas o que for confortável para você."},
+        {"id": "abdominais", "nome": "Abdominais", "unidade": "repetições", "descricao": "Registre uma série curta, sem competir com outras pessoas."},
+        {"id": "caminhada", "nome": "Caminhada leve", "unidade": "minutos", "descricao": "Uma pausa ativa no ritmo que você escolher."},
+        {"id": "mobilidade", "nome": "Mobilidade ou alongamento", "unidade": "minutos", "descricao": "Movimente-se com leveza, sem forçar amplitude."},
+    ]
+    STAFF_DESAFIOS_POR_ID = {item["id"]: item for item in QG_DESAFIOS_STAFF}
+    QG_MISSOES_BASE_STAFF = [
+        ("caminhada", "Caminhada leve", [3, 4, 5, 6, 8], "minutos", "Caminhe por {q} minutos em ritmo confortável."),
+        ("marcha", "Marcha leve no lugar", [20, 30, 40, 50, 60], "segundos", "Marche no lugar por {q} segundos, sem acelerar."),
+        ("flexao_parede", "Flexão na parede", [3, 4, 5, 6, 8], "repetições", "Faça {q} flexões na parede, com movimento controlado."),
+        ("sentar_levantar", "Sentar e levantar da cadeira", [3, 4, 5, 6, 8], "repetições", "Faça {q} repetições usando uma cadeira firme como referência."),
+        ("panturrilha", "Elevação de panturrilha com apoio", [4, 5, 6, 8, 10], "repetições", "Faça {q} elevações segurando em um apoio estável."),
+        ("ponte", "Ponte de glúteos", [3, 4, 5, 6, 8], "repetições", "Faça {q} repetições lentas, somente se for confortável."),
+        ("bird_dog", "Bird-dog adaptado", [2, 3, 4, 5, 6], "por lado", "Faça {q} movimentos controlados de cada lado, com apoio confortável."),
+        ("dead_bug", "Dead bug adaptado", [2, 3, 4, 5, 6], "por lado", "Faça {q} movimentos controlados de cada lado, sem prender a respiração."),
+        ("joelho_sentado", "Elevação de joelho sentado", [4, 5, 6, 8, 10], "por lado", "Eleve cada joelho {q} vezes, sentado em uma cadeira firme."),
+        ("toque_degrau", "Toque alternado em degrau baixo", [20, 30, 40, 50, 60], "segundos", "Alterne toques em um degrau baixo por {q} segundos, com apoio próximo."),
+        ("mobilidade_ombros", "Mobilidade suave de ombros", [20, 30, 40, 50, 60], "segundos", "Faça movimentos confortáveis de ombros por {q} segundos."),
+        ("rotacao_tronco", "Rotação suave de tronco", [2, 3, 4, 5, 6], "por lado", "Faça {q} rotações pequenas e confortáveis para cada lado."),
+        ("mobilidade_tornozelo", "Mobilidade de tornozelos", [2, 3, 4, 5, 6], "por lado", "Faça {q} movimentos circulares suaves com cada tornozelo."),
+        ("alongamento_panturrilha", "Alongamento de panturrilha", [10, 15, 20, 25, 30], "segundos por lado", "Alongue com leveza por {q} segundos de cada lado, sem forçar."),
+        ("alongamento_peitoral", "Alongamento peitoral na parede", [10, 15, 20, 25, 30], "segundos", "Mantenha um alongamento confortável por {q} segundos, sem dor."),
+        ("respiracao", "Respiração tranquila", [1, 2, 3, 4, 5], "minutos", "Faça respirações tranquilas por {q} minuto(s), sem prender o ar."),
+        ("equilibrio", "Equilíbrio com apoio próximo", [5, 8, 10, 12, 15], "segundos por lado", "Mantenha-se em equilíbrio por {q} segundos de cada lado, perto de um apoio."),
+        ("bracos_sem_carga", "Elevação confortável de braços", [4, 5, 6, 8, 10], "repetições", "Eleve os braços sem carga por {q} repetições, em amplitude confortável."),
+        ("extensao_joelho", "Extensão de joelho sentado", [4, 5, 6, 8, 10], "por lado", "Estenda cada joelho {q} vezes, sentado e sem pressa."),
+        ("passos_laterais", "Passos laterais leves", [20, 30, 40, 50, 60], "segundos", "Faça passos laterais curtos por {q} segundos, com espaço livre."),
+    ]
+    QG_MISSOES_DIARIAS_STAFF = []
+    for prefixo_missao_staff, nome_missao_staff, metas_missao_staff, unidade_missao_staff, descricao_missao_staff in QG_MISSOES_BASE_STAFF:
+        for meta_missao_staff in metas_missao_staff:
+            QG_MISSOES_DIARIAS_STAFF.append({
+                "id": f"{prefixo_missao_staff}_{meta_missao_staff}",
+                "nome": f"{nome_missao_staff} · {meta_missao_staff} {unidade_missao_staff}",
+                "descricao": descricao_missao_staff.format(q=meta_missao_staff),
+            })
+    MISSOES_STAFF_POR_ID = {item["id"]: item for item in QG_MISSOES_DIARIAS_STAFF}
+    try:
+        fuso_staff = ZoneInfo("America/Sao_Paulo")
+    except Exception:
+        fuso_staff = datetime.timezone(datetime.timedelta(hours=-3))
+    hoje_staff = datetime.datetime.now(fuso_staff).date()
+    data_staff_hoje = hoje_staff.isoformat()
+    estado_staff = db.get("desafios_staff", {})
+    if not isinstance(estado_staff, dict):
+        estado_staff = {}
+    registros_staff = estado_staff.get("registros", [])
+    if not isinstance(registros_staff, list):
+        registros_staff = []
+
+    registros_staff_validos = []
+    for registro_staff in registros_staff:
+        if not isinstance(registro_staff, dict):
+            continue
+        try:
+            data_registro_staff = datetime.date.fromisoformat(str(registro_staff.get("data", ""))[:10]).isoformat()
+            atividade_id_staff = str(registro_staff.get("atividade", ""))
+            pontos_registro_staff = int(registro_staff.get("pontos", 0))
+            quantidade_registro_staff = float(registro_staff.get("quantidade", 0))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if atividade_id_staff not in STAFF_DESAFIOS_POR_ID or not 1 <= pontos_registro_staff <= 30 or not 0 < quantidade_registro_staff <= 1000:
+            continue
+        registro_limpo_staff = {
+            "data": data_registro_staff,
+            "atividade": atividade_id_staff,
+            "quantidade": quantidade_registro_staff,
+            "pontos": pontos_registro_staff,
+            "hora": str(registro_staff.get("hora", ""))[:8],
+        }
+        registros_staff_validos.append(registro_limpo_staff)
+    registros_staff = registros_staff_validos
+
+    missoes_diarias_staff = estado_staff.get("missoes_diarias", {})
+    if not isinstance(missoes_diarias_staff, dict):
+        missoes_diarias_staff = {}
+    missoes_diarias_staff_validas = {}
+    for data_missao_staff, estado_missao_staff in missoes_diarias_staff.items():
+        if not isinstance(estado_missao_staff, dict):
+            continue
+        try:
+            data_missao_staff = datetime.date.fromisoformat(str(data_missao_staff)[:10]).isoformat()
+        except ValueError:
+            continue
+        desafio_id_staff = str(estado_missao_staff.get("desafio_id", ""))
+        if desafio_id_staff not in MISSOES_STAFF_POR_ID:
+            continue
+        missoes_diarias_staff_validas[data_missao_staff] = {
+            "desafio_id": desafio_id_staff,
+            "concluida": estado_missao_staff.get("concluida") is True,
+            "atualizado_em": str(estado_missao_staff.get("atualizado_em", ""))[:25],
+        }
+    missoes_diarias_staff = missoes_diarias_staff_validas
+    estado_staff["missoes_diarias"] = missoes_diarias_staff
+    indice_missao_staff = (hoje_staff - datetime.date(2025, 1, 1)).days % len(QG_MISSOES_DIARIAS_STAFF)
+    missao_dia_staff = QG_MISSOES_DIARIAS_STAFF[indice_missao_staff]
+    status_missao_hoje_staff = missoes_diarias_staff.get(data_staff_hoje, {})
+    missao_hoje_concluida_staff = (
+        status_missao_hoje_staff.get("desafio_id") == missao_dia_staff["id"]
+        and status_missao_hoje_staff.get("concluida") is True
+    )
+    missoes_concluidas_staff = {
+        data_missao for data_missao, estado_missao in missoes_diarias_staff.items()
+        if estado_missao.get("concluida") is True
+    }
+    pontos_totais_staff = sum(int(registro["pontos"]) for registro in registros_staff) + 10 * len(missoes_concluidas_staff)
+    total_desafios_staff = len(registros_staff) + len(missoes_concluidas_staff)
+    dias_staff_com_atividade = {registro["data"] for registro in registros_staff} | missoes_concluidas_staff
+    pontos_staff_hoje = sum(int(registro["pontos"]) for registro in registros_staff if registro["data"] == data_staff_hoje) + (10 if missao_hoje_concluida_staff else 0)
+    sequencia_staff = 0
+    cursor_staff = hoje_staff
+    if cursor_staff.isoformat() not in dias_staff_com_atividade:
+        cursor_staff -= datetime.timedelta(days=1)
+    while cursor_staff.isoformat() in dias_staff_com_atividade:
+        sequencia_staff += 1
+        cursor_staff -= datetime.timedelta(days=1)
+
+    niveis_staff = [(0, "Recruta"), (50, "Cadete"), (150, "Operador"), (300, "Veterano"), (600, "Elite"), (1000, "Lenda")]
+    nivel_atual_staff = max((nivel for nivel in niveis_staff if pontos_totais_staff >= nivel[0]), key=lambda nivel: nivel[0])
+    proximo_nivel_staff = next((nivel for nivel in niveis_staff if nivel[0] > pontos_totais_staff), None)
+    if proximo_nivel_staff:
+        inicio_nivel_staff = nivel_atual_staff[0]
+        progresso_nivel_staff = (pontos_totais_staff - inicio_nivel_staff) / max(1, proximo_nivel_staff[0] - inicio_nivel_staff)
+        destino_nivel_staff = f"Próximo nível · {proximo_nivel_staff[1]} ({proximo_nivel_staff[0]} XP)"
+    else:
+        progresso_nivel_staff = 1.0
+        destino_nivel_staff = "Nível máximo · Lenda"
+    progresso_nivel_staff = max(0.0, min(1.0, progresso_nivel_staff))
+
+    chave_flash_staff = f"staff_desafio_flash_{user_atual}"
+    flash_desafio_staff = st.session_state.pop(chave_flash_staff, None)
+    if flash_desafio_staff:
+        st.balloons()
+        st.success(flash_desafio_staff)
+
+    # Os pontos são pessoais. A missão do dia é única para a data e só rende XP quando marcada como concluída.
+    circunferencia_staff = 282.743
+    deslocamento_staff = circunferencia_staff * (1.0 - progresso_nivel_staff)
+    hud_staff = f"""
+    <section class="qg-staff-hud" aria-label="Resumo pessoal de desafios">
+      <div class="qg-staff-hud-copy">
+        <div class="qg-staff-kicker">QG · MINI JOGO</div>
+        <div class="qg-staff-title">Seu progresso de equipe</div>
+        <div class="qg-staff-rank">{html.escape(nivel_atual_staff[1])} <span>·</span> {html.escape(destino_nivel_staff)}</div>
+        <div class="qg-staff-meta"><span>🔥 {sequencia_staff} dias de sequência</span><span>🎯 {len(QG_MISSOES_DIARIAS_STAFF)} desafios no catálogo</span></div>
+      </div>
+      <div class="qg-staff-ring-wrap">
+        <svg class="qg-staff-ring" viewBox="0 0 120 120" role="img" aria-label="Progresso para o próximo nível">
+          <circle class="qg-staff-ring-track" cx="60" cy="60" r="45"></circle>
+          <circle class="qg-staff-ring-progress" cx="60" cy="60" r="45" style="stroke-dasharray:{circunferencia_staff:.3f};stroke-dashoffset:{deslocamento_staff:.3f}"></circle>
+          <text x="60" y="56" class="qg-staff-xp-value"><tspan id="qg-staff-points">0</tspan></text>
+          <text x="60" y="74" class="qg-staff-xp-label">PONTOS</text>
+        </svg>
+      </div>
+    </section>
+    <style>
+      html,body{{margin:0;padding:0;background:transparent;color:#edf5ff;font-family:Inter,'Segoe UI',sans-serif}}
+      .qg-staff-hud{{position:relative;isolation:isolate;overflow:hidden;display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:174px;padding:22px 26px;border:1px solid rgba(99,229,220,.24);border-radius:22px;background:radial-gradient(ellipse at 92% 4%,rgba(90,115,255,.24),transparent 34%),linear-gradient(120deg,rgba(11,34,50,.98),rgba(19,31,59,.96));box-shadow:0 18px 50px rgba(0,0,0,.22),inset 0 1px rgba(255,255,255,.05)}}
+      .qg-staff-hud:before{{content:'';position:absolute;z-index:-1;width:300px;height:300px;right:5%;top:-215px;border:1px solid rgba(99,229,220,.15);border-radius:50%;box-shadow:0 0 0 24px rgba(99,229,220,.025),0 0 0 52px rgba(120,165,255,.025);animation:staff-orbit 28s linear infinite}}
+      .qg-staff-hud:after{{content:'';position:absolute;inset:auto 0 0;height:2px;background:linear-gradient(90deg,transparent,#63e5dc,#78a5ff,#b09aff,transparent);opacity:.8}}
+      .qg-staff-hud-copy{{min-width:0}}.qg-staff-kicker{{color:#63e5dc;font:750 10px 'DM Mono',monospace;letter-spacing:.2em}}
+      .qg-staff-title{{margin:9px 0 5px;color:#f4f8ff;font-size:clamp(20px,3vw,28px);font-weight:850;letter-spacing:-.045em}}
+      .qg-staff-rank{{color:#c6daea;font-size:13px;font-weight:700}}.qg-staff-rank span{{padding:0 5px;color:#63e5dc}}
+      .qg-staff-meta{{display:flex;flex-wrap:wrap;gap:9px;margin-top:14px}}.qg-staff-meta span{{padding:7px 10px;border:1px solid rgba(151,184,214,.16);border-radius:999px;color:#a9bed1;background:rgba(5,16,29,.4);font:650 10px 'DM Mono',monospace}}
+      .qg-staff-ring-wrap{{flex:0 0 128px;display:grid;place-items:center}}.qg-staff-ring{{width:126px;height:126px;overflow:visible;transform:rotate(-90deg)}}
+      .qg-staff-ring circle{{fill:none;stroke-width:8}}.qg-staff-ring-track{{stroke:rgba(158,187,211,.13)}}.qg-staff-ring-progress{{stroke:#63e5dc;stroke-linecap:round;filter:drop-shadow(0 0 7px rgba(99,229,220,.65));transition:stroke-dashoffset 1.1s cubic-bezier(.2,.75,.2,1)}}
+      .qg-staff-xp-value{{fill:#f4ffff;font:850 22px 'DM Mono',monospace;text-anchor:middle;dominant-baseline:middle;transform:rotate(90deg);transform-origin:60px 60px}}
+      .qg-staff-xp-label{{fill:#91a9bd;font:750 7px 'DM Mono',monospace;letter-spacing:1.2px;text-anchor:middle;transform:rotate(90deg);transform-origin:60px 60px}}
+      @keyframes staff-orbit{{to{{transform:rotate(360deg)}}}}
+      @media(max-width:540px){{.qg-staff-hud{{align-items:flex-start;padding:17px;gap:8px}}.qg-staff-ring-wrap{{flex-basis:96px}}.qg-staff-ring{{width:94px;height:94px}}.qg-staff-meta{{gap:6px}}.qg-staff-meta span{{font-size:9px;padding:6px 8px}}}}
+      @media(prefers-reduced-motion:reduce){{*,*:before,*:after{{animation:none!important;transition:none!important}}}}
+    </style>
+    <script>
+      (function(){{const node=document.getElementById('qg-staff-points');if(!node)return;const finalValue={pontos_totais_staff};const start=performance.now();const duration=900;function frame(now){{const t=Math.min(1,(now-start)/duration);const eased=1-Math.pow(1-t,3);node.textContent=Math.round(finalValue*eased).toLocaleString('pt-BR');if(t<1)requestAnimationFrame(frame)}}requestAnimationFrame(frame)}})();
+    </script>
+    """
+    with st.container(border=True):
+        st.markdown("#### ⚡ Seu progresso no Mini Jogo")
+        resumo_topo_staff_1, resumo_topo_staff_2, resumo_topo_staff_3 = st.columns(3)
+        resumo_topo_staff_1.metric("Pontuação", f"{pontos_totais_staff:,} XP")
+        resumo_topo_staff_2.metric("Patente", nivel_atual_staff[1])
+        resumo_topo_staff_3.metric("Sequência", f"{sequencia_staff} dias")
+        st.progress(progresso_nivel_staff, text=destino_nivel_staff)
+
+    aba_desafio_staff, aba_conquistas_staff, aba_recompensas_staff = st.tabs([
+        "🎯 Missão diária", "🏅 Conquistas", "🎁 Ideias de recompensa"
+    ])
+
+    with aba_desafio_staff:
+        progresso_visual_missao_staff = int(round((indice_missao_staff + 1) / len(QG_MISSOES_DIARIAS_STAFF) * 100))
+        card_missao_3d_staff = """
+        <section class="qg-mission3d" aria-label="Missão diária do QG">
+          <div class="qg-mission-copy">
+            <div class="qg-mission-kicker"><span class="qg-live-dot"></span> MISSÃO DO DIA <span class="qg-mission-index">__INDEX__/100</span></div>
+            <div class="qg-mission-date">DESAFIO SELECIONADO PELO QG · __DATE__</div>
+            <h2>__TITLE__</h2>
+            <p class="qg-mission-desc">__DESCRIPTION__</p>
+            <div class="qg-mission-reward">
+              <span class="qg-xp-pill">⚡ +10 XP</span>
+              <span class="qg-reward-note">ao marcar como concluída</span>
+            </div>
+            <div class="qg-catalog-row"><span>CATÁLOGO ROTATIVO</span><span>__PROGRESS__%</span></div>
+            <div class="qg-catalog-track"><span style="width:__PROGRESS__%"></span></div>
+          </div>
+          <div class="qg-mission-scene" aria-hidden="true">
+            <div class="qg-scene-halo"></div>
+            <div class="qg-orbit qg-orbit-a"></div>
+            <div class="qg-orbit qg-orbit-b"></div>
+            <div class="qg-cube qg-cube-a">
+              <i class="front">✦</i><i class="back"></i><i class="right"></i><i class="left"></i><i class="top"></i><i class="bottom"></i>
+            </div>
+            <div class="qg-cube qg-cube-b">
+              <i class="front">+</i><i class="back"></i><i class="right"></i><i class="left"></i><i class="top"></i><i class="bottom"></i>
+            </div>
+            <div class="qg-medal-model">
+              <div class="qg-ribbon qg-ribbon-left"></div>
+              <div class="qg-ribbon qg-ribbon-right"></div>
+              <div class="qg-medal-edge"></div>
+              <div class="qg-medal-face"><span>★</span><small>QG</small></div>
+            </div>
+            <div class="qg-scene-caption">MISSÃO · XP · EVOLUÇÃO</div>
+          </div>
+        </section>
+        <style>
+          * { box-sizing:border-box }
+          html,body { margin:0; padding:0; background:transparent; color:#eef5ff; font-family:Inter,'Segoe UI',sans-serif }
+          .qg-mission3d {
+            position:relative; isolation:isolate; overflow:hidden; min-height:276px; display:grid;
+            grid-template-columns:minmax(0,1fr) 235px; align-items:center; gap:14px;
+            padding:25px 30px; border:1px solid rgba(109,231,222,.22); border-radius:24px;
+            background:
+              radial-gradient(ellipse at 80% 48%,rgba(67,118,255,.20),transparent 34%),
+              radial-gradient(ellipse at 3% 0%,rgba(44,224,204,.10),transparent 40%),
+              linear-gradient(120deg,#0b1b2a 0%,#102438 48%,#141d38 100%);
+            box-shadow:0 22px 60px rgba(0,0,0,.23),inset 0 1px rgba(255,255,255,.06);
+          }
+          .qg-mission3d:before {
+            content:''; position:absolute; inset:0; z-index:-1; opacity:.18; pointer-events:none;
+            background-image:linear-gradient(rgba(160,205,220,.12) 1px,transparent 1px),linear-gradient(90deg,rgba(160,205,220,.12) 1px,transparent 1px);
+            background-size:34px 34px; mask-image:linear-gradient(90deg,#000,transparent 85%);
+          }
+          .qg-mission3d:after { content:''; position:absolute; bottom:0; left:7%; right:7%; height:1px; background:linear-gradient(90deg,transparent,#63e5dc,#83a8ff,transparent); opacity:.8 }
+          .qg-mission-copy { min-width:0; position:relative; z-index:2 }
+          .qg-mission-kicker { display:flex; align-items:center; gap:9px; color:#71e6dd; font:800 10px 'DM Mono',monospace; letter-spacing:.16em }
+          .qg-live-dot { width:7px; height:7px; border-radius:50%; background:#63e5dc; box-shadow:0 0 12px #63e5dc; animation:qg-pulse 2s ease-in-out infinite }
+          .qg-mission-index { margin-left:auto; color:#9db3c9; letter-spacing:.08em }
+          .qg-mission-date { margin-top:14px; color:#829bb2; font:700 9px 'DM Mono',monospace; letter-spacing:.12em }
+          .qg-mission3d h2 { margin:9px 0 8px; max-width:600px; color:#f4f8ff; font-size:clamp(21px,3vw,31px); line-height:1.12; letter-spacing:-.045em; font-weight:850 }
+          .qg-mission-desc { margin:0; max-width:560px; color:#b7c8d8; font-size:13px; line-height:1.55 }
+          .qg-mission-reward { display:flex; align-items:center; gap:10px; margin-top:16px }
+          .qg-xp-pill { display:inline-flex; align-items:center; gap:6px; padding:8px 12px; border:1px solid rgba(255,205,113,.36); border-radius:999px; color:#ffe2a3; background:linear-gradient(135deg,rgba(255,181,65,.18),rgba(255,222,151,.07)); font:800 11px 'DM Mono',monospace; box-shadow:0 0 22px rgba(255,187,79,.08) }
+          .qg-reward-note { color:#95aabe; font-size:11px }
+          .qg-catalog-row { display:flex; justify-content:space-between; max-width:440px; margin-top:17px; color:#8199af; font:700 9px 'DM Mono',monospace; letter-spacing:.10em }
+          .qg-catalog-track { max-width:440px; height:4px; margin-top:7px; overflow:hidden; border-radius:8px; background:rgba(158,191,216,.13) }
+          .qg-catalog-track span { display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg,#58dfd2,#83a8ff); box-shadow:0 0 12px rgba(91,225,215,.55) }
+          .qg-mission-scene { position:relative; min-height:220px; perspective:800px; transform-style:preserve-3d }
+          .qg-scene-halo { position:absolute; width:176px; height:176px; top:18px; left:29px; border-radius:50%; background:radial-gradient(circle,rgba(75,210,227,.17),rgba(75,210,227,.035) 52%,transparent 72%); filter:blur(2px) }
+          .qg-orbit { position:absolute; top:82px; left:32px; width:170px; height:64px; border:1px solid rgba(112,227,224,.27); border-radius:50%; transform-style:preserve-3d }
+          .qg-orbit-a { transform:rotate(-24deg) rotateX(64deg); animation:qg-orbit 12s linear infinite }
+          .qg-orbit-b { width:148px; height:52px; top:89px; left:43px; border-color:rgba(146,164,255,.28); transform:rotate(35deg) rotateX(66deg); animation:qg-orbit 16s linear infinite reverse }
+          .qg-medal-model { position:absolute; top:37px; left:83px; width:100px; height:132px; transform-style:preserve-3d; animation:qg-medal-float 4.5s ease-in-out infinite }
+          .qg-ribbon { position:absolute; top:0; width:27px; height:52px; background:linear-gradient(90deg,#9a263d,#ff6175 48%,#9a263d); clip-path:polygon(0 0,100% 0,100% 100%,50% 78%,0 100%); filter:drop-shadow(0 7px 8px rgba(0,0,0,.28)); transform:translateZ(-12px) }
+          .qg-ribbon-left { left:26px; transform:translateZ(-12px) rotate(-10deg) }
+          .qg-ribbon-right { right:26px; background:linear-gradient(90deg,#2652a1,#6fb7ff 48%,#2652a1); transform:translateZ(-13px) rotate(10deg) }
+          .qg-medal-edge { position:absolute; left:15px; top:38px; width:70px; height:70px; border-radius:50%; background:conic-gradient(from 20deg,#9b5c16,#ffe391,#be771d,#fff0b4,#9b5c16); box-shadow:0 13px 28px rgba(0,0,0,.35),0 0 30px rgba(255,192,84,.22); transform:translateZ(2px) }
+          .qg-medal-face { position:absolute; left:21px; top:44px; width:58px; height:58px; display:flex; flex-direction:column; align-items:center; justify-content:center; border:1px solid rgba(255,247,202,.9); border-radius:50%; color:#fff4c9; background:radial-gradient(circle at 35% 28%,#ffd978,#c9872d 58%,#784417); box-shadow:inset 0 0 0 4px rgba(255,245,198,.19),inset 0 0 12px rgba(96,45,8,.36); transform:translateZ(12px) }
+          .qg-medal-face span { font-size:21px; line-height:1; text-shadow:0 2px 5px rgba(75,38,0,.45) }
+          .qg-medal-face small { margin-top:2px; font:800 7px 'DM Mono',monospace; letter-spacing:.12em }
+          .qg-cube { --size:46px; position:absolute; width:var(--size); height:var(--size); transform-style:preserve-3d; animation:qg-cube-spin 13s linear infinite }
+          .qg-cube i { position:absolute; inset:0; display:grid; place-items:center; border:1px solid rgba(127,236,231,.55); color:#c7fff7; background:linear-gradient(135deg,rgba(75,231,219,.42),rgba(61,100,181,.45)); box-shadow:inset 0 0 16px rgba(103,231,224,.16); font-style:normal; font-size:20px; backface-visibility:visible }
+          .qg-cube .front { transform:translateZ(calc(var(--size) / 2)) }
+          .qg-cube .back { transform:rotateY(180deg) translateZ(calc(var(--size) / 2)) }
+          .qg-cube .right { transform:rotateY(90deg) translateZ(calc(var(--size) / 2)) }
+          .qg-cube .left { transform:rotateY(-90deg) translateZ(calc(var(--size) / 2)) }
+          .qg-cube .top { transform:rotateX(90deg) translateZ(calc(var(--size) / 2)) }
+          .qg-cube .bottom { transform:rotateX(-90deg) translateZ(calc(var(--size) / 2)) }
+          .qg-cube-a { top:44px; left:14px; --size:38px; animation-duration:15s }
+          .qg-cube-b { right:4px; bottom:42px; --size:29px; animation-duration:11s; animation-direction:reverse }
+          .qg-cube-b i { border-color:rgba(190,158,255,.54); color:#eee2ff; background:linear-gradient(135deg,rgba(163,117,255,.42),rgba(70,88,177,.43)) }
+          .qg-scene-caption { position:absolute; bottom:3px; left:0; right:0; text-align:center; color:#7691a9; font:700 8px 'DM Mono',monospace; letter-spacing:.17em }
+          @keyframes qg-medal-float { 0%,100% { transform:translateY(0) rotateY(-12deg) rotateX(5deg) } 50% { transform:translateY(-9px) rotateY(12deg) rotateX(-3deg) } }
+          @keyframes qg-cube-spin { from { transform:rotateX(-20deg) rotateY(0) rotateZ(5deg) } to { transform:rotateX(340deg) rotateY(360deg) rotateZ(365deg) } }
+          @keyframes qg-orbit { from { rotate:0deg } to { rotate:360deg } }
+          @keyframes qg-pulse { 0%,100% { opacity:1; box-shadow:0 0 12px #63e5dc } 50% { opacity:.45; box-shadow:0 0 4px #63e5dc } }
+          @media(max-width:620px) {
+            .qg-mission3d { grid-template-columns:1fr; gap:0; padding:21px 20px 12px }
+            .qg-mission-scene { min-height:154px; width:220px; max-width:100%; justify-self:center; transform:scale(.78); transform-origin:top center; margin-bottom:-34px }
+            .qg-mission-index { font-size:8px }
+            .qg-mission-desc { font-size:12px }
+          }
+          @media(prefers-reduced-motion:reduce) { *,*:before,*:after { animation:none!important; scroll-behavior:auto!important } }
+        </style>
+        """
+        card_missao_3d_staff = (
+            card_missao_3d_staff
+            .replace("__INDEX__", str(indice_missao_staff + 1))
+            .replace("__DATE__", hoje_staff.strftime("%d/%m/%Y"))
+            .replace("__TITLE__", html.escape(missao_dia_staff["nome"]))
+            .replace("__DESCRIPTION__", html.escape(missao_dia_staff["descricao"]))
+            .replace("__PROGRESS__", str(progresso_visual_missao_staff))
+        )
+        arte_3d_staff = """
+        <div class="qg3d-stage" aria-label="Medalha e cubos tridimensionais">
+          <div class="qg3d-halo"></div>
+          <div class="qg3d-orbit qg3d-orbit-a"></div>
+          <div class="qg3d-orbit qg3d-orbit-b"></div>
+          <div class="qg3d-cube qg3d-cube-cyan">
+            <i class="front"></i><i class="back"></i><i class="right"></i><i class="left"></i><i class="top"></i><i class="bottom"></i>
+          </div>
+          <div class="qg3d-cube qg3d-cube-violet">
+            <i class="front"></i><i class="back"></i><i class="right"></i><i class="left"></i><i class="top"></i><i class="bottom"></i>
+          </div>
+          <div class="qg3d-medal">
+            <div class="qg3d-ribbon qg3d-ribbon-red"></div>
+            <div class="qg3d-ribbon qg3d-ribbon-blue"></div>
+            <div class="qg3d-coin-edge"></div>
+            <div class="qg3d-coin-face"><span class="qg3d-star"></span></div>
+          </div>
+        </div>
+        <style>
+          html,body { margin:0; padding:0; background:transparent }
+          .qg3d-stage {
+            position:relative; isolation:isolate; overflow:hidden; height:252px; width:100%;
+            border:1px solid rgba(109,231,222,.22); border-radius:22px; perspective:850px;
+            background:radial-gradient(ellipse at 50% 48%,rgba(69,137,211,.22),transparent 58%),linear-gradient(145deg,#0b1c2c,#111a31);
+            box-shadow:0 18px 45px rgba(0,0,0,.2),inset 0 1px rgba(255,255,255,.05);
+          }
+          .qg3d-halo { position:absolute; width:174px; height:174px; top:33px; left:calc(50% - 87px); border-radius:50%; background:radial-gradient(circle,rgba(75,210,227,.17),rgba(75,210,227,.035) 55%,transparent 74%) }
+          .qg3d-orbit { position:absolute; top:96px; left:calc(50% - 92px); width:184px; height:65px; border:1px solid rgba(112,227,224,.31); border-radius:50%; transform-style:preserve-3d }
+          .qg3d-orbit-a { transform:rotate(-24deg) rotateX(64deg); animation:qg3d-orbit 14s linear infinite }
+          .qg3d-orbit-b { width:154px; height:52px; top:102px; left:calc(50% - 77px); border-color:rgba(146,164,255,.34); transform:rotate(35deg) rotateX(66deg); animation:qg3d-orbit 18s linear infinite reverse }
+          .qg3d-medal { position:absolute; top:42px; left:calc(50% - 50px); width:100px; height:140px; transform-style:preserve-3d; animation:qg3d-float 4.5s ease-in-out infinite }
+          .qg3d-ribbon { position:absolute; top:0; width:27px; height:55px; clip-path:polygon(0 0,100% 0,100% 100%,50% 78%,0 100%); filter:drop-shadow(0 7px 8px rgba(0,0,0,.28)) }
+          .qg3d-ribbon-red { left:25px; background:linear-gradient(90deg,#9a263d,#ff6175 48%,#9a263d); transform:translateZ(-12px) rotate(-10deg) }
+          .qg3d-ribbon-blue { right:25px; background:linear-gradient(90deg,#2652a1,#6fb7ff 48%,#2652a1); transform:translateZ(-13px) rotate(10deg) }
+          .qg3d-coin-edge { position:absolute; left:15px; top:41px; width:70px; height:70px; border-radius:50%; background:conic-gradient(from 20deg,#9b5c16,#ffe391,#be771d,#fff0b4,#9b5c16); box-shadow:0 13px 28px rgba(0,0,0,.35),0 0 30px rgba(255,192,84,.22); transform:translateZ(2px) }
+          .qg3d-coin-face { position:absolute; left:21px; top:47px; width:58px; height:58px; display:grid; place-items:center; border:1px solid rgba(255,247,202,.9); border-radius:50%; background:radial-gradient(circle at 35% 28%,#ffd978,#c9872d 58%,#784417); box-shadow:inset 0 0 0 4px rgba(255,245,198,.19),inset 0 0 12px rgba(96,45,8,.36); transform:translateZ(12px) }
+          .qg3d-star { display:block; width:27px; height:27px; background:linear-gradient(135deg,#fff7c9,#ffe48a); clip-path:polygon(50% 0,61% 35%,98% 35%,68% 57%,79% 94%,50% 72%,21% 94%,32% 57%,2% 35%,39% 35%); filter:drop-shadow(0 2px 4px rgba(75,38,0,.45)) }
+          .qg3d-cube { --s:42px; position:absolute; width:var(--s); height:var(--s); transform-style:preserve-3d; animation:qg3d-cube-spin 15s linear infinite }
+          .qg3d-cube i { position:absolute; inset:0; border:1px solid rgba(127,236,231,.6); background:linear-gradient(135deg,rgba(75,231,219,.42),rgba(61,100,181,.48)); box-shadow:inset 0 0 18px rgba(103,231,224,.18); backface-visibility:visible }
+          .qg3d-cube .front { transform:translateZ(calc(var(--s) / 2)) }
+          .qg3d-cube .back { transform:rotateY(180deg) translateZ(calc(var(--s) / 2)) }
+          .qg3d-cube .right { transform:rotateY(90deg) translateZ(calc(var(--s) / 2)) }
+          .qg3d-cube .left { transform:rotateY(-90deg) translateZ(calc(var(--s) / 2)) }
+          .qg3d-cube .top { transform:rotateX(90deg) translateZ(calc(var(--s) / 2)) }
+          .qg3d-cube .bottom { transform:rotateX(-90deg) translateZ(calc(var(--s) / 2)) }
+          .qg3d-cube-cyan { top:50px; left:calc(50% - 110px); --s:38px; animation-duration:17s }
+          .qg3d-cube-violet { right:calc(50% - 123px); bottom:41px; --s:29px; border-color:rgba(190,158,255,.6); animation-duration:13s; animation-direction:reverse }
+          .qg3d-cube-violet i { border-color:rgba(190,158,255,.58); background:linear-gradient(135deg,rgba(163,117,255,.42),rgba(70,88,177,.48)) }
+          @keyframes qg3d-float { 0%,100% { transform:translateY(0) rotateY(-12deg) rotateX(5deg) } 50% { transform:translateY(-8px) rotateY(12deg) rotateX(-3deg) } }
+          @keyframes qg3d-cube-spin { from { transform:rotateX(-20deg) rotateY(0) rotateZ(5deg) } to { transform:rotateX(340deg) rotateY(360deg) rotateZ(365deg) } }
+          @keyframes qg3d-orbit { from { rotate:0deg } to { rotate:360deg } }
+          @media(max-width:640px) { .qg3d-stage { height:220px } }
+          @media(prefers-reduced-motion:reduce) { *,*:before,*:after { animation:none!important } }
+        </style>
+        """
+        col_detalhes_missao_staff, col_modelos_3d_staff = st.columns([1.55, 1], gap="large")
+        with col_detalhes_missao_staff:
+            with st.container(border=True):
+                st.caption(f"MISSÃO DO DIA · {indice_missao_staff + 1}/100 · {hoje_staff.strftime('%d/%m/%Y')}")
+                st.subheader(missao_dia_staff["nome"])
+                st.write(missao_dia_staff["descricao"])
+                st.metric("Recompensa da missão", "+10 XP")
+                st.progress(
+                    (indice_missao_staff + 1) / len(QG_MISSOES_DIARIAS_STAFF),
+                    text=f"Catálogo · {indice_missao_staff + 1} de {len(QG_MISSOES_DIARIAS_STAFF)}",
+                )
+                st.caption("O QG seleciona o desafio do dia para todos. Adapte a atividade ao seu condicionamento.")
+        with col_modelos_3d_staff:
+            st.markdown("#### Medalha da missão")
+            components.html(arte_3d_staff, height=260, scrolling=False)
+        st.caption("Pare se sentir dor ou mal-estar.")
+        st.markdown("#### Sua resposta · +10 XP")
+        st.caption("Marque se concluiu. Os pontos são registrados uma única vez neste dia.")
+
+        chave_resposta_missao_staff = f"staff_resposta_missao_{user_atual}_{data_staff_hoje}"
+        if chave_resposta_missao_staff not in st.session_state:
+            st.session_state[chave_resposta_missao_staff] = (
+                "Concluída" if missao_hoje_concluida_staff else "Não concluída"
+            )
+        with st.form(f"qg_form_missao_staff_{user_atual}_{data_staff_hoje}"):
+            resposta_missao_staff = st.radio(
+                "A missão foi concluída?",
+                ["Não concluída", "Concluída"],
+                key=chave_resposta_missao_staff,
+                horizontal=True,
+            )
+            salvar_resposta_missao_staff = st.form_submit_button(
+                "💾 Salvar resultado", type="primary", use_container_width=True
+            )
+
+        if salvar_resposta_missao_staff:
+            concluida_missao_staff = resposta_missao_staff == "Concluída"
+            missoes_diarias_staff[data_staff_hoje] = {
+                "desafio_id": missao_dia_staff["id"],
+                "concluida": concluida_missao_staff,
+                "atualizado_em": datetime.datetime.now(fuso_staff).isoformat(timespec="seconds"),
+            }
+            estado_staff["missoes_diarias"] = missoes_diarias_staff
+            estado_staff["registros"] = registros_staff[-1500:]
+            db["desafios_staff"] = estado_staff
+            salvar_dados_usuario(user_atual, db)
+            st.session_state[chave_flash_staff] = (
+                "Missão concluída! Você recebeu 10 XP."
+                if concluida_missao_staff else "Resultado salvo. Nenhum ponto foi adicionado."
+            )
+            st.rerun()
+
+        if missao_hoje_concluida_staff:
+            st.success("✅ Missão concluída · +10 XP")
+        else:
+            st.info("Missão aguardando seu registro. Não há penalidade por não concluir.")
+
+        dias_historico_staff = [hoje_staff - datetime.timedelta(days=i) for i in range(13, -1, -1)]
+        pontos_historico_staff = {
+            dia.isoformat(): (
+                sum(int(r["pontos"]) for r in registros_staff if r["data"] == dia.isoformat())
+                + (10 if dia.isoformat() in missoes_concluidas_staff else 0)
+            )
+            for dia in dias_historico_staff
+        }
+        df_historico_staff = pd.DataFrame({
+            "Dia": [dia.strftime("%d/%m") for dia in dias_historico_staff],
+            "Pontos": [pontos_historico_staff[dia.isoformat()] for dia in dias_historico_staff],
+        })
+        st.markdown("#### Sua atividade · últimos 14 dias")
+        grafico_staff = px.bar(df_historico_staff, x="Dia", y="Pontos", text="Pontos")
+        grafico_staff.update_traces(marker_color="#78a5ff", textposition="outside", cliponaxis=False)
+        grafico_staff.update_layout(
+            height=280, margin=dict(l=8, r=8, t=12, b=8),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#dceafb"), xaxis_title=None, yaxis_title="XP",
+            yaxis=dict(gridcolor="rgba(151,184,214,.12)", rangemode="tozero"),
+        )
+        st.plotly_chart(grafico_staff, use_container_width=True, config={"displayModeBar": False})
+
+    with aba_conquistas_staff:
+        st.subheader("Coleção de conquistas")
+        conquistas_staff = [
+            ("🌱", "Primeiro passo", total_desafios_staff >= 1, "Conclua seu primeiro desafio"),
+            ("🔥", "Constância · 3 dias", sequencia_staff >= 3, "Registre atividade em 3 dias seguidos"),
+            ("⚡", "Uma semana firme", sequencia_staff >= 7, "Registre atividade em 7 dias seguidos"),
+            ("🎖️", "Centurião", pontos_totais_staff >= 100, "Acumule 100 XP"),
+            ("🏆", "Veterano de equipe", total_desafios_staff >= 25, "Conclua 25 desafios"),
+            ("💠", "Lenda do QG", pontos_totais_staff >= 1000, "Acumule 1.000 XP"),
+        ]
+        colunas_conquistas_staff = st.columns(3)
+        for indice_conquista, (icone_conquista, nome_conquista, desbloqueada, regra_conquista) in enumerate(conquistas_staff):
+            with colunas_conquistas_staff[indice_conquista % 3]:
+                with st.container(border=True):
+                    estado_conquista = "DESBLOQUEADA" if desbloqueada else "BLOQUEADA"
+                    st.markdown(f"### {icone_conquista}")
+                    st.markdown(f"**{nome_conquista}**")
+                    st.caption(regra_conquista)
+                    if desbloqueada:
+                        st.success(estado_conquista)
+                    else:
+                        st.caption(f"🔒 {estado_conquista}")
+
+        st.markdown("#### Seu resumo")
+        resumo_staff_1, resumo_staff_2, resumo_staff_3 = st.columns(3)
+        resumo_staff_1.metric("Pontos totais", f"{pontos_totais_staff:,} XP")
+        resumo_staff_2.metric("Desafios registrados", total_desafios_staff)
+        resumo_staff_3.metric("Sequência atual", f"{sequencia_staff} dias")
+        st.caption("O placar é privado por conta neste primeiro formato; não há comparação pública entre usuários.")
+
+    with aba_recompensas_staff:
+        st.subheader("Ideias de recompensa")
+        st.caption("Os pontos são fictícios e as recompensas ainda não são resgatáveis. Escolha o que faz sentido para sua equipe antes de ativar qualquer troca.")
+        ideias_recompensa_staff = [
+            ("🏅 Distintivos digitais", "Títulos e emblemas no perfil, liberados por marcos de XP."),
+            ("🎨 Personalização do QG", "Temas, molduras de avatar ou cores especiais para o perfil."),
+            ("📣 Mural de reconhecimento", "Destaque semanal opcional para quem completou missões, com consentimento."),
+            ("🎵 Escolha da trilha", "Escolher a música ambiente ou o tema de uma atividade coletiva."),
+            ("🎯 Criar o desafio da semana", "O staff escolhe uma missão leve para a equipe, sem competição por volume."),
+            ("📜 Certificado simbólico", "Certificado digital por constância, participação ou marcos de equipe."),
+        ]
+        col_recompensas_staff = st.columns(2)
+        for indice_recompensa, (titulo_recompensa, descricao_recompensa) in enumerate(ideias_recompensa_staff):
+            with col_recompensas_staff[indice_recompensa % 2]:
+                with st.container(border=True):
+                    st.markdown(f"#### {titulo_recompensa}")
+                    st.write(descricao_recompensa)
+        st.info("Sugestão: começar com distintivos digitais e personalização do perfil; são recompensas simples, transparentes e sem custo.")
+        st.caption("Os desafios são auto-registrados e devem ser adaptados à capacidade de cada pessoa. Faça pausas e não continue se sentir dor ou mal-estar.")
 
 
 # ====================================================
@@ -2310,6 +4042,148 @@ elif menu == "🎯 Simulados (1º e 2º Dia)":
         st.dataframe(df_exibicao, use_container_width=True)
     else:
         st.info("Nenhum simulado registrado até o momento.")
+# ====================================================
+# MÓDULO 20B: DIÁRIO DE BORDO
+# ====================================================
+elif menu == "📖 Diário de Bordo":
+    st.title("📖 Diário de Bordo")
+    st.caption("Registre sua evolução, aprendizados e próximos passos. Seu rascunho é salvo automaticamente na sua conta.")
+    diario = db.setdefault("diario_bordo", [])
+    if not isinstance(diario, list):
+        diario = []
+        db["diario_bordo"] = diario
+
+    horas_total_diario = sum(float(item.get("horas", 0) or 0) for item in diario if isinstance(item, dict))
+    datas_diario = {str(item.get("data", "")) for item in diario if isinstance(item, dict) and item.get("data")}
+    dm1, dm2, dm3 = st.columns(3)
+    dm1.metric("Entradas registradas", len(diario))
+    dm2.metric("Horas documentadas", f"{horas_total_diario:.1f} h")
+    dm3.metric("Dias com registro", len(datas_diario), help=f"Registro mais recente: {max(datas_diario) if datas_diario else '—'}")
+
+    draft_saved = db.get("diario_rascunho", {})
+    if not isinstance(draft_saved, dict):
+        draft_saved = {}
+    draft_prefix = f"diario_rascunho_{user_atual}_"
+    draft_defaults = {
+        "data": draft_saved.get("data", str(datetime.date.today())),
+        "materia": draft_saved.get("materia", ""), "horas": float(draft_saved.get("horas", 1.0) or 1.0),
+        "resumo": draft_saved.get("resumo", ""), "aprendizado": draft_saved.get("aprendizado", ""),
+        "desafio": draft_saved.get("desafio", ""), "proximo": draft_saved.get("proximo_passo", ""),
+        "foco": int(draft_saved.get("foco", 3) or 3),
+    }
+    for campo, valor in draft_defaults.items():
+        chave = draft_prefix + campo
+        if chave not in st.session_state:
+            if campo == "data":
+                try:
+                    valor = datetime.date.fromisoformat(str(valor)[:10])
+                except ValueError:
+                    valor = datetime.date.today()
+            st.session_state[chave] = valor
+
+    def _persistir_rascunho_diario():
+        estado_fresco = carregar_dados_usuario(user_atual, get_edital_espcex)
+        estado_fresco["diario_rascunho"] = {
+            "data": str(st.session_state[draft_prefix + "data"]),
+            "materia": st.session_state[draft_prefix + "materia"],
+            "horas": float(st.session_state[draft_prefix + "horas"]),
+            "resumo": st.session_state[draft_prefix + "resumo"],
+            "aprendizado": st.session_state[draft_prefix + "aprendizado"],
+            "desafio": st.session_state[draft_prefix + "desafio"],
+            "proximo_passo": st.session_state[draft_prefix + "proximo"],
+            "foco": int(st.session_state[draft_prefix + "foco"]),
+            "salvo_em": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        salvar_dados_usuario(user_atual, estado_fresco)
+
+    def _registrar_diario_callback():
+        estado_fresco = carregar_dados_usuario(user_atual, get_edital_espcex)
+        resumo = str(st.session_state[draft_prefix + "resumo"]).strip()
+        aprendizado = str(st.session_state[draft_prefix + "aprendizado"]).strip()
+        if not resumo and not aprendizado:
+            st.session_state["diario_feedback"] = "Preencha o resumo ou o principal aprendizado antes de salvar."
+            return
+        lista_diario = estado_fresco.setdefault("diario_bordo", [])
+        lista_diario.append({
+            "id": uuid.uuid4().hex[:12], "data": str(st.session_state[draft_prefix + "data"]),
+            "materia": str(st.session_state[draft_prefix + "materia"]).strip() or "Estudo geral",
+            "horas": float(st.session_state[draft_prefix + "horas"]), "resumo": resumo,
+            "aprendizado": aprendizado, "desafio": str(st.session_state[draft_prefix + "desafio"]).strip(),
+            "proximo_passo": str(st.session_state[draft_prefix + "proximo"]).strip(),
+            "foco": int(st.session_state[draft_prefix + "foco"]),
+            "criado_em": datetime.datetime.now().isoformat(timespec="minutes"),
+        })
+        estado_fresco["diario_bordo"] = lista_diario[-1000:]
+        estado_fresco["diario_rascunho"] = {}
+        salvar_dados_usuario(user_atual, estado_fresco)
+        st.session_state["diario_feedback"] = "Entrada salva no Diário de Bordo."
+        st.session_state[draft_prefix + "data"] = datetime.date.today()
+        st.session_state[draft_prefix + "materia"] = ""
+        st.session_state[draft_prefix + "horas"] = 1.0
+        st.session_state[draft_prefix + "resumo"] = ""
+        st.session_state[draft_prefix + "aprendizado"] = ""
+        st.session_state[draft_prefix + "desafio"] = ""
+        st.session_state[draft_prefix + "proximo"] = ""
+        st.session_state[draft_prefix + "foco"] = 3
+
+    feedback_diario = st.session_state.pop("diario_feedback", None)
+    if feedback_diario:
+        st.success(feedback_diario) if feedback_diario.startswith("Entrada salva") else st.warning(feedback_diario)
+
+    with st.container(border=True):
+        st.markdown("#### ＋ Nova entrada · salvamento automático")
+        st.caption("O rascunho é salvo enquanto você preenche e continua disponível se navegar para outra tela.")
+        dr1, dr2, dr3 = st.columns([1, 2, 1])
+        st.date_input("Data", key=draft_prefix + "data", on_change=_persistir_rascunho_diario)
+        st.text_input("Matéria / atividade", placeholder="Ex.: Física, redação ou TAF", key=draft_prefix + "materia", on_change=_persistir_rascunho_diario)
+        st.number_input("Horas", min_value=0.0, max_value=24.0, step=0.5, key=draft_prefix + "horas", on_change=_persistir_rascunho_diario)
+        st.text_area("O que você estudou ou realizou?", max_chars=2000, key=draft_prefix + "resumo", on_change=_persistir_rascunho_diario)
+        dr4, dr5 = st.columns(2)
+        dr4.text_area("Principal aprendizado", max_chars=1200, key=draft_prefix + "aprendizado", on_change=_persistir_rascunho_diario)
+        dr5.text_area("Dificuldade ou ponto para revisar", max_chars=1200, key=draft_prefix + "desafio", on_change=_persistir_rascunho_diario)
+        st.text_input("Próximo passo", placeholder="Ex.: resolver 20 questões de cinemática", key=draft_prefix + "proximo", on_change=_persistir_rascunho_diario)
+        st.slider("Como foi seu foco hoje?", 1, 5, key=draft_prefix + "foco", help="1 = baixo · 5 = excelente", on_change=_persistir_rascunho_diario)
+        st.button("Salvar entrada no diário", type="primary", use_container_width=True, on_click=_registrar_diario_callback)
+
+    # Reread after a possible autosave callback so the list reflects the stored state.
+    diario = db.get("diario_bordo", [])
+    entradas_diario = sorted([x for x in diario if isinstance(x, dict)], key=lambda item: (str(item.get("data", "")), str(item.get("criado_em", ""))), reverse=True)
+    if entradas_diario:
+        st.markdown("### Ritmo de estudo")
+        linhas_grafico = [{"Data": item.get("data"), "Horas": float(item.get("horas", 0) or 0), "Matéria": item.get("materia", "Estudo geral")} for item in reversed(entradas_diario[-30:])]
+        df_diario = pd.DataFrame(linhas_grafico)
+        if not df_diario.empty:
+            fig_diario = px.bar(df_diario, x="Data", y="Horas", color="Matéria", barmode="stack", title="Horas registradas · últimos 30 registros")
+            fig_diario.update_layout(height=320, margin=dict(t=50, b=15, l=10, r=10), xaxis_title="", yaxis_title="Horas")
+            st.plotly_chart(fig_diario, use_container_width=True)
+        st.markdown("### Histórico recente")
+        busca_diario = st.text_input("Filtrar por matéria ou conteúdo", key="filtro_diario_bordo")
+        termo_diario = busca_diario.casefold().strip()
+        visiveis_diario = [item for item in entradas_diario if not termo_diario or termo_diario in " ".join(str(item.get(k, "")) for k in ("materia", "resumo", "aprendizado", "desafio", "proximo_passo")).casefold()]
+        for item in visiveis_diario:
+            with st.container(border=True):
+                cc1, cc2 = st.columns([5, 1])
+                cc1.markdown(f"**{item.get('data', '')} · {item.get('materia', 'Estudo geral')}**")
+                cc2.metric("Horas", f"{float(item.get('horas', 0) or 0):g}")
+                if item.get("resumo"):
+                    st.write(item["resumo"])
+                sub1, sub2 = st.columns(2)
+                if item.get("aprendizado"):
+                    sub1.markdown("**Aprendizado**")
+                    sub1.write(item["aprendizado"])
+                if item.get("desafio"):
+                    sub2.markdown("**Para revisar**")
+                    sub2.write(item["desafio"])
+                if item.get("proximo_passo"):
+                    st.caption(f"Próximo passo: {item['proximo_passo']}")
+                st.caption(f"Foco percebido: {item.get('foco', 3)}/5")
+                if st.button("Excluir entrada", key=f"apagar_diario_{item.get('id', item.get('criado_em', 'sem-id'))}"):
+                    db["diario_bordo"] = [x for x in diario if x is not item]
+                    salvar_dados_usuario(user_atual, db)
+                    st.rerun()
+    else:
+        st.info("Seu diário ainda está vazio. Preencha uma entrada; o rascunho salva automaticamente e o botão registra no histórico.")
+
 # ====================================================
 # MÓDULO 21: PLAYER DE ÁUDIO
 # ====================================================
@@ -2793,14 +4667,15 @@ elif "módulo 23" in menu.lower() or "calendário" in menu.lower():
 # #MODULO_24_PAINEL_ADMINISTRADOR_EXPANDIDO
 #===========================================================================
 # #MODULO_24_PAINEL_ADMINISTRADOR_ULTIMATE_PREMIUM
-elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" in menu.lower():
+elif "módulo 24" in menu.lower():
     import platform
     import sys
     import plotly.express as px
     
-    st.markdown("### `#Modulo24_Comando_Master`")
-    st.title("🛡️ Central de Comando & Inteligência")
-    st.caption("Painel tático master: telemetria, segurança, auditoria e gestão do efetivo QG EsPCEx.")
+    st.markdown("### `#Area_Administrativa_Restrita`")
+    titulo_pagina_admin = "Módulo 24 · Central Administrativa"
+    st.title(titulo_pagina_admin)
+    st.caption("Central privada da conta proprietária para operação, dados, manutenção, segurança e inteligência do QG.")
     st.divider()
 
     # -----------------------------------------------------------------------------
@@ -2868,51 +4743,209 @@ elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" 
     # -----------------------------------------------------------------------------
     # 2. AUTENTICAÇÃO SEGURA MASTER (DESIGN EM CARTÃO)
     # -----------------------------------------------------------------------------
-    pin_admin_salvo = str(get_config_adm("senha_admin", "1911")).strip()
-    if not pin_admin_salvo: pin_admin_salvo = "1911"
+    usuarios_admin = carregar_usuarios()
+    primeiro_usuario_admin = next(iter(usuarios_admin), "")
+    admin_owner = str(get_config_adm("admin_owner", "") or "").strip()
+    if not admin_owner and primeiro_usuario_admin:
+        admin_owner = primeiro_usuario_admin
+        set_config_adm("admin_owner", admin_owner)
+
+    pin_admin_salvo = str(get_config_adm("senha_admin", "") or "").strip()
+    if pin_admin_salvo == "1911":
+        pin_admin_salvo = ""
+    pin_admin_salvo = pin_admin_salvo or os.environ.get("QG_ADMIN_PIN", "").strip()
+    pin_temporario = get_config_adm("admin_pin_temporario", "0") == "1"
+
+    # First-use temporary credential requested by the owner. It is forcibly changed
+    # to a strong private credential before any admin tools become visible.
+    if not pin_admin_salvo and admin_owner and admin_owner == primeiro_usuario_admin:
+        pin_admin_salvo = hash_senha("16/11")
+        pin_temporario = True
+        set_config_adm("senha_admin", pin_admin_salvo)
+        set_config_adm("admin_pin_temporario", "1")
+        set_config_adm("data_criacao_senha_admin", datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
+        registrar_log("CONFIG_ADMIN", "Credencial temporária inicial criada para a conta proprietária.")
 
     if "admin_autenticado" not in st.session_state: st.session_state["admin_autenticado"] = False
+    if st.session_state["admin_autenticado"] and user_atual != admin_owner:
+        st.session_state["admin_autenticado"] = False
+        st.session_state.pop("admin_ultima_atividade", None)
+    try:
+        timeout_admin_minutos = max(5, min(120, int(get_config_adm("admin_timeout_minutes", "20"))))
+    except (TypeError, ValueError):
+        timeout_admin_minutos = 20
+
+    if st.session_state["admin_autenticado"]:
+        if time.time() - st.session_state.get("admin_ultima_atividade", time.time()) > timeout_admin_minutos * 60:
+            st.session_state["admin_autenticado"] = False
+            st.session_state.pop("admin_ultima_atividade", None)
+            st.warning("A sessão administrativa expirou por inatividade.")
+        else:
+            st.session_state["admin_ultima_atividade"] = time.time()
 
     if not st.session_state["admin_autenticado"]:
         col_espaco1, col_login, col_espaco2 = st.columns([1, 2, 1])
         with col_login:
-            st.warning("🛡️ **ZONA RESTRITA:** Acesso Exclusivo ao Comando")
-            with st.form("form_login_admin_master"):
-                pin_digitado = st.text_input("🔑 Código de Acesso (PIN)", type="password", placeholder="Insira a sua credencial master")
-                if st.form_submit_button("🔓 Autenticar no Sistema", use_container_width=True):
-                    pin_clean = pin_digitado.strip()
-                    if pin_clean == pin_admin_salvo:
-                        st.session_state["admin_autenticado"] = True
-                        set_config_adm("senha_admin", pin_clean)
-                        registrar_log("LOGIN_ADMIN", "Acesso autorizado ao Painel Master")
-                        st.success("✅ Identidade confirmada!")
-                        time.sleep(0.5)
-                        st.rerun()
-                    else:
-                        registrar_log("FALHA_LOGIN_ADMIN", "Tentativa de intrusão com PIN incorreto.")
-                        st.error("❌ Credencial Inválida. Acesso Bloqueado.")
+            st.warning("🛡️ ZONA RESTRITA · Acesso exclusivo à conta proprietária")
+            if not admin_owner or user_atual != admin_owner:
+                st.error("Somente a conta que criou o primeiro cadastro do QG pode acessar o painel administrativo.")
+            elif pin_temporario:
+                st.info("A senha temporária é 16/11. Troque-a agora por uma senha privada forte para liberar o painel.")
+                with st.form("form_trocar_pin_temporario"):
+                    pin_atual_temp = st.text_input("Senha temporária", type="password")
+                    pin_nova_temp = st.text_input("Nova senha privada", type="password", help="Mínimo de 12 caracteres, com letras e números.")
+                    pin_nova_confirma = st.text_input("Confirme a nova senha", type="password")
+                    if st.form_submit_button("Definir minha senha e abrir o painel", type="primary", use_container_width=True):
+                        if not verificar_credencial(pin_atual_temp, pin_admin_salvo):
+                            st.error("A senha temporária está incorreta.")
+                        elif not senha_forte(pin_nova_temp):
+                            st.error("Use pelo menos 12 caracteres, incluindo letras e números.")
+                        elif pin_nova_temp != pin_nova_confirma:
+                            st.error("As novas senhas não coincidem.")
+                        else:
+                            set_config_adm("senha_admin", hash_senha(pin_nova_temp))
+                            set_config_adm("admin_pin_temporario", "0")
+                            set_config_adm("data_criacao_senha_admin", datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
+                            registrar_log("ALTERACAO_PIN", "Senha temporária substituída pela senha privada do proprietário.")
+                            st.session_state["admin_autenticado"] = True
+                            st.session_state["admin_ultima_atividade"] = time.time()
+                            st.rerun()
+            elif not pin_admin_salvo:
+                st.error("A credencial administrativa não está configurada. Defina QG_ADMIN_PIN no ambiente.")
+            else:
+                with st.form("form_login_admin_master"):
+                    pin_digitado = st.text_input("🔑 Sua senha administrativa", type="password")
+                    if st.form_submit_button("🔓 Entrar no painel", use_container_width=True):
+                        pin_clean = pin_digitado.strip()
+                        espera_admin = tempo_bloqueio("admin-master")
+                        if espera_admin:
+                            st.error(f"Muitas tentativas. Aguarde {espera_admin}s.")
+                        elif verificar_credencial(pin_clean, pin_admin_salvo):
+                            registrar_tentativa("admin-master", True)
+                            st.session_state["admin_autenticado"] = True
+                            st.session_state["admin_ultima_atividade"] = time.time()
+                            set_config_adm("senha_admin", hash_senha(pin_clean))
+                            set_config_adm("admin_owner", user_atual)
+                            registrar_log("LOGIN_ADMIN", "Acesso autorizado à conta proprietária.")
+                            st.rerun()
+                        else:
+                            registrar_tentativa("admin-master", False)
+                            registrar_log("FALHA_LOGIN_ADMIN", "Tentativa de acesso administrativo não autorizada.")
+                            st.error("Senha incorreta.")
 
     # -----------------------------------------------------------------------------
-    # 3. PAINEL DESBLOQUEADO — 10 ABAS MASTER
+    # 3. MÓDULOS PRIVADOS DESBLOQUEADOS
     # -----------------------------------------------------------------------------
     else:
         col_adm_h1, col_adm_h2 = st.columns([3, 1])
-        col_adm_h1.success("🟢 **CONEXÃO SEGURA ESTABELECIDA** — Painel de Comando Ativo")
+        col_adm_h1.success(f"🟢 **CONEXÃO SEGURA ESTABELECIDA** — Sessão protegida por {timeout_admin_minutos} min de inatividade")
         if col_adm_h2.button("🔒 Encerrar Sessão", type="primary", use_container_width=True):
             st.session_state["admin_autenticado"] = False
+            st.session_state.pop("admin_ultima_atividade", None)
             registrar_log("LOGOUT_ADMIN", "Sessão encerrada de forma segura")
             st.rerun()
 
-        aba_discord, aba_relatorio, aba_import, aba_terminal, aba_logs, aba_telemetria, aba_manutencao, aba_arquivos, aba_pin, aba_usuarios = st.tabs([
-            "🎮 Discord Bot", "📈 Relatórios", "📥 Importação", "💻 SQL Console", 
-            "📜 Logs", "📊 Telemetria", "🚨 Manutenção", "📂 DB & Backup", 
-            "🔑 Segurança", "👥 Inteligência"
-        ])
+        st.markdown("""
+        <section class="qg-admin-console-hero">
+          <div class="qg-admin-console-mark">24</div>
+          <div class="qg-admin-console-copy">
+            <div class="qg-admin-console-kicker">QG · CENTRAL DE CONTROLE</div>
+            <div class="qg-admin-console-title">Central de operação administrativa</div>
+            <div class="qg-admin-console-subtitle">Acesse relatórios, dados, manutenção, segurança e inteligência nesta área protegida.</div>
+          </div>
+          <div class="qg-admin-console-status"><span></span> PROPRIETÁRIO AUTENTICADO</div>
+        </section>
+        """, unsafe_allow_html=True)
+
+        components.html("""
+        <div class="qg-admin-clock">
+          <span class="qg-admin-clock-label"><i></i> HORÁRIO OPERACIONAL · BRASÍLIA</span>
+          <strong id="qg-admin-clock-value">--:--:--</strong>
+          <span class="qg-admin-clock-date" id="qg-admin-clock-date">SINCRONIZANDO DATA</span>
+        </div>
+        <style>
+          html,body{margin:0;padding:0;background:transparent;color:#eaf4ff;font-family:Inter,'Segoe UI',sans-serif}
+          .qg-admin-clock{display:flex;align-items:center;gap:12px;min-height:34px;padding:0 4px;color:#dceafa}
+          .qg-admin-clock-label{display:flex;align-items:center;gap:7px;color:#79a0b7;font:700 9px 'DM Mono',monospace;letter-spacing:.1em}
+          .qg-admin-clock-label i{width:6px;height:6px;border-radius:50%;background:#63e5dc;box-shadow:0 0 12px #63e5dc;animation:clock-pulse 1.8s ease-in-out infinite}
+          .qg-admin-clock strong{color:#eaffff;font:750 15px 'DM Mono',monospace;letter-spacing:.08em;text-shadow:0 0 15px rgba(99,229,220,.22)}
+          .qg-admin-clock-date{color:#8299ae;font:600 9px 'DM Mono',monospace;letter-spacing:.08em}
+          @keyframes clock-pulse{50%{opacity:.45;box-shadow:0 0 4px #63e5dc}}
+          @media(max-width:560px){.qg-admin-clock{gap:8px;flex-wrap:wrap}.qg-admin-clock-label,.qg-admin-clock-date{font-size:8px}}
+          @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important}}
+        </style>
+        <script>
+          (function(){
+            const timeNode=document.getElementById('qg-admin-clock-value');
+            const dateNode=document.getElementById('qg-admin-clock-date');
+            if(!timeNode||!dateNode)return;
+            const locale='pt-BR';
+            const optionsTime={timeZone:'America/Sao_Paulo',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false};
+            const optionsDate={timeZone:'America/Sao_Paulo',weekday:'short',day:'2-digit',month:'short',year:'numeric'};
+            function updateClock(){
+              const now=new Date();
+              timeNode.textContent=new Intl.DateTimeFormat(locale,optionsTime).format(now);
+              dateNode.textContent=new Intl.DateTimeFormat(locale,optionsDate).format(now).toUpperCase();
+            }
+            updateClock();
+            window.setInterval(updateClock,1000);
+          })();
+        </script>
+        """, height=42, scrolling=False)
+
+        if st.session_state.get("qg_admin_ferramenta") not in QG_ADMIN_MODULOS_INTERNOS:
+            st.session_state["qg_admin_ferramenta"] = QG_ADMIN_MODULOS_INTERNOS[0]
+        menu = st.radio(
+            "Ferramentas do Módulo 24",
+            options=QG_ADMIN_MODULOS_INTERNOS,
+            horizontal=True,
+            format_func=lambda ferramenta: (
+                ferramenta.split("Admin ·", 1)[-1].strip()
+                if "Admin ·" in ferramenta
+                else ferramenta.split("·", 1)[-1].strip()
+            ),
+            key="qg_admin_ferramenta",
+        )
+        st.divider()
+
+        if menu == "🛡️ Módulo 24 · Ajustes Privados":
+            st.caption("Parâmetros globais de funcionamento, editáveis somente pela conta proprietária.")
+            st.info(f"Conta proprietária: **{html.escape(admin_owner or 'não configurada')}**")
+            with st.form("form_ajustes_privados_qg"):
+                timeout_admin_novo = st.number_input(
+                    "Encerrar sessão administrativa após inatividade (minutos)",
+                    min_value=5, max_value=120, step=5, value=timeout_admin_minutos,
+                    help="O novo limite passa a valer nas próximas verificações da sessão.",
+                )
+                try:
+                    limite_importacao_atual = max(1, min(100, int(get_config_adm("limite_importacao_mb", "20"))))
+                except (TypeError, ValueError):
+                    limite_importacao_atual = 20
+                try:
+                    limite_backup_atual = max(10, min(250, int(get_config_adm("limite_backup_mb", "100"))))
+                except (TypeError, ValueError):
+                    limite_backup_atual = 100
+                limite_importacao_novo = st.number_input(
+                    "Tamanho máximo para importações (MB)", min_value=1, max_value=100,
+                    step=1, value=limite_importacao_atual,
+                )
+                limite_backup_novo = st.number_input(
+                    "Tamanho máximo para restaurar backup do banco (MB)", min_value=10, max_value=250,
+                    step=10, value=limite_backup_atual,
+                )
+                if st.form_submit_button("💾 Salvar ajustes privados", type="primary", use_container_width=True):
+                    set_config_adm("admin_timeout_minutes", int(timeout_admin_novo))
+                    set_config_adm("limite_importacao_mb", int(limite_importacao_novo))
+                    set_config_adm("limite_backup_mb", int(limite_backup_novo))
+                    registrar_log("AJUSTES_PRIVADOS", "Parâmetros de sessão e limites de arquivo atualizados.")
+                    st.success("Ajustes privados atualizados.")
+                    st.rerun()
+            st.caption("Os limites de importação e restauração são aplicados nos módulos correspondentes.")
 
         # =========================================================================
         # ABA 1: DISCORD BOT
         # =========================================================================
-        with aba_discord:
+        if menu == "🎮 Admin · Discord Bot":
             st.subheader("🎮 Integração Tática com Discord")
             webhook_atual = get_config_adm("discord_webhook_url", "").strip()
             
@@ -2949,7 +4982,7 @@ elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" 
         # =========================================================================
         # ABA 2: RELATÓRIOS DÍNAMICOS
         # =========================================================================
-        with aba_relatorio:
+        if menu == "📈 Admin · Relatórios":
             st.subheader("📈 Boletim Tático de Desempenho")
             
             c_rel1, c_rel2 = st.columns(2)
@@ -2960,6 +4993,19 @@ elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" 
                 st.metric("Total de Cadetes (Efetivo)", total_users)
             with c_rel2:
                 st.metric("Ações Auditadas (Eventos)", total_logs)
+
+            resumo_relatorio_adm = pd.DataFrame([
+                {"Indicador": "Cadetes cadastrados", "Valor": total_users},
+                {"Indicador": "Ações auditadas", "Valor": total_logs},
+                {"Indicador": "Gerado em", "Valor": datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")},
+            ])
+            st.download_button(
+                "📥 Exportar relatório resumido (CSV)",
+                data=resumo_relatorio_adm.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"relatorio_administrativo_{datetime.date.today()}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
             
             st.divider()
             
@@ -2978,7 +5024,7 @@ elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" 
         # =========================================================================
         # ABA 3: CARGA MASSIVA (DESIGN APRIMORADO)
         # =========================================================================
-        with aba_import:
+        if menu == "📥 Admin · Importação":
             st.subheader("📥 Central de Importação de Dados")
             try:
                 conn = sqlite3.connect("dados_qg.db")
@@ -2992,6 +5038,12 @@ elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" 
                     arquivo_upload = st.file_uploader("Submeta o ficheiro CSV ou Excel", type=["csv", "xlsx"])
                     
                     if arquivo_upload:
+                        try:
+                            limite_importacao_mb = max(1, min(100, int(get_config_adm("limite_importacao_mb", "20"))))
+                        except (TypeError, ValueError):
+                            limite_importacao_mb = 20
+                        if arquivo_upload.size > limite_importacao_mb * 1024 * 1024:
+                            raise ValueError(f"O arquivo excede o limite configurado de {limite_importacao_mb} MB.")
                         with st.spinner("Analisando dados..."):
                             df_import = pd.read_csv(arquivo_upload) if arquivo_upload.name.endswith(".csv") else pd.read_excel(arquivo_upload)
                             st.markdown("#### 🔎 Editor e Pré-visualização")
@@ -3010,7 +5062,7 @@ elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" 
         # =========================================================================
         # ABA 4: SQL CONSOLE
         # =========================================================================
-        with aba_terminal:
+        if menu == "💻 Admin · Console SQL":
             st.subheader("💻 Terminal SQL Avançado")
             st.caption("Acesso direto de baixo nível ao banco SQLite.")
             
@@ -3046,7 +5098,7 @@ elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" 
         # =========================================================================
         # ABA 5: LOGS INTERATIVOS COM CORES
         # =========================================================================
-        with aba_logs:
+        if menu == "📜 Admin · Logs":
             st.subheader("📜 Registo de Auditoria Global")
             try:
                 conn = sqlite3.connect("dados_qg.db")
@@ -3062,13 +5114,20 @@ elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" 
                     if busca_log: df_logs = df_logs[df_logs['Detalhe'].str.contains(busca_log, case=False, na=False)]
                     
                     st.dataframe(df_logs, use_container_width=True, hide_index=True)
+                    st.download_button(
+                        "📥 Exportar logs filtrados (CSV)",
+                        data=df_logs.to_csv(index=False).encode("utf-8-sig"),
+                        file_name=f"logs_qg_{datetime.date.today()}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
                 else: st.info("Sem registos de auditoria até ao momento.")
             except: pass
 
         # =========================================================================
         # ABA 6: TELEMETRIA
         # =========================================================================
-        with aba_telemetria:
+        if menu == "📡 Admin · Telemetria":
             st.subheader("📊 Telemetria e Saúde do Servidor")
             c_t1, c_t2, c_t3 = st.columns(3)
             
@@ -3082,7 +5141,7 @@ elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" 
         # =========================================================================
         # ABA 7: MODO DE MANUTENÇÃO (DESIGN DE EMERGÊNCIA)
         # =========================================================================
-        with aba_manutencao:
+        if menu == "🛠️ Admin · Manutenção":
             st.subheader("🚨 Protocolo de Defesa e Isolamento")
             st.caption("Corta instantaneamente o acesso a todo o efetivo.")
             
@@ -3107,15 +5166,141 @@ elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" 
         # =========================================================================
         # ABA 8: GERENCIADOR E BACKUP
         # =========================================================================
-        with aba_arquivos:
-            st.subheader("📂 Backup de Segurança (DB)")
-            if os.path.exists("dados_qg.db"):
-                with open("dados_qg.db", "rb") as file:
+        if menu == "🗄️ Admin · Banco de Dados":
+            st.subheader("📂 Backup e restauração segura do banco")
+            caminho_db = Path("dados_qg.db")
+
+            def _snapshot_banco_admin():
+                """Gera uma cópia consistente do SQLite, incluindo transações em WAL."""
+                fd_snapshot, nome_snapshot = tempfile.mkstemp(prefix="qg-backup-", suffix=".db")
+                os.close(fd_snapshot)
+                origem = destino = None
+                try:
+                    origem = sqlite3.connect(str(caminho_db), timeout=15)
+                    destino = sqlite3.connect(nome_snapshot, timeout=15)
+                    origem.backup(destino)
+                    destino.close()
+                    destino = None
+                    origem.close()
+                    origem = None
+                    return Path(nome_snapshot).read_bytes()
+                finally:
+                    if destino is not None:
+                        destino.close()
+                    if origem is not None:
+                        origem.close()
+                    try:
+                        os.unlink(nome_snapshot)
+                    except OSError:
+                        pass
+
+            if caminho_db.is_file():
+                try:
+                    snapshot_atual = _snapshot_banco_admin()
                     st.download_button(
-                        label="📥 EXPORTAR CÓPIA DE SEGURANÇA (dados_qg.db)",
-                        data=file, file_name=f"Backup_QG_EsPCEx_{datetime.date.today()}.db",
-                        mime="application/octet-stream", type="primary", use_container_width=True
+                        label="📥 Exportar cópia consistente do banco",
+                        data=snapshot_atual,
+                        file_name=f"Backup_QG_EsPCEx_{datetime.date.today()}.db",
+                        mime="application/octet-stream", type="primary", use_container_width=True,
                     )
+                except (sqlite3.Error, OSError) as erro_snapshot:
+                    st.error(f"Não foi possível criar o backup agora: {erro_snapshot}")
+
+            with st.expander("♻️ Restaurar banco administrativo", expanded=False):
+                st.warning("A restauração substitui os dados compartilhados do painel. Antes da troca, o app salva automaticamente uma cópia do banco atual na pasta backups_qg.")
+                arquivo_db = st.file_uploader("Selecione um backup SQLite (.db)", type=["db", "sqlite", "sqlite3"], key="upload_backup_sqlite_admin")
+                confirmar_db = st.checkbox("Entendo que a restauração substituirá o banco compartilhado.", key="confirmar_restore_db_admin")
+                frase_restore = st.text_input("Digite RESTAURAR para confirmar", key="frase_restore_db_admin")
+
+                if st.button("Restaurar banco compartilhado", type="primary", disabled=not (arquivo_db and confirmar_db and frase_restore.strip().upper() == "RESTAURAR"), use_container_width=True):
+                    tmp_restore = None
+                    try:
+                        dados_upload = arquivo_db.getvalue()
+                        try:
+                            limite_backup_mb = max(10, min(250, int(get_config_adm("limite_backup_mb", "100"))))
+                        except (TypeError, ValueError):
+                            limite_backup_mb = 100
+                        if not dados_upload or len(dados_upload) > limite_backup_mb * 1024 * 1024:
+                            raise ValueError(f"O arquivo está vazio ou excede o limite configurado de {limite_backup_mb} MB.")
+
+                        fd_restore, nome_restore = tempfile.mkstemp(prefix=".qg-restore-", suffix=".db", dir=str(caminho_db.resolve().parent))
+                        tmp_restore = Path(nome_restore)
+                        with os.fdopen(fd_restore, "wb") as arquivo_tmp:
+                            arquivo_tmp.write(dados_upload)
+                            arquivo_tmp.flush()
+                            os.fsync(arquivo_tmp.fileno())
+
+                        banco_validacao = sqlite3.connect(str(tmp_restore), timeout=15)
+                        try:
+                            integridade = banco_validacao.execute("PRAGMA integrity_check").fetchone()
+                            tabelas = {linha[0] for linha in banco_validacao.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                            obrigatorias = {"config_qg", "usuarios_qg", "logs_sistema"}
+                            if not integridade or integridade[0] != "ok":
+                                raise ValueError("O SQLite informou que o arquivo está corrompido.")
+                            if not obrigatorias.issubset(tabelas):
+                                raise ValueError("Este arquivo não parece ser um backup válido do banco do QG EsPCEx.")
+                            colunas_necessarias = {
+                                "config_qg": {"chave", "valor"},
+                                "usuarios_qg": {"id", "nome_usuario", "data_cadastro", "ultimo_acesso"},
+                                "logs_sistema": {"id", "data_hora", "acao", "detalhe"},
+                            }
+                            for nome_tabela, colunas in colunas_necessarias.items():
+                                colunas_arquivo = {linha[1] for linha in banco_validacao.execute(f"PRAGMA table_info({nome_tabela})")}
+                                if not colunas.issubset(colunas_arquivo):
+                                    raise ValueError("O arquivo tem uma estrutura incompatível com o QG EsPCEx.")
+
+                            # Mantém a credencial e a conta proprietária atuais mesmo ao restaurar dados antigos.
+                            conn_atual = sqlite3.connect(str(caminho_db), timeout=15)
+                            try:
+                                seguranca_atual = dict(conn_atual.execute(
+                                "SELECT chave, valor FROM config_qg WHERE chave IN ('senha_admin', 'admin_owner', 'admin_pin_temporario', 'data_criacao_senha_admin', 'admin_timeout_minutes', 'limite_importacao_mb', 'limite_backup_mb')"
+                                ).fetchall())
+                            finally:
+                                conn_atual.close()
+                            for chave_segura in ("senha_admin", "admin_owner", "admin_pin_temporario", "data_criacao_senha_admin", "admin_timeout_minutes", "limite_importacao_mb", "limite_backup_mb"):
+                                if chave_segura in seguranca_atual:
+                                    banco_validacao.execute("INSERT OR REPLACE INTO config_qg (chave, valor) VALUES (?, ?)", (chave_segura, seguranca_atual[chave_segura]))
+                                else:
+                                    banco_validacao.execute("DELETE FROM config_qg WHERE chave = ?", (chave_segura,))
+                            banco_validacao.commit()
+                            banco_validacao.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                            banco_validacao.execute("PRAGMA journal_mode=DELETE")
+                        finally:
+                            banco_validacao.close()
+
+                        for sufixo in ("-wal", "-shm"):
+                            sidecar_temp = Path(str(tmp_restore) + sufixo)
+                            if sidecar_temp.exists():
+                                sidecar_temp.unlink()
+
+                        snapshot_anterior = _snapshot_banco_admin()
+                        pasta_backups = Path("backups_qg")
+                        pasta_backups.mkdir(parents=True, exist_ok=True)
+                        nome_backup_anterior = pasta_backups / f"dados_qg_pre_restore_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.db"
+                        nome_backup_anterior.write_bytes(snapshot_anterior)
+
+                        conn_checkpoint = sqlite3.connect(str(caminho_db), timeout=15)
+                        try:
+                            conn_checkpoint.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                        finally:
+                            conn_checkpoint.close()
+                        for sufixo in ("-wal", "-shm"):
+                            sidecar = Path(str(caminho_db) + sufixo)
+                            if sidecar.exists():
+                                sidecar.unlink()
+                        os.replace(tmp_restore, caminho_db)
+                        tmp_restore = None
+                        registrar_log("DB_RESTAURADO", f"Banco restaurado pelo proprietário; cópia anterior: {nome_backup_anterior.name}")
+                        st.success(f"Banco restaurado. Cópia anterior salva em {nome_backup_anterior}.")
+                        st.rerun()
+                    except (OSError, sqlite3.Error, ValueError) as erro_restore:
+                        st.error(f"Restauração cancelada: {erro_restore}")
+                    finally:
+                        if tmp_restore is not None:
+                            try:
+                                tmp_restore.unlink(missing_ok=True)
+                            except OSError:
+                                pass
             
             with st.expander("Ver ficheiros do servidor local"):
                 lista_arquivos = [f for f in os.listdir(".") if os.path.isfile(f)]
@@ -3125,9 +5310,14 @@ elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" 
         # =========================================================================
         # ABA 9: SEGURANÇA AVANÇADA (PIN MASTER CORRIGIDO)
         # =========================================================================
-        with aba_pin:
+        if menu == "🔐 Admin · Segurança":
             st.subheader("🔑 Gestão de Credenciais Master")
             st.info(f"📅 **Última Modificação de Credencial:** `{get_config_adm('data_criacao_senha_admin', 'Padrão Inicial')}`")
+            segundos_bloqueio_admin = tempo_bloqueio("admin-master")
+            if segundos_bloqueio_admin:
+                st.warning(f"Proteção contra tentativas ativa. Novo acesso em {segundos_bloqueio_admin} segundos.")
+            else:
+                st.success("Proteção contra tentativas excessivas está ativa; não há bloqueio temporário no momento.")
 
             with st.expander("⚙️ Política de Redefinição", expanded=True):
                 exigir_pin_antigo_salvo = get_config_adm("exigir_pin_antigo", "Sim") == "Sim"
@@ -3146,25 +5336,40 @@ elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" 
                 confirma_pin_input = col_p2.text_input("✔️ Confirmar Credencial", type="password")
 
                 if st.form_submit_button("💾 Validar e Alterar Segurança", type="primary", use_container_width=True):
-                    pin_antigo_correto = str(get_config_adm("senha_admin", "1911")).strip()
+                    pin_antigo_correto = str(get_config_adm("senha_admin", "") or os.environ.get("QG_ADMIN_PIN", "")).strip()
                     
-                    if exigir_pin_antigo and pin_antigo_input.strip() != pin_antigo_correto:
+                    if exigir_pin_antigo and not verificar_credencial(pin_antigo_input.strip(), pin_antigo_correto):
                         st.error("❌ O PIN Atual está incorreto. Acesso negado.")
                     elif not novo_pin_input.strip() or novo_pin_input.strip() != confirma_pin_input.strip():
                         st.error("❌ As novas credenciais não coincidem ou são inválidas.")
                     else:
                         dh = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-                        set_config_adm("senha_admin", novo_pin_input.strip())
+                        set_config_adm("senha_admin", hash_senha(novo_pin_input.strip()))
+                        set_config_adm("admin_pin_temporario", "0")
+                        set_config_adm("admin_owner", user_atual)
                         set_config_adm("data_criacao_senha_admin", dh)
                         registrar_log("ALTERACAO_PIN", "Credencial master substituída.")
                         st.success("✅ **Credencial atualizada com sucesso!** O sistema só autorizará esta nova senha a partir de agora.")
                         time.sleep(1.5)
                         st.rerun()
 
+            with st.expander("Revogar logins persistentes de todas as contas", expanded=False):
+                st.warning("Esta ação desconecta as contas que marcaram para permanecer conectadas.")
+                confirmar_revogacao_sessoes = st.checkbox("Confirmo revogar todas as sessões persistentes", key="confirmar_revogacao_sessoes_admin")
+                if st.button("🧹 Revogar sessões persistentes", key="revogar_sessoes_admin", disabled=not confirmar_revogacao_sessoes):
+                    try:
+                        with sqlite3.connect("dados_qg.db", timeout=5) as conn:
+                            conn.execute("DELETE FROM sessoes_usuario")
+                        registrar_log("SESSOES_REVOGADAS", "O proprietário revogou as sessões persistentes.")
+                        st.success("Sessões persistentes revogadas.")
+                        st.rerun()
+                    except sqlite3.Error as erro_sessoes:
+                        st.error(f"Não foi possível revogar as sessões: {erro_sessoes}")
+
         # =========================================================================
         # ABA 10: INTELIGÊNCIA DO EFETIVO (GRÁFICOS E TABELAS)
         # =========================================================================
-        with aba_usuarios:
+        if menu == "🧠 Admin · Inteligência do Efetivo":
             st.subheader("👥 Inteligência e Radar do Efetivo")
             try:
                 conn = sqlite3.connect("dados_qg.db")
@@ -3223,6 +5428,149 @@ elif "administrador" in menu.lower() or "admin" in menu.lower() or "módulo 24" 
                                     st.rerun()
                 else: st.info("O radar não detetou nenhum cadete. Aguarde o primeiro acesso.")
             except Exception as e: st.error(f"Falha ao carregar inteligência: {e}")
+
+        # =========================================================================
+        # ABA 11: DESTAQUE DE MISSÃO E COMUNICADO PARA A ÁREA DO QUIZ
+        # =========================================================================
+        if menu == "🎯 Admin · Campanhas QG":
+            st.subheader("🎯 Missão em destaque e comunicado do QG")
+            st.caption("Publique um desafio do catálogo e uma mensagem curta que aparecerão na área do Quiz para os usuários.")
+
+            campanha_atual = _carregar_campanha_missoes_qg()
+            opcoes_campanha = {
+                f"{missao['id']} · {missao['periodo']} · {missao['titulo']} · {missao['pontos']} pts": missao["id"]
+                for missao in QG_MISSOES
+            }
+            id_campanha_atual = str(campanha_atual.get("missao_id", "M001"))
+            rotulos_campanha = list(opcoes_campanha)
+            hoje_campanha_admin = datetime.date.today()
+            try:
+                inicio_campanha_padrao = datetime.date.fromisoformat(str(campanha_atual.get("inicio_em", hoje_campanha_admin.isoformat())))
+            except ValueError:
+                inicio_campanha_padrao = hoje_campanha_admin
+            try:
+                fim_campanha_padrao = datetime.date.fromisoformat(str(campanha_atual.get("fim_em", (hoje_campanha_admin + datetime.timedelta(days=7)).isoformat())))
+            except ValueError:
+                fim_campanha_padrao = hoje_campanha_admin + datetime.timedelta(days=7)
+            indice_campanha = next(
+                (i for i, rotulo in enumerate(rotulos_campanha) if opcoes_campanha[rotulo] == id_campanha_atual),
+                0,
+            )
+
+            with st.container(border=True):
+                with st.form("form_campanha_missoes_qg"):
+                    rotulo_escolhido = st.selectbox(
+                        "Missão para destacar no Quiz",
+                        options=rotulos_campanha,
+                        index=indice_campanha,
+                    )
+                    aviso_campanha = st.text_area(
+                        "Comunicado para os usuários",
+                        value=str(campanha_atual.get("aviso", ""))[:600],
+                        max_chars=600,
+                        placeholder="Ex.: Nesta semana, priorize revisões curtas e mantenha o treino conforme seu planejamento.",
+                    )
+                    data_inicio_col, data_fim_col = st.columns(2)
+                    inicio_campanha = data_inicio_col.date_input("Começa em", value=inicio_campanha_padrao)
+                    fim_campanha = data_fim_col.date_input("Termina em", value=fim_campanha_padrao)
+                    publicar_campanha = st.checkbox(
+                        "Exibir o destaque e o comunicado na área do Quiz",
+                        value=bool(campanha_atual.get("ativa", False)),
+                    )
+                    if st.form_submit_button("💾 Publicar campanha", type="primary", use_container_width=True):
+                        if fim_campanha < inicio_campanha:
+                            st.error("A data final precisa ser igual ou posterior à data inicial.")
+                        else:
+                            campanha_nova = {
+                                "missao_id": opcoes_campanha[rotulo_escolhido],
+                                "aviso": aviso_campanha.strip(),
+                                "ativa": bool(publicar_campanha),
+                                "inicio_em": inicio_campanha.isoformat(),
+                                "fim_em": fim_campanha.isoformat(),
+                                "publicada_em": datetime.datetime.now().isoformat(timespec="seconds"),
+                                "publicada_por": user_atual,
+                            }
+                            set_config_adm("campanha_missoes_qg", json.dumps(campanha_nova, ensure_ascii=False))
+                            registrar_log("CAMPANHA_MISSOES", f"Campanha {'publicada' if publicar_campanha else 'salva como rascunho'}; missão {campanha_nova['missao_id']}.")
+                            st.success("Campanha atualizada. Ela aparece no Quiz durante o período configurado, quando estiver ativada.")
+                            st.rerun()
+
+            if campanha_atual.get("ativa"):
+                missao_preview = QG_MISSOES_POR_ID.get(str(campanha_atual.get("missao_id", "")))
+                st.success("🟢 Campanha ativa")
+                if missao_preview:
+                    st.markdown(f"**Missão:** {missao_preview['titulo']} · {missao_preview['pontos']} pontos")
+                st.caption(f"Vigência: {campanha_atual.get('inicio_em', 'hoje')} até {campanha_atual.get('fim_em', 'sem data final')}")
+                if campanha_atual.get("aviso"):
+                    st.info(str(campanha_atual["aviso"]))
+            else:
+                st.info("Nenhum comunicado está publicado no momento.")
+
+            if st.button("🧹 Retirar campanha do Quiz", key="limpar_campanha_missoes_qg"):
+                set_config_adm("campanha_missoes_qg", "{}")
+                registrar_log("CAMPANHA_MISSOES_REMOVIDA", "O proprietário retirou o destaque e o comunicado do Quiz.")
+                st.toast("Campanha removida da área do Quiz.", icon="✅")
+                st.rerun()
+
+            try:
+                with sqlite3.connect("dados_qg.db", timeout=5) as conn:
+                    historico_campanhas_df = pd.read_sql_query(
+                        "SELECT data_hora AS Data, acao AS Evento, detalhe AS Detalhe FROM logs_sistema WHERE acao LIKE 'CAMPANHA_MISSOES%' ORDER BY id DESC LIMIT 20",
+                        conn,
+                    )
+                if not historico_campanhas_df.empty:
+                    st.markdown("#### 🧾 Últimas alterações")
+                    st.dataframe(historico_campanhas_df, use_container_width=True, hide_index=True)
+            except (sqlite3.Error, pd.errors.DatabaseError):
+                st.caption("O histórico de campanhas aparecerá depois da primeira publicação.")
+
+        if menu == "🐞 Admin · Diagnóstico & Bugs":
+            st.caption("Verificações de integridade e registro privado de problemas para análise do proprietário.")
+            st.info("Não inclua senhas, tokens, dados pessoais sensíveis ou chaves nos relatos.")
+
+            diagnosticos_admin = []
+            try:
+                with sqlite3.connect("dados_qg.db", timeout=5) as conn:
+                    integridade_db = conn.execute("PRAGMA integrity_check").fetchone()
+                    tabelas_db = {linha[0] for linha in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                diagnosticos_admin.extend([
+                    {"Verificação": "Integridade SQLite", "Resultado": "OK" if integridade_db and integridade_db[0] == "ok" else "Revisar"},
+                    {"Verificação": "Tabela de configurações", "Resultado": "Disponível" if "config_qg" in tabelas_db else "Ausente"},
+                    {"Verificação": "Tabela de usuários administrativos", "Resultado": "Disponível" if "usuarios_qg" in tabelas_db else "Ausente"},
+                    {"Verificação": "Tabela de auditoria", "Resultado": "Disponível" if "logs_sistema" in tabelas_db else "Ausente"},
+                ])
+            except sqlite3.Error as erro_diag:
+                diagnosticos_admin.append({"Verificação": "Integridade SQLite", "Resultado": f"Erro: {erro_diag}"})
+            st.dataframe(pd.DataFrame(diagnosticos_admin), use_container_width=True, hide_index=True)
+
+            with st.form("form_relato_bug_admin", clear_on_submit=True):
+                titulo_bug = st.text_input("Resumo do problema", max_chars=120)
+                severidade_bug = st.selectbox("Impacto", ["Baixo", "Médio", "Alto", "Crítico"])
+                detalhe_bug = st.text_area("O que aconteceu?", max_chars=1500, height=140)
+                if st.form_submit_button("📝 Registrar relato privado", type="primary", use_container_width=True):
+                    if not titulo_bug.strip() or not detalhe_bug.strip():
+                        st.error("Informe um resumo e descreva o problema.")
+                    else:
+                        registrar_log(
+                            "BUG_REPORT",
+                            f"conta={user_atual}; impacto={severidade_bug}; resumo={titulo_bug.strip()[:120]}; relato={detalhe_bug.strip()[:1500]}",
+                        )
+                        st.success("Relato registrado no log administrativo privado.")
+                        st.rerun()
+
+            try:
+                with sqlite3.connect("dados_qg.db", timeout=5) as conn:
+                    relatos_bug_df = pd.read_sql_query(
+                        "SELECT data_hora AS Data, detalhe AS Relato FROM logs_sistema WHERE acao = 'BUG_REPORT' ORDER BY id DESC LIMIT 50",
+                        conn,
+                    )
+                st.markdown("#### Relatos recentes")
+                if relatos_bug_df.empty:
+                    st.caption("Ainda não há relatos registrados.")
+                else:
+                    st.dataframe(relatos_bug_df, use_container_width=True, hide_index=True)
+            except (sqlite3.Error, pd.errors.DatabaseError) as erro_bug_log:
+                st.error(f"Não foi possível carregar os relatos: {erro_bug_log}")
 # ===========================================================================
   # #MODULO_25_CONTROLE_FINANCEIRO_PREMIUM_ULTIMATE
    # =========================================================================
@@ -3233,7 +5581,6 @@ elif "módulo 25" in menu.lower() or "finanças" in menu.lower() or "financeiro"
     import datetime
     import time
     import plotly.express as px
-    import plotly.graph_objects as go
     import streamlit as st
 
     # --- CSS Personalizado Premium ---
@@ -3563,3 +5910,1022 @@ elif "módulo 25" in menu.lower() or "finanças" in menu.lower() or "financeiro"
                     st.download_button(label="📥 Baixar Excel / CSV", data=csv_export, file_name=f"Extrato_AgroLar_{datetime.date.today()}.csv", mime="text/csv", use_container_width=True)
         else:
             st.info("O sistema está pronto para receber lançamentos.")
+
+elif menu == "🧠 Memória Avançada":
+    st.title("🧠 Memória de Aprendizado")
+    st.caption("Central de conhecimento pessoal com revisão espaçada, etiquetas e acompanhamento de retenção.")
+
+    stats_memoria = estatisticas_memoria(user_atual)
+    total_memorias = stats_memoria["total"]
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Registros", total_memorias)
+    m2.metric("Revisões pendentes", stats_memoria["para_revisar"])
+    m3.metric("Fixadas", stats_memoria["fixadas"])
+    m4.metric("Retenção", f"{stats_memoria['taxa_acerto']:.1f}%")
+
+    with st.expander("＋ Adicionar conhecimento", expanded=total_memorias == 0):
+        with st.form("form_nova_memoria_avancada", clear_on_submit=True):
+            mc1, mc2, mc3 = st.columns(3)
+            materia_mem = mc1.text_input("Matéria ou projeto", placeholder="Ex.: Física")
+            tipo_mem = mc2.selectbox("Tipo", ["Conceito", "Fórmula", "Erro recorrente", "Estratégia", "Anotação"])
+            prioridade_mem = mc3.selectbox("Prioridade", ["Baixa", "Média", "Alta"], index=1)
+            texto_mem = st.text_area("O que você quer lembrar?", max_chars=3000, placeholder="Registre uma ideia, regra, dúvida ou ponto de revisão.")
+            tags_mem = st.text_input("Etiquetas", placeholder="Ex.: cinemática, revisão, prova (separadas por vírgula)")
+            if st.form_submit_button("Guardar na memória", type="primary", use_container_width=True):
+                if texto_mem.strip():
+                    adicionar_memoria(
+                        user_atual, texto_mem, materia=materia_mem or "Geral", tipo=tipo_mem,
+                        tags=[tag.strip() for tag in tags_mem.split(",") if tag.strip()], prioridade=prioridade_mem,
+                    )
+                    st.toast("Conhecimento salvo. A primeira revisão já está agendada.", icon="🧠")
+                    st.rerun()
+                else:
+                    st.warning("Escreva uma anotação antes de salvar.")
+
+    aba_revisao, aba_biblioteca, aba_insights = st.tabs(["🔁 Revisão de hoje", "📚 Biblioteca", "📈 Insights"])
+    with aba_revisao:
+        pendentes = listar_memorias(user_atual, limite=500, apenas_revisar=True)
+        if not pendentes:
+            st.success("Sua fila está em dia. As próximas revisões aparecerão aqui quando vencerem.")
+        else:
+            st.markdown(f"**{len(pendentes)} itens** aguardando revisão. Leia a anotação, tente recordar e depois marque o resultado.")
+            for item in pendentes:
+                with st.container(border=True):
+                    top1, top2 = st.columns([5, 1])
+                    top1.markdown(f"**{item.get('materia', 'Geral')} · {item.get('tipo', 'Anotação')}**")
+                    top2.caption(f"Prioridade {item.get('prioridade', 'Média')}")
+                    st.write(item.get("texto", ""))
+                    etiquetas = item.get("tags", [])
+                    if etiquetas:
+                        st.caption("  ·  ".join(f"#{tag}" for tag in etiquetas))
+                    st.caption(f"Revisões corretas: {item.get('acertos', 0)}  ·  Próxima revisão: {item.get('revisao_em', 'hoje')}")
+                    b1, b2, b3 = st.columns([1, 1, 4])
+                    if b1.button("Lembrei", key=f"mem_ok_{item['id']}", use_container_width=True):
+                        registrar_revisao(user_atual, item["id"], True)
+                        st.toast("Boa. Próxima revisão espaçada agendada.", icon="✅")
+                        st.rerun()
+                    if b2.button("Reestudar", key=f"mem_retry_{item['id']}", use_container_width=True):
+                        registrar_revisao(user_atual, item["id"], False)
+                        st.toast("Anotação devolvida para uma revisão próxima.", icon="🔁")
+                        st.rerun()
+    with aba_biblioteca:
+        registros = listar_memorias(user_atual, limite=500)
+        if not registros:
+            st.info("Sua biblioteca está vazia. Adicione uma anotação para começar.")
+        else:
+            materias = ["Todas"] + sorted({x.get("materia", "Geral") for x in registros})
+            f1, f2 = st.columns([2, 1])
+            filtro_busca = f1.text_input("Pesquisar por texto ou etiqueta", key="busca_memoria")
+            filtro_materia = f2.selectbox("Matéria", materias, key="filtro_materia_memoria")
+            encontrados = listar_memorias(user_atual, limite=500, materia=filtro_materia, busca=filtro_busca)
+            for item in encontrados:
+                with st.container(border=True):
+                    c1, c2 = st.columns([5, 1])
+                    c1.markdown(f"**{item.get('materia', 'Geral')} · {item.get('tipo', 'Anotação')}**")
+                    c2.caption("📌 Fixada" if item.get("fixada") else f"Revisar {item.get('revisao_em', 'hoje')}")
+                    st.write(item.get("texto", ""))
+                    if item.get("tags"):
+                        st.caption("  ·  ".join(f"#{tag}" for tag in item["tags"]))
+                    p1, p2 = st.columns([1, 5])
+                    if p1.button("Desafixar" if item.get("fixada") else "Fixar", key=f"mem_pin_{item['id']}"):
+                        alternar_memoria_fixada(user_atual, item["id"])
+                        st.rerun()
+                    with p2.expander("Opções"):
+                        if st.button("Excluir anotação", key=f"mem_del_{item['id']}"):
+                            remover_memoria(user_atual, item["id"])
+                            st.toast("Anotação removida.")
+                            st.rerun()
+    with aba_insights:
+        if not stats_memoria["por_materia"]:
+            st.info("Os gráficos aparecem quando você adicionar conhecimentos à biblioteca.")
+        else:
+            df_memoria = pd.DataFrame([{"Matéria": materia, "Registros": quantidade} for materia, quantidade in stats_memoria["por_materia"].items()])
+            g1, g2 = st.columns(2)
+            with g1:
+                st.markdown("#### Distribuição por matéria")
+                fig_memoria = px.bar(df_memoria.sort_values("Registros"), x="Registros", y="Matéria", orientation="h", text="Registros")
+                fig_memoria.update_traces(marker_color="#59e1d2", textposition="outside", cliponaxis=False)
+                st.plotly_chart(fig_memoria, use_container_width=True)
+            with g2:
+                st.markdown("#### Ritmo de retenção")
+                fig_retencao = go.Figure(go.Indicator(
+                    mode="gauge+number", value=stats_memoria["taxa_acerto"], number={"suffix": "%"},
+                    title={"text": "Acertos nas revisões"},
+                    gauge={"axis": {"range": [0, 100]}, "bar": {"color": "#59e1d2"},
+                           "bgcolor": "rgba(0,0,0,0)", "borderwidth": 0,
+                           "steps": [{"range": [0, 50], "color": "rgba(255,124,156,.15)"},
+                                     {"range": [50, 80], "color": "rgba(243,191,98,.15)"},
+                                     {"range": [80, 100], "color": "rgba(89,225,210,.15)"}]}
+                ))
+                fig_retencao.update_layout(height=280, margin=dict(t=40, b=15, l=20, r=20))
+                st.plotly_chart(fig_retencao, use_container_width=True)
+
+elif menu == "🗓️ Plano Semanal Automático":
+    st.title("🗓️ Plano Semanal Automático")
+    st.caption("Monta uma semana de estudo priorizando matérias com menor aproveitamento e tópicos ainda não dominados.")
+    dias_semana = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
+    plano_salvo = db.get("plano_semanal", {})
+    with st.form("form_gerar_plano_semanal"):
+        p1, p2 = st.columns([1, 2])
+        horas_dia = p1.slider("Horas de estudo por dia", 1, 8, int(plano_salvo.get("horas_dia", 3)))
+        dias_disponiveis = p2.multiselect("Dias disponíveis", dias_semana, default=plano_salvo.get("dias", dias_semana[:6]))
+        gerar_plano = st.form_submit_button("Gerar plano da próxima semana", type="primary", use_container_width=True)
+
+    if gerar_plano:
+        edital = [x for x in db.get("edital", []) if isinstance(x, dict) and x.get("Matéria")]
+        materias = sorted({str(x.get("Matéria")) for x in edital})
+        desempenho = {}
+        for sessao in db.get("sessoes", []):
+            if not isinstance(sessao, dict):
+                continue
+            materia = str(sessao.get("Matéria", "")).strip()
+            if materia:
+                stats = desempenho.setdefault(materia, [0.0, 0.0])
+                stats[0] += float(sessao.get("Questões", 0) or 0)
+                stats[1] += float(sessao.get("Acertos", 0) or 0)
+        ranking = []
+        for materia in materias:
+            temas = [x for x in edital if str(x.get("Matéria")) == materia]
+            pendentes = [x for x in temas if x.get("Status") not in {"Revisado / Dominado", "Dominado"}]
+            total = len(temas) or 1
+            altas = sum(x.get("Prioridade") == "Alta" for x in pendentes)
+            questoes, acertos = desempenho.get(materia, (0.0, 0.0))
+            aproveitamento = acertos / questoes if questoes else 0.5
+            score = 1 + (1 - aproveitamento) * 4 + (len(pendentes) / total) * 2 + altas / total
+            ranking.append((score, materia, pendentes or temas))
+        ranking.sort(key=lambda x: x[0], reverse=True)
+        if not ranking:
+            ranking = [(1.0, "Estudo geral", [])]
+
+        today = datetime.date.today()
+        tarefas_plano = []
+        due_notes = listar_memorias(user_atual, limite=100, apenas_revisar=True)
+        slots_por_dia = max(1, min(6, int(horas_dia)))
+        topic_cursors = {materia: 0 for _, materia, _ in ranking}
+        for dia_nome in dias_disponiveis:
+            weekday_index = dias_semana.index(dia_nome)
+            offset = (weekday_index - today.weekday()) % 7
+            data_plano = today + datetime.timedelta(days=offset)
+            for bloco in range(slots_por_dia):
+                if bloco == 0 and due_notes:
+                    atividade = f"Revisar {due_notes[0].get('materia', 'anotações')} pela memória espaçada"
+                    materia = "Revisão"
+                else:
+                    _, materia, temas = ranking[(weekday_index + bloco) % len(ranking)]
+                    cursor = topic_cursors[materia]
+                    if temas:
+                        tema = temas[cursor % len(temas)].get("Tópico", materia)
+                        atividade = ("Teoria e resumo" if bloco % 2 == 0 else "Questões e análise de erros") + f" · {tema}"
+                        topic_cursors[materia] += 1
+                    else:
+                        atividade = "Revisão de conteúdo e resolução de questões"
+                tarefas_plano.append({
+                    "data": str(data_plano), "dia": dia_nome, "bloco": bloco + 1,
+                    "materia": materia, "atividade": atividade, "minutos": 50, "concluida": False,
+                })
+        db["plano_semanal"] = {
+            "id_plano": uuid.uuid4().hex[:10],
+            "gerado_em": datetime.datetime.now().isoformat(timespec="minutes"),
+            "horas_dia": int(horas_dia), "dias": dias_disponiveis, "tarefas": tarefas_plano,
+        }
+        salvar_dados_usuario(user_atual, db)
+        st.toast("Plano semanal criado e salvo.", icon="🗓️")
+        st.rerun()
+
+    plano_salvo = db.get("plano_semanal", {})
+    tarefas_salvas = plano_salvo.get("tarefas", [])
+    if not tarefas_salvas:
+        st.info("Escolha seus dias e horas disponíveis acima para gerar seu primeiro plano.")
+    else:
+        concluidas = sum(bool(x.get("concluida")) for x in tarefas_salvas)
+        st.progress(concluidas / len(tarefas_salvas), text=f"Progresso semanal: {concluidas} de {len(tarefas_salvas)} blocos concluídos")
+        st.caption(f"Plano gerado em {plano_salvo.get('gerado_em', '—')} · blocos de 50 minutos")
+        tarefas_alteradas = False
+        por_data = {}
+        for item in tarefas_salvas:
+            por_data.setdefault(item.get("data", ""), []).append(item)
+        for data_chave, itens_dia in sorted(por_data.items()):
+            with st.container(border=True):
+                try:
+                    data_titulo = datetime.date.fromisoformat(data_chave).strftime("%A · %d/%m")
+                except ValueError:
+                    data_titulo = data_chave
+                st.markdown(f"#### {data_titulo}")
+                for item in itens_dia:
+                    chave_geracao = str(plano_salvo.get("id_plano", plano_salvo.get("gerado_em", "plano"))).replace(":", "-").replace(" ", "_")
+                    key_check = f"plano_{chave_geracao}_{data_chave}_{item.get('bloco', 0)}"
+                    marcado = st.checkbox(
+                        f"{item.get('materia', 'Estudo')} · {item.get('atividade', '')}",
+                        value=bool(item.get("concluida", False)), key=key_check,
+                    )
+                    if marcado != bool(item.get("concluida", False)):
+                        item["concluida"] = marcado
+                        tarefas_alteradas = True
+        if tarefas_alteradas:
+            db["plano_semanal"] = plano_salvo
+            salvar_dados_usuario(user_atual, db)
+
+elif menu == "💾 Backup e Restauração":
+    st.title("💾 Backup e Restauração")
+    st.caption("Exporte e recupere seu progresso individual, sem incluir senhas nem dados de outras contas.")
+    backup_usuario = {
+        "aplicativo": "QG EsPCEx", "versao": 1, "usuario": user_atual,
+        "exportado_em": datetime.datetime.now().isoformat(timespec="seconds"), "dados": db,
+    }
+    backup_bytes = json.dumps(backup_usuario, ensure_ascii=False, indent=2).encode("utf-8")
+    st.download_button(
+        "⬇️ Baixar backup pessoal (.json)", data=backup_bytes,
+        file_name=f"backup_qg_{user_atual}_{datetime.date.today()}.json",
+        mime="application/json", type="primary", use_container_width=True,
+    )
+    st.caption("Este arquivo contém seu progresso, edital, diário, plano, memória e preferências de estudo. Não contém credenciais ou o banco administrativo compartilhado.")
+    st.divider()
+    arquivo_backup = st.file_uploader("Selecione um backup pessoal do QG", type=["json"], key="upload_backup_pessoal")
+    confirmar_backup = st.checkbox("Confirmo que quero substituir meus dados pessoais pelo conteúdo do backup.", key="confirmar_backup_pessoal")
+    if st.button("Restaurar backup pessoal", disabled=not (arquivo_backup and confirmar_backup), use_container_width=True):
+        try:
+            conteudo_backup = arquivo_backup.getvalue()
+            if len(conteudo_backup) > 5 * 1024 * 1024:
+                raise ValueError("O arquivo excede o limite de 5 MB.")
+            objeto_backup = json.loads(conteudo_backup.decode("utf-8"))
+            if objeto_backup.get("aplicativo") != "QG EsPCEx" or objeto_backup.get("usuario") != user_atual:
+                raise ValueError("O backup não pertence a esta conta do QG.")
+            dados_backup = objeto_backup.get("dados")
+            if not isinstance(dados_backup, dict):
+                raise ValueError("Formato de backup inválido.")
+            dados_atualizados = carregar_dados_usuario(user_atual, get_edital_espcex)
+            dados_atualizados.update(dados_backup)
+            salvar_dados_usuario(user_atual, dados_atualizados)
+            st.success("Backup pessoal restaurado. A página será atualizada.")
+            st.rerun()
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as erro_backup:
+            st.error(f"Não foi possível restaurar: {erro_backup}")
+
+elif menu == "🎯 Modo Foco":
+    st.markdown("""
+    <style>
+    .qg-focus-hero{position:relative;overflow:hidden;margin:2px 0 18px;padding:25px 27px;border:1px solid rgba(99,229,220,.22);border-radius:22px;background:radial-gradient(circle at 87% 10%,rgba(91,140,255,.24),transparent 31%),linear-gradient(115deg,#0b1d2c,#122841 62%,#191d37);box-shadow:0 20px 55px rgba(0,0,0,.23)}
+    .qg-focus-hero:after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;background:linear-gradient(90deg,transparent,#59e1d2,#5d91ff,#a88cff,transparent)}
+    .qg-focus-kicker{color:#64dfd5;font:700 .69rem 'DM Mono',monospace;letter-spacing:.17em;text-transform:uppercase}
+    .qg-focus-title{margin:7px 0 4px;color:#f4f8ff;font-size:clamp(1.45rem,3vw,2.05rem);font-weight:850;letter-spacing:-.05em}
+    .qg-focus-copy{max-width:720px;color:#a9bbce;font-size:.92rem;line-height:1.6}
+    .qg-focus-tip{padding:12px 15px;border:1px solid rgba(99,229,220,.14);border-radius:13px;color:#b4c8da;background:rgba(10,26,41,.68)}
+    @media(max-width:640px){.qg-focus-hero{padding:19px;border-radius:17px}.qg-focus-copy{font-size:.84rem}}
+    </style>
+    <section class="qg-focus-hero"><div class="qg-focus-kicker">QG · ambiente de concentração</div><div class="qg-focus-title">🎯 Modo Foco</div><div class="qg-focus-copy">Um bloco por vez, com objetivo definido, cronômetro visual e registro automático ao concluir. O som é leve e pode ser ativado no próprio cronômetro.</div></section>
+    """, unsafe_allow_html=True)
+    foco = db.get("modo_foco", {"status": "parado"})
+    if not isinstance(foco, dict):
+        foco = {"status": "parado"}
+    status_foco = foco.get("status", "parado")
+    ativo_foco = status_foco == "ativo"
+    pausado_foco = status_foco == "pausado"
+    tarefa_foco = str(foco.get("tarefa", ""))
+    st.markdown("#### " + (tarefa_foco or "Escolha o objetivo do próximo bloco"))
+
+    if not (ativo_foco or pausado_foco):
+        with st.form("form_iniciar_modo_foco"):
+            objetivo_foco = st.text_input("Tarefa", placeholder="Ex.: 30 questões de Física")
+            duracao_foco = st.slider("Duração", 10, 120, 50, step=5, format="%d min")
+            iniciar_foco = st.form_submit_button("Iniciar bloco", type="primary", use_container_width=True)
+        if iniciar_foco and objetivo_foco.strip():
+            agora_foco = time.time()
+            db["modo_foco"] = {
+                "status": "ativo", "tarefa": objetivo_foco.strip(), "duracao_seg": int(duracao_foco * 60),
+                "inicio_epoch": agora_foco, "fim_epoch": agora_foco + duracao_foco * 60,
+                "restante_seg": int(duracao_foco * 60),
+                "som_evento": uuid.uuid4().hex, "som_tipo": "inicio",
+            }
+            salvar_dados_usuario(user_atual, db)
+            st.rerun()
+    else:
+        if ativo_foco:
+            restante_foco = max(0, int(float(foco.get("fim_epoch", time.time())) - time.time()))
+        else:
+            restante_foco = max(0, int(foco.get("restante_seg", 0)))
+        tempo_limite_ms = int(float(foco.get("fim_epoch", 0)) * 1000) if ativo_foco else 0
+        restante_inicial = restante_foco
+        duracao_total_foco = max(1, int(foco.get("duracao_seg", 0) or 1))
+        evento_som_foco = re.sub(r"[^a-fA-F0-9]", "", str(foco.get("som_evento", "")))[:64]
+        tipo_som_foco = "pausa" if foco.get("som_tipo") == "pausa" else "inicio"
+        estado_visual_foco = "FOCO EM ANDAMENTO" if ativo_foco else "BLOCO PAUSADO"
+        js_timer = """<main class="focus-shell">
+  <div class="focus-top"><span class="focus-kicker">QG · foco profundo</span><span class="focus-live"><i></i> __STATUS__</span></div>
+  <div class="focus-task">__TASK__</div>
+  <div class="focus-clock-wrap">
+    <svg class="focus-ring" viewBox="0 0 220 220" aria-hidden="true">
+      <defs><linearGradient id="focusGradient" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#59e1d2"></stop><stop offset="55%" stop-color="#62a8ff"></stop><stop offset="100%" stop-color="#a88cff"></stop></linearGradient></defs>
+      <circle class="focus-ring-track" cx="110" cy="110" r="96"></circle>
+      <circle id="focus-ring-progress" class="focus-ring-progress" cx="110" cy="110" r="96"></circle>
+    </svg>
+    <div id="focus-clock" class="focus-clock">00:00</div>
+  </div>
+  <div id="focus-clock-caption" class="focus-clock-caption">__STATUS__ · __TOTAL_MIN__ MIN</div>
+  <div class="focus-bottom"><span id="focus-audio-hint">Sinal sonoro leve · opcional</span><button id="focus-audio-enable" type="button">🔊 Ativar som</button></div>
+</main>
+<style>
+*{box-sizing:border-box}body{margin:0;background:transparent;color:#eef5ff;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif}
+.focus-shell{position:relative;overflow:hidden;min-height:300px;padding:19px 22px 16px;border:1px solid rgba(120,190,214,.22);border-radius:22px;background:radial-gradient(circle at 50% 47%,rgba(44,120,147,.16),transparent 37%),linear-gradient(145deg,#0b1927,#101f32 58%,#141b31);box-shadow:0 20px 50px rgba(0,0,0,.26),inset 0 1px rgba(255,255,255,.035)}
+.focus-shell:before{content:"";position:absolute;inset:-80px auto auto 60%;width:220px;height:220px;border:1px solid rgba(89,225,210,.08);border-radius:50%;box-shadow:0 0 0 24px rgba(89,225,210,.025),0 0 0 52px rgba(89,225,210,.018);pointer-events:none}
+.focus-top,.focus-bottom{position:relative;display:flex;align-items:center;justify-content:space-between;gap:12px}.focus-kicker{color:#73ddd6;font:700 10px ui-monospace,monospace;letter-spacing:.17em;text-transform:uppercase}.focus-live{display:inline-flex;align-items:center;gap:7px;padding:6px 9px;border:1px solid rgba(112,214,192,.17);border-radius:999px;color:#c4e5df;background:rgba(27,91,83,.18);font:700 9px ui-monospace,monospace;letter-spacing:.08em}.focus-live i{width:6px;height:6px;border-radius:50%;background:#59e1d2;box-shadow:0 0 10px #59e1d2;animation:focusPulse 1.8s ease-in-out infinite}
+.focus-task{position:relative;max-width:700px;margin:15px auto 0;text-align:center;color:#eaf2fc;font-size:14px;font-weight:650;line-height:1.4}
+.focus-clock-wrap{position:relative;width:204px;height:204px;margin:1px auto -5px}.focus-ring{width:100%;height:100%;transform:rotate(-90deg);overflow:visible}.focus-ring-track{fill:none;stroke:rgba(147,176,201,.13);stroke-width:5}.focus-ring-progress{fill:none;stroke:url(#focusGradient);stroke-width:5;stroke-linecap:round;stroke-dasharray:603.19;stroke-dashoffset:0;filter:drop-shadow(0 0 6px rgba(89,225,210,.48));transition:stroke-dashoffset .35s linear,stroke .35s ease}
+.focus-clock{position:absolute;inset:0;display:grid;place-items:center;color:#f5faff;font:800 47px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:-.07em;text-shadow:0 0 28px rgba(89,225,210,.17);font-variant-numeric:tabular-nums}.focus-clock-caption{text-align:center;color:#91a9bf;font:700 9px ui-monospace,monospace;letter-spacing:.13em}
+.focus-bottom{margin-top:17px;padding-top:13px;border-top:1px solid rgba(147,176,201,.1);color:#8198ae;font-size:10px}.focus-bottom button{padding:7px 10px;border:1px solid rgba(99,229,220,.24);border-radius:9px;color:#d9fbf6;background:rgba(36,105,108,.2);font-size:10px;font-weight:700;cursor:pointer;transition:all .18s ease}.focus-bottom button:hover{border-color:rgba(99,229,220,.65);background:rgba(36,105,108,.38)}
+@keyframes focusPulse{50%{opacity:.45;box-shadow:0 0 3px #59e1d2}}@media(max-width:480px){.focus-shell{padding:16px 14px;border-radius:18px}.focus-clock-wrap{width:184px;height:184px}.focus-clock{font-size:41px}.focus-task{font-size:12px}}@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+</style>
+<script>
+const focusEndMs=__END_MS__, focusInitial=__LEFT__, focusActive=__ACTIVE__, focusTotal=__TOTAL__;
+const soundEventId="__SOUND_EVENT__", soundKind="__SOUND_KIND__", soundPreferenceKey="qg_focus_sound_enabled";
+let focusAudio=null, pendingFocusTone=null;
+const clockEl=document.getElementById("focus-clock"), ringEl=document.getElementById("focus-ring-progress"), captionEl=document.getElementById("focus-clock-caption"), hintEl=document.getElementById("focus-audio-hint"), soundButton=document.getElementById("focus-audio-enable");
+const ringLength=2*Math.PI*96;
+function storageRead(key){try{return window.localStorage.getItem(key)}catch(_error){return null}}
+function storageWrite(key,value){try{window.localStorage.setItem(key,value)}catch(_error){}}
+function tone(kind){
+  if(!focusAudio||focusAudio.state!=="running"){pendingFocusTone=kind;hintEl.textContent="Toque em Ativar som para liberar o sinal";return}
+  const notes=kind==="pausa"?[440]:[660,880];
+  notes.forEach((frequency,index)=>{const start=focusAudio.currentTime+index*.12;const oscillator=focusAudio.createOscillator();const gain=focusAudio.createGain();oscillator.type="sine";oscillator.frequency.setValueAtTime(frequency,start);gain.gain.setValueAtTime(.0001,start);gain.gain.exponentialRampToValueAtTime(.045,start+.025);gain.gain.exponentialRampToValueAtTime(.0001,start+.17);oscillator.connect(gain);gain.connect(focusAudio.destination);oscillator.start(start);oscillator.stop(start+.18)});
+  if(soundEventId)storageWrite("qg_focus_sound_seen_"+soundEventId,"1");
+  pendingFocusTone=null;hintEl.textContent="Som leve ativado";
+}
+async function unlockFocusAudio(){
+  try{const AudioAPI=window.AudioContext||window.webkitAudioContext;if(!AudioAPI){hintEl.textContent="Áudio não suportado neste navegador";return}if(!focusAudio)focusAudio=new AudioAPI();await focusAudio.resume();storageWrite(soundPreferenceKey,"1");soundButton.textContent="✓ Som ativado";if(pendingFocusTone)tone(pendingFocusTone);else hintEl.textContent="Som leve ativado"}catch(_error){hintEl.textContent="O navegador bloqueou o áudio; tente ativar novamente"}
+}
+soundButton.addEventListener("click",unlockFocusAudio);
+function updateFocusClock(){let left=focusActive?Math.max(0,Math.ceil((focusEndMs-Date.now())/1000)):focusInitial;const minutes=Math.floor(left/60),seconds=left%60;clockEl.textContent=String(minutes).padStart(2,"0")+":"+String(seconds).padStart(2,"0");const ratio=focusTotal?Math.max(0,Math.min(1,left/focusTotal)):0;ringEl.style.strokeDasharray=ringLength;ringEl.style.strokeDashoffset=ringLength*(1-ratio);if(left===0){ringEl.style.stroke="#f3bf62";captionEl.textContent="BLOCO CONCLUÍDO · VOLTE AO APP PARA REGISTRAR";clockEl.style.color="#f3bf62"}}
+updateFocusClock();window.setInterval(updateFocusClock,250);
+if(soundEventId&&storageRead("qg_focus_sound_seen_"+soundEventId)!=="1"){
+  pendingFocusTone=soundKind;
+  if(storageRead(soundPreferenceKey)==="1")unlockFocusAudio();
+}
+</script>"""
+        js_timer = (
+            js_timer.replace("__STATUS__", estado_visual_foco)
+            .replace("__TASK__", html.escape(tarefa_foco or "Sessão de estudo"))
+            .replace("__TOTAL_MIN__", str(duracao_total_foco // 60))
+            .replace("__END_MS__", str(tempo_limite_ms))
+            .replace("__LEFT__", str(restante_inicial))
+            .replace("__ACTIVE__", str(ativo_foco).lower())
+            .replace("__TOTAL__", str(duracao_total_foco))
+            .replace("__SOUND_EVENT__", evento_som_foco)
+            .replace("__SOUND_KIND__", tipo_som_foco)
+        )
+        components.html(js_timer, height=335, scrolling=False)
+        st.caption(f"Duração planejada: {int(foco.get('duracao_seg', 0)) // 60} min")
+        f1, f2, f3 = st.columns(3)
+        if ativo_foco and f1.button("Pausar", use_container_width=True):
+            foco["restante_seg"] = restante_foco
+            foco["status"] = "pausado"
+            foco["som_evento"] = uuid.uuid4().hex
+            foco["som_tipo"] = "pausa"
+            db["modo_foco"] = foco
+            salvar_dados_usuario(user_atual, db)
+            st.rerun()
+        if pausado_foco and f1.button("Retomar", type="primary", use_container_width=True):
+            foco["fim_epoch"] = time.time() + restante_foco
+            foco["status"] = "ativo"
+            foco["som_evento"] = uuid.uuid4().hex
+            foco["som_tipo"] = "inicio"
+            db["modo_foco"] = foco
+            salvar_dados_usuario(user_atual, db)
+            st.rerun()
+        if f2.button("Encerrar bloco", use_container_width=True):
+            foco["status"] = "encerrado"
+            db["modo_foco"] = foco
+            salvar_dados_usuario(user_atual, db)
+            st.rerun()
+        if ativo_foco and restante_foco > 0 and f3.button("Atualizar status", use_container_width=True):
+            st.rerun()
+        if restante_foco == 0 and status_foco == "ativo":
+            if f3.button("Registrar sessão concluída", type="primary", use_container_width=True):
+                sessoes_focus = db.setdefault("sessoes", [])
+                sessoes_focus.append({
+                    "Data": str(datetime.date.today()), "Matéria": tarefa_foco,
+                    "Horas": round(float(foco.get("duracao_seg", 0)) / 3600, 2),
+                    "Questões": 0, "Acertos": 0, "Origem": "Modo Foco",
+                })
+                db["pomodoro_ciclos_totais"] = int(db.get("pomodoro_ciclos_totais", 0)) + 1
+                db["modo_foco"] = {"status": "parado"}
+                salvar_dados_usuario(user_atual, db)
+                st.success("Bloco registrado no seu histórico de estudos.")
+                st.rerun()
+        elif status_foco == "encerrado":
+            st.info("Bloco encerrado. Ele não foi contado como sessão concluída.")
+            if st.button("Preparar novo bloco", use_container_width=True):
+                db["modo_foco"] = {"status": "parado"}
+                salvar_dados_usuario(user_atual, db)
+                st.rerun()
+
+elif menu == "👋 Guia Inicial":
+    st.title("👋 Guia Inicial do QG")
+    st.caption("Um roteiro rápido para configurar o ambiente e começar a usar seus módulos.")
+    guia_concluido = bool(db.get("guia_inicial_concluido", False))
+    st.progress(1.0 if guia_concluido else 0.0, text="Guia concluído" if guia_concluido else "Primeiros passos · você pode voltar a este guia quando quiser")
+    passos_guia = [
+        ("01", "Configure sua rotina", "Defina a data da prova, o período EFA e os indicadores que deseja acompanhar no painel."),
+        ("02", "Monte seu plano", "Use o Plano Semanal Automático para organizar blocos de estudo e revisões."),
+        ("03", "Registre suas metas físicas", "Use o módulo TAF para acompanhar o treino que você planejou e o seu histórico."),
+        ("04", "Ative a memória de estudo", "Crie cartões no Quiz Diário Adaptativo ou guarde anotações para revisões futuras."),
+        ("05", "Personalize as missões", "Escolha tarefas de TAF, estudo, revisão e outras atividades na tela Personalizar Painel."),
+    ]
+    for numero, titulo, descricao in passos_guia:
+        with st.container(border=True):
+            a, b = st.columns([1, 8])
+            a.markdown(f"### `{numero}`")
+            b.markdown(f"#### {titulo}")
+            b.write(descricao)
+    g1, g2, g3 = st.columns(3)
+    g1.button("🎛️ Personalizar painel", on_click=_navegar_qg, args=("🎛️ Personalizar Painel",), use_container_width=True)
+    g2.button("🧩 Abrir quiz", on_click=_navegar_qg, args=("🧩 Quiz Diário Adaptativo",), use_container_width=True)
+    if not guia_concluido:
+        if g3.button("Concluir guia", type="primary", use_container_width=True):
+            db["guia_inicial_concluido"] = True
+            salvar_dados_usuario(user_atual, db)
+            st.toast("Guia inicial concluído.", icon="✅")
+            st.rerun()
+    else:
+        g3.success("Guia concluído")
+
+elif menu == "📲 Instalar como App":
+    st.title("📲 QG no seu dispositivo")
+    st.caption("Hospedagem detectada: Streamlit Community Cloud. Use o navegador para criar um atalho de acesso rápido.")
+
+    status_cloud_1, status_cloud_2, status_cloud_3 = st.columns(3)
+    status_cloud_1.metric("Hospedagem", "Community Cloud")
+    status_cloud_2.metric("Conexão HTTPS", "Disponível")
+    status_cloud_3.metric("Atalho no dispositivo", "Compatível")
+
+    inst_android, inst_ios, inst_desktop = st.columns(3)
+    with inst_android:
+        with st.container(border=True):
+            st.markdown("#### 🤖 Android")
+            st.markdown("1. Abra o endereço do QG no Chrome.\n2. Toque em **⋮**.\n3. Selecione **Adicionar à tela inicial** ou **Instalar app**, quando disponível.\n4. Confirme para criar o ícone.")
+    with inst_ios:
+        with st.container(border=True):
+            st.markdown("#### 🍎 iPhone e iPad")
+            st.markdown("1. Abra o endereço do QG no Safari.\n2. Toque em **Compartilhar**.\n3. Escolha **Adicionar à Tela de Início**.\n4. Confirme o nome e toque em **Adicionar**.")
+    with inst_desktop:
+        with st.container(border=True):
+            st.markdown("#### 💻 Computador")
+            st.markdown("1. Abra o QG no Chrome ou Edge.\n2. Abra o menu do navegador.\n3. Use **Criar atalho** ou **Instalar este site como aplicativo**, se aparecer.\n4. Ative a abertura em janela própria, se disponível.")
+
+    st.info("Esse atalho abre o QG pelo navegador e facilita o acesso. No Community Cloud, o app Streamlit não controla o manifesto nem o service worker na raiz do site; por isso, a instalação como PWA nativa pode não aparecer. Uma PWA completa exige uma camada web externa configurada para servir esses arquivos no escopo correto.")
+    with st.expander("🔐 Persistência do login e da memória no Community Cloud"):
+        st.warning("O QG grava contas e progresso em arquivos locais (como usuarios.json, dados_usuarios/ e dados_qg.db). No Community Cloud, arquivos criados durante a execução não têm persistência garantida entre reinicializações ou novas instâncias. Para garantir que login, memória, quiz e progresso não se percam, conecte o app a um banco de dados persistente externo e guarde as credenciais em Secrets.")
+        st.caption("Não coloque senha de banco, token ou chave privada no código nem em um repositório público.")
+    st.button("Voltar ao painel", on_click=_navegar_qg, args=("📊 Painel & Rotina Diária",))
+
+elif menu == "🆕 Novidades do QG":
+    st.title("🆕 Novidades do QG")
+    st.caption("Recursos disponíveis nesta versão da plataforma.")
+    novidades_qg = [
+        ("🧩 Quiz Diário Adaptativo", "Uma sessão diária de até 20 perguntas, com cartões priorizados pelo histórico e tópicos do edital para recordação ativa."),
+        ("🎛️ Painel personalizável", "Escolha os indicadores do topo e as tarefas que entram na sua missão diária."),
+        ("🏅 Missões diárias", "Acesse a aba própria para explorar 100 desafios, montar uma rotina matinal e acompanhar seu ranking pessoal."),
+        ("📡 Campanhas do QG", "O proprietário pode destacar uma missão e publicar um comunicado com período definido para aparecer no Quiz."),
+        ("👋 Guia Inicial", "Passos rápidos para configurar a rotina e conhecer os módulos principais."),
+        ("📲 Acesso como aplicativo", "Instruções para criar um atalho no Community Cloud e explicação dos requisitos para uma PWA nativa."),
+        ("🎨 Interface QG Enterprise", "Navegação, cartões, métricas, gráficos e telas menores com identidade visual unificada."),
+    ]
+    for titulo_novidade, texto_novidade in novidades_qg:
+        with st.container(border=True):
+            st.markdown(f"#### {titulo_novidade}")
+            st.write(texto_novidade)
+
+elif menu == "🧩 Quiz Diário Adaptativo":
+    st.title("🧩 Quiz Diário")
+    st.caption("Questões objetivas com quatro alternativas, gabarito e explicação imediata. A sessão diária traz até 20 questões.")
+    campanha_missoes_quiz = _carregar_campanha_missoes_qg()
+    hoje_campanha_qg = datetime.date.today().isoformat()
+    inicio_campanha_qg = str(campanha_missoes_quiz.get("inicio_em", "0001-01-01"))
+    fim_campanha_qg = str(campanha_missoes_quiz.get("fim_em", "9999-12-31"))
+    campanha_visivel_qg = bool(campanha_missoes_quiz.get("ativa")) and inicio_campanha_qg <= hoje_campanha_qg <= fim_campanha_qg
+    if campanha_visivel_qg:
+        missao_destaque_quiz = QG_MISSOES_POR_ID.get(str(campanha_missoes_quiz.get("missao_id", "")))
+        with st.container(border=True):
+            st.markdown("#### 📡 Destaque do QG")
+            if missao_destaque_quiz:
+                st.success(f"🎯 {missao_destaque_quiz['titulo']} · {missao_destaque_quiz['pontos']} pontos")
+            if campanha_missoes_quiz.get("aviso"):
+                st.info(str(campanha_missoes_quiz["aviso"]))
+    quiz_cards = db.get("quiz_cards", [])
+    if not isinstance(quiz_cards, list):
+        quiz_cards = []
+    quiz_cards = [x for x in quiz_cards if isinstance(x, dict) and x.get("id") and x.get("pergunta") and x.get("resposta")]
+    materia_quiz = sorted({str(x.get("Matéria", "Geral")) for x in db.get("edital", []) if isinstance(x, dict) and x.get("Matéria")}) or ["Geral"]
+
+    with st.expander("＋ Criar questão de múltipla escolha", expanded=not any(isinstance(x.get("alternativas"), list) for x in quiz_cards)):
+        with st.form("form_novo_cartao_quiz", clear_on_submit=True):
+            materia_cartao = st.selectbox("Matéria", materia_quiz)
+            pergunta_cartao = st.text_area("Enunciado", max_chars=1000, placeholder="Escreva uma questão clara e objetiva.")
+            alternativas_cartao = [
+                st.text_input(f"Alternativa {letra}", max_chars=500, key=f"nova_questao_alt_{letra}")
+                for letra in "ABCD"
+            ]
+            gabarito_cartao = st.selectbox(
+                "Alternativa correta",
+                options=list(range(4)),
+                format_func=lambda idx: f"{chr(65 + idx)} · {alternativas_cartao[idx] or 'preencha esta alternativa'}",
+            )
+            explicacao_cartao = st.text_area("Explicação do gabarito", max_chars=3000, placeholder="Explique por que a alternativa correta está certa.")
+            if st.form_submit_button("Salvar questão", type="primary", use_container_width=True):
+                alternativas_validas = [item.strip() for item in alternativas_cartao]
+                if not pergunta_cartao.strip() or not explicacao_cartao.strip() or any(not item for item in alternativas_validas):
+                    st.error("Preencha o enunciado, as quatro alternativas e a explicação.")
+                elif len({item.casefold() for item in alternativas_validas}) != 4:
+                    st.error("As quatro alternativas precisam ser diferentes.")
+                else:
+                    quiz_cards.append({
+                        "id": uuid.uuid4().hex[:12], "materia": materia_cartao,
+                        "pergunta": pergunta_cartao.strip(), "resposta": explicacao_cartao.strip(),
+                        "explicacao": explicacao_cartao.strip(), "alternativas": alternativas_validas,
+                        "correta": int(gabarito_cartao),
+                        "criado_em": datetime.date.today().isoformat(), "revisao_em": datetime.date.today().isoformat(),
+                        "ultima_revisao": "", "acertos": 0, "erros": 0, "repeticoes": 0,
+                    })
+                    db["quiz_cards"] = quiz_cards
+                    salvar_dados_usuario(user_atual, db)
+                    st.toast("Questão objetiva adicionada ao quiz.", icon="🧩")
+                    st.rerun()
+
+    with st.expander("Importar cartões do Caderno de Bizus", expanded=False):
+        st.caption("Seus bizus continuam salvos como material de revisão. Para aparecer no quiz objetivo, crie uma questão com quatro alternativas e gabarito.")
+        if st.button("Importar bizus pendentes", key="importar_bizus_quiz"):
+            conn_import = sqlite3.connect("dados_qg.db")
+            try:
+                conn_import.execute("""CREATE TABLE IF NOT EXISTS caderno_erros (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT, materia TEXT, assunto TEXT,
+                    motivo TEXT, bisu TEXT, sanado INTEGER DEFAULT 0
+                )""")
+                bizus_pendentes = conn_import.execute(
+                    "SELECT id, materia, assunto, motivo, bisu FROM caderno_erros WHERE sanado = 0 ORDER BY id DESC"
+                ).fetchall()
+            finally:
+                conn_import.close()
+            ids_importados = {str(x.get("fonte_bisu_id")) for x in quiz_cards if x.get("fonte_bisu_id") is not None}
+            novos_cartoes = 0
+            for bisu_id, materia_bisu, assunto_bisu, motivo_bisu, resposta_bisu in bizus_pendentes:
+                if str(bisu_id) in ids_importados:
+                    continue
+                resposta_limpa = str(resposta_bisu or "").strip()
+                if not resposta_limpa:
+                    continue
+                quiz_cards.append({
+                    "id": uuid.uuid4().hex[:12], "fonte_bisu_id": bisu_id,
+                    "materia": str(materia_bisu or "Geral"),
+                    "pergunta": f"Explique de memória: {str(assunto_bisu or 'este assunto')}" + (f" — {motivo_bisu}" if motivo_bisu else ""),
+                    "resposta": resposta_limpa, "criado_em": datetime.date.today().isoformat(),
+                    "revisao_em": datetime.date.today().isoformat(), "ultima_revisao": "",
+                    "acertos": 0, "erros": 0, "repeticoes": 0,
+                })
+                novos_cartoes += 1
+            if novos_cartoes:
+                db["quiz_cards"] = quiz_cards
+                salvar_dados_usuario(user_atual, db)
+                st.success(f"{novos_cartoes} cartão(ões) importado(s).")
+                st.rerun()
+            else:
+                st.info("Não há bizus pendentes novos com resposta preenchida para importar.")
+
+    hoje_quiz = datetime.date.today().isoformat()
+    historico_quiz = db.get("quiz_historico", [])
+    if not isinstance(historico_quiz, list):
+        historico_quiz = []
+    cartoes_objetivos_salvos = [
+        x for x in quiz_cards
+        if isinstance(x.get("alternativas"), list) and len(x.get("alternativas", [])) == 4
+        and str(x.get("correta", "")).isdigit() and 0 <= int(x.get("correta", -1)) < 4
+    ]
+    tentativas_totais = sum(int(x.get("acertos", 0)) + int(x.get("erros", 0)) for x in cartoes_objetivos_salvos)
+    acertos_totais = sum(int(x.get("acertos", 0)) for x in cartoes_objetivos_salvos)
+    precisao_quiz = round(acertos_totais / tentativas_totais * 100) if tentativas_totais else 0
+    revisoes_quiz = sum(str(x.get("revisao_em", "")) <= hoje_quiz for x in cartoes_objetivos_salvos)
+    qm1, qm2, qm3 = st.columns(3)
+    qm1.metric("Questões próprias", len(cartoes_objetivos_salvos))
+    qm2.metric("Revisões vencidas", revisoes_quiz)
+    qm3.metric("Precisão histórica", f"{precisao_quiz}%")
+
+    def _montar_questoes_missao_diaria():
+        """Monta a sessão objetiva do dia com cartões próprios vencidos e banco curado."""
+        semente_quiz = hashlib.sha256(f"{user_atual}|{hoje_quiz}".encode("utf-8")).hexdigest()
+        rng_quiz = random.Random(semente_quiz)
+        banco_bruto = [
+            ("Matemática", "Qual é a forma fatorada de x² − 9?", ["(x − 3)(x + 3)", "(x − 9)(x + 1)", "(x − 3)²", "(x + 9)(x − 1)"], 0, "É uma diferença de quadrados: a² − b² = (a − b)(a + b)."),
+            ("Matemática", "A soma dos ângulos internos de um triângulo plano é:", ["90°", "180°", "270°", "360°"], 1, "Em geometria euclidiana, os três ângulos internos de um triângulo somam 180°."),
+            ("Matemática", "Em uma PA de primeiro termo 4 e razão 3, qual é o 6º termo?", ["16", "18", "19", "22"], 2, "aₙ = a₁ + (n − 1)r; portanto, a₆ = 4 + 5·3 = 19."),
+            ("Matemática", "Ao lançar um dado honesto de seis faces, a probabilidade de sair um número par é:", ["1/6", "1/3", "1/2", "2/3"], 2, "Há três resultados pares entre os seis resultados possíveis: 2, 4 e 6."),
+            ("Matemática", "Se log₁₀(x) = 2, então x é igual a:", ["10", "20", "100", "1.000"], 2, "Pela definição de logaritmo, log₁₀(x)=2 equivale a 10²=x."),
+            ("Matemática", "As raízes da equação x² − 5x + 6 = 0 são:", ["1 e 6", "2 e 3", "−2 e −3", "−1 e −6"], 1, "A fatoração é (x − 2)(x − 3)=0; logo, x=2 ou x=3."),
+            ("Matemática", "Qual é a área de um círculo de raio 3?", ["3π", "6π", "9π", "12π"], 2, "A área é A=πr². Com r=3, A=9π."),
+            ("Matemática", "Se f(x)=2x−1, quanto vale f(4)?", ["5", "6", "7", "8"], 2, "Substituindo x por 4: f(4)=2·4−1=7."),
+            ("Física", "No Sistema Internacional, a unidade de força é:", ["Joule", "Watt", "Newton", "Pascal"], 2, "A força é medida em newtons (N), equivalente a kg·m/s²."),
+            ("Física", "Um móvel parte do repouso e acelera a 2 m/s² por 5 s. Sua velocidade final é:", ["2 m/s", "5 m/s", "10 m/s", "20 m/s"], 2, "Pela relação v=v₀+at, temos v=0+2·5=10 m/s."),
+            ("Física", "Uma onda tem frequência de 5 Hz. Seu período é:", ["0,1 s", "0,2 s", "2 s", "5 s"], 1, "O período é o inverso da frequência: T=1/f=1/5=0,2 s."),
+            ("Física", "Pela lei de Ohm, a corrente elétrica é calculada por:", ["I=R/V", "I=V/R", "I=V·R", "I=V+R"], 1, "A lei de Ohm estabelece V=R·I; isolando I, temos I=V/R."),
+            ("Física", "A imagem formada por um espelho plano é, em relação ao objeto:", ["Real e invertida", "Virtual e do mesmo tamanho", "Real e ampliada", "Virtual e sempre menor"], 1, "O espelho plano forma uma imagem virtual, direita e de mesmo tamanho, à mesma distância atrás do espelho."),
+            ("Física", "Qual expressão representa a energia cinética de um corpo de massa m e velocidade v?", ["mv", "mv²", "½mv²", "mgh"], 2, "A energia cinética translacional é Ec=½mv²."),
+            ("Física", "Na ausência de resistência do ar, corpos em queda livre perto da superfície terrestre:", ["Caem com acelerações diferentes conforme a massa", "Caem com a mesma aceleração gravitacional", "Mantêm velocidade constante", "Não sofrem força resultante"], 1, "Sem resistência do ar, a aceleração da queda é a aceleração gravitacional local, independentemente da massa."),
+            ("Química", "O número atômico de um elemento corresponde ao número de:", ["Nêutrons", "Prótons", "Prótons mais nêutrons", "Elétrons da camada de valência"], 1, "O número atômico Z é a quantidade de prótons no núcleo."),
+            ("Química", "Uma solução aquosa com pH 3 é classificada como:", ["Ácida", "Neutra", "Básica", "Saturada"], 0, "A 25 °C, pH menor que 7 indica meio ácido."),
+            ("Química", "Em uma ligação covalente, os átomos tendem a:", ["Compartilhar pares de elétrons", "Transferir prótons", "Compartilhar nêutrons", "Perder todos os elétrons"], 0, "A ligação covalente se caracteriza pelo compartilhamento de pares de elétrons."),
+            ("Química", "Isótopos de um mesmo elemento possuem:", ["Mesmo número de nêutrons e prótons diferentes", "Mesmo número de prótons e nêutrons diferentes", "Números atômicos diferentes", "Mesmo número de massa obrigatoriamente"], 1, "Isótopos têm o mesmo número atômico (prótons) e diferentes números de nêutrons."),
+            ("Química", "A massa molar aproximada da água (H₂O) é:", ["10 g/mol", "16 g/mol", "18 g/mol", "20 g/mol"], 2, "Somando 2·1 g/mol do hidrogênio e 16 g/mol do oxigênio, obtém-se 18 g/mol."),
+            ("Química", "Em uma oxidação, uma espécie química:", ["Recebe elétrons", "Perde elétrons", "Recebe nêutrons", "Mantém sempre o mesmo número de oxidação"], 1, "Oxidação corresponde à perda de elétrons e ao aumento do número de oxidação."),
+            ("Português", "Na frase “Havia muitos candidatos no local”, o verbo haver tem sentido de existir. Nesse uso, ele:", ["Concorda com “candidatos”", "Permanece na 3ª pessoa do singular", "Vai para o plural por atração", "Concorda com “local”"], 1, "O verbo haver impessoal, com sentido de existir, fica na 3ª pessoa do singular."),
+            ("Português", "Assinale a frase em que o uso da crase está adequado:", ["Entreguei o documento à diretora", "Começou à estudar cedo", "Fui à pé para casa", "Enviei a carta à ele"], 0, "Ocorre crase na fusão da preposição “a” com o artigo feminino “a”: entregar algo a + a diretora."),
+            ("Português", "Quanto à acentuação, todas as palavras proparoxítonas:", ["São acentuadas", "Nunca recebem acento", "Só recebem acento se terminarem em vogal", "São acentuadas apenas quando têm quatro sílabas"], 0, "A regra geral determina acento gráfico em todas as palavras proparoxítonas."),
+            ("Português", "O pronome “onde” deve ser usado preferencialmente para retomar:", ["Uma ideia abstrata", "Um lugar", "Uma pessoa", "Uma causa"], 1, "“Onde” retoma lugar; em outros contextos, podem ser mais adequados “em que” ou “no qual”."),
+            ("Português", "A oração adjetiva explicativa é normalmente separada da oração principal por:", ["Parênteses obrigatoriamente", "Vírgulas", "Dois-pontos obrigatoriamente", "Nenhum sinal"], 1, "A oração adjetiva explicativa acrescenta uma informação e costuma ser isolada por vírgulas."),
+            ("História", "A Independência do Brasil foi proclamada em:", ["1789", "1808", "1822", "1889"], 2, "A Independência foi proclamada em 7 de setembro de 1822."),
+            ("História", "A Lei Áurea, que aboliu juridicamente a escravidão no Brasil, foi assinada em:", ["1822", "1850", "1871", "1888"], 3, "A Lei Áurea foi assinada em 13 de maio de 1888."),
+            ("História", "A Revolução Francesa teve início em:", ["1648", "1776", "1789", "1815"], 2, "O marco inicial tradicional da Revolução Francesa é 1789, com a crise política e a tomada da Bastilha."),
+            ("Geografia", "A maior parte da Região Norte do Brasil está situada na zona climática:", ["Polar", "Temperada do Norte", "Intertropical", "Temperada do Sul"], 2, "A Região Norte está majoritariamente na zona intertropical e apresenta predomínio de clima equatorial."),
+            ("Geografia", "Em uma escala cartográfica 1:100.000, 1 cm no mapa representa no terreno:", ["100 m", "500 m", "1 km", "10 km"], 2, "100.000 cm correspondem a 1.000 m, isto é, 1 km."),
+            ("Geografia", "O movimento de rotação da Terra está diretamente associado à:", ["Alternância entre dias e noites", "Sucessão das estações do ano", "Variação anual da distância Terra-Sol", "Formação das marés"], 0, "A rotação é o giro da Terra em torno do próprio eixo e produz a alternância de dias e noites."),
+            ("Inglês", "Qual é a forma correta do passado simples do verbo “go”?", ["Goed", "Gone", "Went", "Going"], 2, "“Go” é irregular: seu passado simples é “went”; o particípio passado é “gone”."),
+            ("Inglês", "Complete: “I have lived here ___ 2020.”", ["for", "since", "during", "while"], 1, "“Since” indica o ponto de início de um período; “for” indica sua duração."),
+            ("Inglês", "Na frase “The letters are written every week”, a voz verbal é:", ["Ativa", "Passiva", "Condicional", "Imperativa"], 1, "A estrutura “are + particípio passado” forma a voz passiva no presente simples."),
+            ("Inglês", "Qual palavra completa corretamente: “How ___ water do you need?”", ["many", "much", "few", "several"], 1, "“Water” é incontável nesse uso; perguntas sobre quantidade usam “how much”."),
+        ]
+        banco_objetivo = [
+            {"id": f"banco_{idx:03d}", "tipo": "banco", "materia": item[0], "pergunta": item[1],
+             "alternativas": item[2], "correta": item[3], "explicacao": item[4]}
+            for idx, item in enumerate(banco_bruto, start=1)
+        ]
+
+        cartoes_objetivos = []
+        for cartao in quiz_cards:
+            alternativas = cartao.get("alternativas")
+            try:
+                correta = int(cartao.get("correta"))
+            except (TypeError, ValueError):
+                continue
+            pergunta = str(cartao.get("pergunta", "")).strip()
+            if (cartao.get("id") and pergunta and isinstance(alternativas, list) and len(alternativas) == 4
+                    and all(str(opcao).strip() for opcao in alternativas) and 0 <= correta < 4):
+                cartoes_objetivos.append(cartao)
+
+        def _prioridade_diaria(cartao):
+            revisao = str(cartao.get("revisao_em", ""))[:10]
+            vencido = not revisao or revisao <= hoje_quiz
+            acertos = int(cartao.get("acertos", 0) or 0)
+            erros = int(cartao.get("erros", 0) or 0)
+            precisao = acertos / (acertos + erros) if acertos + erros else 0.0
+            return (0 if vencido else 1, precisao, str(cartao.get("ultima_revisao", "")), rng_quiz.random())
+
+        cartoes_objetivos.sort(key=_prioridade_diaria)
+        perguntas = []
+        for cartao in cartoes_objetivos[:10]:
+            perguntas.append({
+                "id": f"cartao_{cartao['id']}", "cartao_id": str(cartao["id"]), "tipo": "cartao",
+                "materia": str(cartao.get("materia", "Geral")), "pergunta": str(cartao["pergunta"]).strip(),
+                "alternativas": [str(opcao).strip() for opcao in cartao["alternativas"]],
+                "correta": int(cartao["correta"]),
+                "explicacao": str(cartao.get("explicacao") or cartao.get("resposta", "Gabarito registrado no seu cartão.")),
+            })
+
+        rng_quiz.shuffle(banco_objetivo)
+        perguntas.extend(banco_objetivo[:max(0, 20 - len(perguntas))])
+        rng_quiz.shuffle(perguntas)
+        for pergunta_objetiva in perguntas:
+            ordem_alternativas = list(range(len(pergunta_objetiva["alternativas"])))
+            rng_quiz.shuffle(ordem_alternativas)
+            gabarito_original = int(pergunta_objetiva["correta"])
+            pergunta_objetiva["alternativas"] = [pergunta_objetiva["alternativas"][idx] for idx in ordem_alternativas]
+            pergunta_objetiva["correta"] = ordem_alternativas.index(gabarito_original)
+        return perguntas[:20]
+
+    st.markdown("### Sua sessão de hoje")
+    st.markdown("""
+    <style>
+    .qg-quiz-mission-banner{position:relative;overflow:hidden;margin:8px 0 18px;padding:26px 28px;border:1px solid rgba(115,205,221,.24);border-radius:22px;background:radial-gradient(circle at 88% 12%,rgba(68,129,233,.24),transparent 34%),linear-gradient(125deg,#0b1b2b 0%,#10263d 55%,#191f3c 100%);box-shadow:0 20px 50px rgba(0,0,0,.2)}
+    .qg-quiz-mission-banner:after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;background:linear-gradient(90deg,transparent,#59e1d2,#5d91ff,#a88cff,transparent)}
+    .qg-quiz-mission-label{color:#70e3db;font:700 .7rem 'DM Mono',monospace;letter-spacing:.16em;text-transform:uppercase}
+    .qg-quiz-mission-title{margin:8px 0;color:#f3f7ff;font-size:1.5rem;font-weight:850;letter-spacing:-.045em}
+    .qg-quiz-mission-copy{max-width:780px;color:#b2c2d3;font-size:.94rem;line-height:1.65}
+    .qg-quiz-question-card{padding:20px 22px;border:1px solid rgba(112,175,210,.22);border-radius:18px;background:linear-gradient(145deg,rgba(17,39,59,.98),rgba(9,22,36,.98));box-shadow:0 18px 44px rgba(0,0,0,.17);color:#f4f7fc;font-size:1.12rem;line-height:1.65}
+    .qg-quiz-question-meta{color:#75ddd7;font:700 .72rem 'DM Mono',monospace;letter-spacing:.12em;text-transform:uppercase}
+    .qg-quiz-result{padding:15px 18px;border-radius:14px;border:1px solid rgba(103,208,190,.26);background:linear-gradient(135deg,rgba(15,61,58,.72),rgba(13,39,52,.78));color:#e8fff9;line-height:1.6}
+    .qg-quiz-result-wrong{border-color:rgba(255,130,140,.3);background:linear-gradient(135deg,rgba(74,31,44,.75),rgba(35,31,52,.78));color:#fff1f2}
+    @media(max-width:640px){.qg-quiz-mission-banner{padding:19px}.qg-quiz-mission-title{font-size:1.22rem}.qg-quiz-question-card{padding:16px;font-size:1rem}}
+    @media(prefers-reduced-motion:reduce){.qg-quiz-mission-banner:after{animation:none!important}}
+    </style>
+    <section class="qg-quiz-mission-banner"><div class="qg-quiz-mission-label">QG · módulo de conhecimento</div><div class="qg-quiz-mission-title">Treino objetivo, claro e mensurável</div><div class="qg-quiz-mission-copy">Cada questão tem quatro alternativas, gabarito automático e explicação. O bloco diário combina suas questões objetivas vencidas com questões de referência de várias matérias.</div></section>
+    """, unsafe_allow_html=True)
+
+    sessao_salva_quiz = db.get("quiz_missao_diaria", {})
+    sessao_antiga_quiz = isinstance(sessao_salva_quiz, dict) and sessao_salva_quiz.get("data") == hoje_quiz
+    sessao_missao = {}
+    if sessao_antiga_quiz:
+        questoes_salvas_quiz = sessao_salva_quiz.get("questoes", [])
+        sessao_mcq_valida = (
+            isinstance(questoes_salvas_quiz, list) and bool(questoes_salvas_quiz)
+            and all(
+                isinstance(item, dict)
+                and isinstance(item.get("alternativas"), list)
+                and len(item.get("alternativas", [])) >= 2
+                and str(item.get("correta", "")).isdigit()
+                and 0 <= int(item.get("correta", -1)) < len(item.get("alternativas", []))
+                for item in questoes_salvas_quiz
+            )
+        )
+        if sessao_mcq_valida:
+            sessao_missao = sessao_salva_quiz
+        else:
+            st.info("A sessão salva hoje usava o formato anterior. Ao iniciar o novo quiz, ela será substituída por questões de múltipla escolha; seu histórico e seus cartões permanecem salvos.")
+
+    if not sessao_missao:
+        perguntas_preview = _montar_questoes_missao_diaria()
+        if perguntas_preview:
+            cartoes_no_bloco = sum(item.get("tipo") == "cartao" for item in perguntas_preview)
+            st.caption(f"{len(perguntas_preview)} questões prontas · {cartoes_no_bloco} de seus cartões objetivos e {len(perguntas_preview) - cartoes_no_bloco} questões de referência.")
+            if st.button("🚀 Iniciar quiz diário", type="primary", use_container_width=True):
+                sessao_missao = {
+                    "data": hoje_quiz, "questoes": perguntas_preview,
+                    "indice": 0, "respostas": {}, "concluida": False,
+                    "iniciada_em": datetime.datetime.now().isoformat(timespec="seconds"),
+                }
+                db["quiz_missao_diaria"] = sessao_missao
+                salvar_dados_usuario(user_atual, db)
+                st.rerun()
+        else:
+            st.warning("Não foi possível montar o bloco de questões. Recarregue a página ou tente novamente.")
+    else:
+        questoes_missao = sessao_missao.get("questoes", [])
+        respostas_missao = sessao_missao.get("respostas", {})
+        if not isinstance(respostas_missao, dict):
+            respostas_missao = {}
+        total_perguntas_missao = len(questoes_missao)
+        indice_missao = max(0, min(int(sessao_missao.get("indice", 0)), total_perguntas_missao))
+        respostas_validas_missao = [
+            item for item in respostas_missao.values()
+            if isinstance(item, dict) and isinstance(item.get("correta"), bool)
+        ]
+        avaliadas_missao = len(respostas_validas_missao)
+        acertos_missao = sum(item.get("correta") is True for item in respostas_validas_missao)
+        st.progress(avaliadas_missao / total_perguntas_missao if total_perguntas_missao else 0, text=f"Progresso · {avaliadas_missao} de {total_perguntas_missao} respondidas")
+
+        if sessao_missao.get("concluida") or indice_missao >= total_perguntas_missao:
+            sessao_missao["concluida"] = True
+            db["quiz_missao_diaria"] = sessao_missao
+            salvar_dados_usuario(user_atual, db)
+            st.success("Quiz de hoje concluído. Seu resultado foi salvo no histórico.")
+            resultado_q1, resultado_q2, resultado_q3 = st.columns(3)
+            resultado_q1.metric("Respondidas", avaliadas_missao)
+            resultado_q2.metric("Acertos", acertos_missao)
+            resultado_q3.metric("Precisão", f"{round(acertos_missao / avaliadas_missao * 100) if avaliadas_missao else 0}%")
+            st.progress(1.0, text="Sessão diária finalizada")
+        elif questoes_missao:
+            pergunta_missao = questoes_missao[indice_missao]
+            id_pergunta_missao = str(pergunta_missao.get("id", f"q{indice_missao}"))
+            resposta_atual_missao = respostas_missao.get(id_pergunta_missao, {})
+            if not isinstance(resposta_atual_missao, dict):
+                resposta_atual_missao = {}
+            alternativas_missao = pergunta_missao.get("alternativas", [])
+            correta_missao = int(pergunta_missao.get("correta", 0))
+
+            st.markdown(f"<div class='qg-quiz-question-meta'>{html.escape(str(pergunta_missao.get('materia', 'Geral')))} &nbsp;·&nbsp; QUESTÃO {indice_missao + 1:02d} / {total_perguntas_missao:02d}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='qg-quiz-question-card'>{html.escape(str(pergunta_missao.get('pergunta', '')))}</div>", unsafe_allow_html=True)
+            if not resposta_atual_missao.get("revelada"):
+                with st.form(f"form_mcq_missao_{user_atual}_{hoje_quiz}_{indice_missao}"):
+                    opcao_escolhida_missao = st.radio(
+                        "Selecione uma alternativa",
+                        options=[-1] + list(range(len(alternativas_missao))),
+                        index=0,
+                        format_func=lambda valor: "Escolha uma opção" if valor == -1 else f"{chr(65 + valor)}. {alternativas_missao[valor]}",
+                        key=f"mcq_resposta_{user_atual}_{hoje_quiz}_{indice_missao}",
+                    )
+                    enviar_resposta_missao = st.form_submit_button("Confirmar resposta", type="primary", use_container_width=True)
+                if enviar_resposta_missao:
+                    if opcao_escolhida_missao < 0:
+                        st.error("Selecione uma alternativa antes de confirmar.")
+                    else:
+                        resposta_correta_missao = opcao_escolhida_missao == correta_missao
+                        respostas_missao[id_pergunta_missao] = {
+                            "opcao": int(opcao_escolhida_missao), "correta": bool(resposta_correta_missao),
+                            "revelada": True, "respondida_em": datetime.datetime.now().isoformat(timespec="seconds"),
+                        }
+                        if pergunta_missao.get("tipo") == "cartao":
+                            cartao_alvo = next((item for item in quiz_cards if str(item.get("id")) == str(pergunta_missao.get("cartao_id"))), None)
+                            if cartao_alvo:
+                                acertos_cartao = int(cartao_alvo.get("acertos", 0) or 0)
+                                erros_cartao = int(cartao_alvo.get("erros", 0) or 0)
+                                repeticoes_cartao = int(cartao_alvo.get("repeticoes", 0) or 0)
+                                if resposta_correta_missao:
+                                    cartao_alvo["acertos"] = acertos_cartao + 1
+                                    intervalos_missao = (1, 3, 7, 14, 30)
+                                    dias_revisao = intervalos_missao[min(repeticoes_cartao, len(intervalos_missao) - 1)]
+                                    cartao_alvo["repeticoes"] = repeticoes_cartao + 1
+                                else:
+                                    cartao_alvo["erros"] = erros_cartao + 1
+                                    cartao_alvo["repeticoes"] = 0
+                                    dias_revisao = 1
+                                cartao_alvo["ultima_revisao"] = hoje_quiz
+                                cartao_alvo["revisao_em"] = str(datetime.date.today() + datetime.timedelta(days=dias_revisao))
+                                db["quiz_cards"] = quiz_cards
+                                historico_quiz.append({
+                                    "data": hoje_quiz, "cartao_id": cartao_alvo["id"],
+                                    "materia": cartao_alvo.get("materia", "Geral"),
+                                    "lembrou": bool(resposta_correta_missao), "correta": bool(resposta_correta_missao),
+                                    "origem": "quiz_objetivo_diario",
+                                })
+                        historico_sessao_missoes = db.get("quiz_missao_historico", [])
+                        if not isinstance(historico_sessao_missoes, list):
+                            historico_sessao_missoes = []
+                        historico_sessao_missoes.append({
+                            "data": hoje_quiz, "pergunta_id": id_pergunta_missao,
+                            "materia": str(pergunta_missao.get("materia", "Geral")),
+                            "lembrou": bool(resposta_correta_missao), "correta": bool(resposta_correta_missao),
+                            "tipo": str(pergunta_missao.get("tipo", "banco")),
+                        })
+                        db["quiz_historico"] = historico_quiz[-1000:]
+                        db["quiz_missao_historico"] = historico_sessao_missoes[-5000:]
+                        sessao_missao["respostas"] = respostas_missao
+                        db["quiz_missao_diaria"] = sessao_missao
+                        salvar_dados_usuario(user_atual, db)
+                        st.rerun()
+            else:
+                opcao_marcada_missao = int(resposta_atual_missao.get("opcao", -1))
+                resposta_correta_registrada = resposta_atual_missao.get("correta") is True
+                if resposta_correta_registrada:
+                    st.markdown("<div class='qg-quiz-result'><strong>✓ Resposta correta</strong><br>Boa leitura. Confira a explicação e siga para a próxima questão.</div>", unsafe_allow_html=True)
+                else:
+                    st.markdown("<div class='qg-quiz-result qg-quiz-result-wrong'><strong>↻ Resposta incorreta</strong><br>Revise a alternativa correta e a explicação antes de continuar.</div>", unsafe_allow_html=True)
+                st.markdown(f"**Sua resposta:** {chr(65 + opcao_marcada_missao)}. {html.escape(str(alternativas_missao[opcao_marcada_missao]))}")
+                st.markdown(f"**Gabarito:** {chr(65 + correta_missao)}. {html.escape(str(alternativas_missao[correta_missao]))}")
+                st.info(str(pergunta_missao.get("explicacao", "Revise o conteúdo relacionado a esta questão.")))
+                rotulo_proxima = "Finalizar quiz" if indice_missao + 1 >= total_perguntas_missao else "Próxima questão →"
+                if st.button(rotulo_proxima, type="primary", use_container_width=True, key=f"proxima_mcq_{user_atual}_{hoje_quiz}_{indice_missao}"):
+                    sessao_missao["indice"] = indice_missao + 1
+                    sessao_missao["concluida"] = indice_missao + 1 >= total_perguntas_missao
+                    db["quiz_missao_diaria"] = sessao_missao
+                    salvar_dados_usuario(user_atual, db)
+                    st.rerun()
+
+    with st.expander("Minhas questões objetivas", expanded=False):
+        if cartoes_objetivos_salvos:
+            for cartao in cartoes_objetivos_salvos:
+                acertos = int(cartao.get("acertos", 0) or 0)
+                erros = int(cartao.get("erros", 0) or 0)
+                st.markdown(f"**{html.escape(str(cartao.get('materia', 'Geral')))}** · {acertos} acertos · {erros} erros")
+                st.caption(str(cartao.get("pergunta", ""))[:180])
+        else:
+            st.caption("Suas questões criadas aparecerão aqui.")
+
+    cartoes_legados_quiz = [cartao for cartao in quiz_cards if cartao not in cartoes_objetivos_salvos]
+    with st.expander(f"Cartões e bizus anteriores · {len(cartoes_legados_quiz)}", expanded=False):
+        if cartoes_legados_quiz:
+            st.caption("Os registros antigos continuam guardados. Como não têm quatro alternativas e gabarito, ficam disponíveis para consulta e não entram na sessão objetiva.")
+            for cartao in cartoes_legados_quiz:
+                with st.container(border=True):
+                    st.markdown(f"**{html.escape(str(cartao.get('materia', 'Geral')))}** · {html.escape(str(cartao.get('pergunta', 'Cartão salvo')))}")
+                    resposta_legada = str(cartao.get("resposta", "")).strip()
+                    if resposta_legada:
+                        st.caption(resposta_legada)
+        else:
+            st.caption("Não há cartões antigos neste perfil.")
+
+
+elif menu == "🎯 Missões Diárias":
+    # Catálogo separado de missões diárias.
+    st.title(f"🎯 Missões Diárias · {len(QG_MISSOES)} desafios")
+    st.caption("Monte um plano curto para hoje, conclua as tarefas e acompanhe seu ranking pessoal por pontos e constância.")
+
+    hoje_missoes = datetime.date.today().isoformat()
+    planos_catalogo = db.get("missoes_catalogo_por_dia", {})
+    if not isinstance(planos_catalogo, dict):
+        planos_catalogo = {}
+    plano_hoje = planos_catalogo.get(hoje_missoes, [])
+    if not isinstance(plano_hoje, list):
+        plano_hoje = []
+    plano_hoje = list(dict.fromkeys(str(item) for item in plano_hoje if str(item) in QG_MISSOES_POR_ID))[:8]
+
+    historico_missoes = db.get("missoes_diarias", {})
+    if not isinstance(historico_missoes, dict):
+        historico_missoes = {}
+    conclusoes_por_missao = {missao["id"]: 0 for missao in QG_MISSOES}
+    for estado_data in historico_missoes.values():
+        if not isinstance(estado_data, dict):
+            continue
+        for missao_id in conclusoes_por_missao:
+            if estado_data.get(f"catalogo_{missao_id}"):
+                conclusoes_por_missao[missao_id] += 1
+    pontos_totais_missoes = sum(
+        conclusoes_por_missao[missao["id"]] * missao["pontos"] for missao in QG_MISSOES
+    )
+    estado_hoje_missoes = historico_missoes.get(hoje_missoes, {})
+    if not isinstance(estado_hoje_missoes, dict):
+        estado_hoje_missoes = {}
+    concluidas_hoje_missoes = sum(bool(estado_hoje_missoes.get(f"catalogo_{missao_id}")) for missao_id in plano_hoje)
+
+    mm1, mm2, mm3, mm4 = st.columns(4)
+    mm1.metric("Missões no catálogo", len(QG_MISSOES))
+    mm2.metric("No plano de hoje", len(plano_hoje))
+    mm3.metric("Concluídas hoje", concluidas_hoje_missoes)
+    mm4.metric("Pontos acumulados", pontos_totais_missoes)
+
+    aba_plano_missoes, aba_ranking_missoes = st.tabs(["☀️ Plano diário", "🏆 Ranking das missões"])
+    with aba_plano_missoes:
+        categorias_missoes = list(dict.fromkeys(missao["categoria"] for missao in QG_MISSOES))
+        categoria_missao = st.selectbox(
+            "Escolha uma categoria para explorar",
+            categorias_missoes,
+            key="qg_categoria_catalogo_missoes",
+        )
+        missoes_categoria = [missao for missao in QG_MISSOES if missao["categoria"] == categoria_missao]
+        mapa_rotulos_missoes = {
+            missao["id"]: f"{missao['titulo']} · {missao['minutos']} min · {missao['pontos']} pts"
+            for missao in missoes_categoria
+        }
+        adicionar_missoes = st.multiselect(
+            "Selecione desafios para adicionar ao plano de hoje",
+            options=list(mapa_rotulos_missoes),
+            format_func=lambda missao_id: mapa_rotulos_missoes[missao_id],
+            key=f"qg_seletor_missoes_{user_atual}_{hoje_missoes}_{categoria_missao}",
+            placeholder="Pesquise uma missão desta categoria",
+        )
+        col_add_missoes, col_manha_missoes = st.columns(2)
+        if col_add_missoes.button("＋ Adicionar ao plano de hoje", type="primary", use_container_width=True):
+            novo_plano = list(dict.fromkeys(plano_hoje + adicionar_missoes))
+            if len(novo_plano) > 8:
+                st.error("O plano diário aceita até 8 missões. Remova uma tarefa antes de adicionar outras.")
+            else:
+                planos_catalogo[hoje_missoes] = novo_plano
+                db["missoes_catalogo_por_dia"] = planos_catalogo
+                salvar_dados_usuario(user_atual, db)
+                st.toast("Plano diário atualizado.", icon="🎯")
+                st.rerun()
+
+        if col_manha_missoes.button("☀️ Adicionar missões da manhã", use_container_width=True):
+            ids_manha = [missao["id"] for missao in QG_MISSOES if missao["periodo"] == "Manhã"][:5]
+            novo_plano = list(dict.fromkeys(plano_hoje + ids_manha))
+            if len(novo_plano) > 8:
+                st.error("Há pouco espaço no plano. Ele aceita até 8 missões; remova algumas e tente novamente.")
+            else:
+                planos_catalogo[hoje_missoes] = novo_plano
+                db["missoes_catalogo_por_dia"] = planos_catalogo
+                salvar_dados_usuario(user_atual, db)
+                st.toast("Cinco missões matinais foram adicionadas.", icon="☀️")
+                st.rerun()
+
+        if plano_hoje:
+            st.markdown("#### Plano de hoje")
+            estado_dia_catalogo = historico_missoes.get(hoje_missoes, {})
+            if not isinstance(estado_dia_catalogo, dict):
+                estado_dia_catalogo = {}
+            for missao_id in plano_hoje:
+                missao = QG_MISSOES_POR_ID[missao_id]
+                tarefa_id = f"catalogo_{missao_id}"
+                widget_key = f"missao_{user_atual}_{hoje_missoes}_{tarefa_id}"
+                if widget_key not in st.session_state:
+                    st.session_state[widget_key] = bool(estado_dia_catalogo.get(tarefa_id, False))
+                check_col, meta_col, remove_col = st.columns([7, 2, 1])
+                check_col.checkbox(
+                    f"{missao['periodo']} · {missao['titulo']}",
+                    key=widget_key,
+                    on_change=_salvar_check_missao,
+                    args=(user_atual, hoje_missoes, tarefa_id, widget_key),
+                )
+                meta_col.caption(f"{missao['minutos']} min · {missao['pontos']} pts")
+                if remove_col.button("✕", key=f"remover_{user_atual}_{hoje_missoes}_{missao_id}", help="Remover do plano de hoje"):
+                    planos_catalogo[hoje_missoes] = [item for item in plano_hoje if item != missao_id]
+                    db["missoes_catalogo_por_dia"] = planos_catalogo
+                    salvar_dados_usuario(user_atual, db)
+                    st.rerun()
+            concluidas_plano = sum(
+                bool(st.session_state.get(f"missao_{user_atual}_{hoje_missoes}_catalogo_{missao_id}", False))
+                for missao_id in plano_hoje
+            )
+            st.progress(concluidas_plano / len(plano_hoje), text=f"{concluidas_plano} de {len(plano_hoje)} missões concluídas")
+        else:
+            st.info("Escolha missões do catálogo ou use o botão de manhã para montar seu primeiro plano.")
+
+    with aba_ranking_missoes:
+        st.caption("Ranking pessoal das missões por conclusões registradas; os pontos valorizam tarefas de diferentes durações. Não compara contas de outros usuários.")
+        linhas_ranking_missoes = []
+        for missao in QG_MISSOES:
+            linhas_ranking_missoes.append({
+                "Código": missao["id"], "Missão": missao["titulo"], "Categoria": missao["categoria"],
+                "Período": missao["periodo"], "Duração": f"{missao['minutos']} min",
+                "Pontos": missao["pontos"], "Vezes concluída": conclusoes_por_missao[missao["id"]],
+            })
+        linhas_ranking_missoes.sort(key=lambda linha: (-linha["Vezes concluída"], -linha["Pontos"], linha["Missão"]))
+        for indice, linha in enumerate(linhas_ranking_missoes, start=1):
+            linha["Posição"] = indice
+        ranking_df = pd.DataFrame(linhas_ranking_missoes)
+        if not ranking_df.empty and ranking_df["Vezes concluída"].sum() > 0:
+            top_missoes_df = ranking_df.head(10).sort_values("Vezes concluída", ascending=True)
+            fig_missoes = px.bar(
+                top_missoes_df, x="Vezes concluída", y="Missão", orientation="h",
+                color="Pontos", title="Suas 10 missões mais concluídas", template="qg_enterprise",
+            )
+            fig_missoes.update_layout(height=430, margin=dict(t=55, b=30, l=10, r=20), showlegend=False)
+            st.plotly_chart(fig_missoes, use_container_width=True)
+        st.dataframe(ranking_df, use_container_width=True, hide_index=True, height=520)
+        st.download_button(
+            "📥 Baixar meu ranking em CSV",
+            data=ranking_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"ranking_missoes_qg_{hoje_missoes}.csv",
+            mime="text/csv",
+        )
