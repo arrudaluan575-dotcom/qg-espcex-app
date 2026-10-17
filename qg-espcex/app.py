@@ -2975,79 +2975,106 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
     import datetime
 
     # ==============================================================================
-    # 1. FRONTEND: CSS ENTERPRISE 3D (COM ANIMAÇÃO DE ENTRADA CINEMATOGRÁFICA)
+    # MOTOR DE RENDERIZAÇÃO: VELOCÍMETRO TÁTICO (GAUGE CHART UNIFICADO)
+    # ==============================================================================
+    def criar_velocimetro(valor, max_valor, titulo, cor_barra, limiar=None):
+        fig = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=valor,
+            title={'text': titulo, 'font': {'color': '#a1aabf', 'size': 16, 'family': 'sans-serif'}},
+            number={'font': {'size': 45, 'color': cor_barra, 'family': 'Courier New'}},
+            gauge={
+                'shape': "angular",
+                'axis': {'range': [0, max_valor], 'tickwidth': 1, 'tickcolor': "#4b5563"},
+                'bar': {'color': cor_barra, 'thickness': 0.35},
+                'bgcolor': "#0d1117",
+                'borderwidth': 0,
+                'steps': [
+                    {'range': [0, max_valor*0.5], 'color': '#111827'}, 
+                    {'range': [max_valor*0.5, max_valor], 'color': '#1f2937'}
+                ]
+            }
+        ))
+        if limiar:
+            fig.data[0].gauge.threshold = {'line': {'color': "#ffffff", 'width': 3}, 'thickness': 0.75, 'value': limiar}
+        
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", 
+            height=280, margin=dict(l=20, r=20, t=50, b=20)
+        )
+        return fig
+
+    # ==============================================================================
+    # 1. FRONTEND: CSS ENTERPRISE 3D + SPOTIFY ULTRA PREMIUM
     # ==============================================================================
     st.markdown("""
         <style>
         .main { background-color: #0d1117; } 
-        
-        /* --- ANIMAÇÃO DE ENTRADA SUAVE --- */
-        @keyframes smoothAppear {
-            0% { opacity: 0; transform: translateY(50px) scale(0.98); }
-            100% { opacity: 1; transform: translateY(0) scale(1); }
-        }
-
-        /* --- HERO BANNER 3D --- */
-        .hero-banner-3d { 
-            perspective: 1500px; margin-bottom: 40px; 
-            animation: smoothAppear 1.2s cubic-bezier(0.23, 1, 0.32, 1) forwards; /* Animação aplicada aqui */
-        }
-        .hero-content {
-            background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(5, 8, 15, 0.98) 100%);
-            border: 1px solid rgba(0, 242, 254, 0.2); border-top: 3px solid #00f2fe; border-bottom: 3px solid #00f2fe; border-radius: 20px; padding: 40px 30px; text-align: center;
-            transform-style: preserve-3d; transform: rotateX(4deg); box-shadow: 0 30px 60px rgba(0,0,0,0.8), inset 0 0 40px rgba(0, 242, 254, 0.05); transition: all 0.6s cubic-bezier(0.23, 1, 0.32, 1);
-        }
+        @keyframes smoothAppear { 0% { opacity: 0; transform: translateY(50px) scale(0.98); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
+        .hero-banner-3d { perspective: 1500px; margin-bottom: 40px; animation: smoothAppear 1.2s cubic-bezier(0.23, 1, 0.32, 1) forwards; }
+        .hero-content { background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(5, 8, 15, 0.98) 100%); border: 1px solid rgba(0, 242, 254, 0.2); border-top: 3px solid #00f2fe; border-bottom: 3px solid #00f2fe; border-radius: 20px; padding: 40px 30px; text-align: center; transform-style: preserve-3d; transform: rotateX(4deg); box-shadow: 0 30px 60px rgba(0,0,0,0.8), inset 0 0 40px rgba(0, 242, 254, 0.05); transition: all 0.6s cubic-bezier(0.23, 1, 0.32, 1); }
         .hero-content:hover { transform: rotateX(0deg) translateZ(40px); box-shadow: 0 40px 80px rgba(0,242,254,0.15), inset 0 0 60px rgba(0, 242, 254, 0.1); border-color: #00ff88; }
-        
-        /* --- INTEGRAÇÃO GOOGLE --- */
         .hero-google-badge { display: inline-block; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); padding: 8px 20px; border-radius: 30px; font-size: 0.85rem; color: #ffffff; text-shadow: 1px 1px 2px #000; transform: translateZ(50px); margin-bottom: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.5); }
         .hero-google-badge span { background: linear-gradient(90deg, #4285F4, #EA4335, #FBBC05, #34A853); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-weight: 900; letter-spacing: 1px; }
-        
-        /* --- TEXTOS 3D NÍTIDOS --- */
-        .hero-title { 
-            color: #ffffff; font-size: 3.8rem; font-weight: 900; letter-spacing: 6px; margin: 0 0 5px 0; transform: translateZ(90px); line-height: 1.1;
-            text-shadow: 1px 1px 0 #005c7a, 2px 2px 0 #004d66, 3px 3px 0 #003d52, 4px 4px 0 #002e3d, 5px 5px 0 #001f29, 6px 6px 15px rgba(0, 242, 254, 0.5); 
-        }
+        .hero-title { color: #ffffff; font-size: 3.8rem; font-weight: 900; letter-spacing: 6px; margin: 0 0 5px 0; transform: translateZ(90px); line-height: 1.1; text-shadow: 1px 1px 0 #005c7a, 2px 2px 0 #004d66, 3px 3px 0 #003d52, 4px 4px 0 #002e3d, 5px 5px 0 #001f29, 6px 6px 15px rgba(0, 242, 254, 0.5); }
         .hero-subtitle { color: #00f2fe; font-size: 1.1rem; font-weight: 900; letter-spacing: 3px; text-transform: uppercase; margin-bottom: 25px; transform: translateZ(60px); text-shadow: 1px 1px 0 #004d66, 2px 2px 0 #002e3d; }
         .hero-status { font-family: 'Courier New', monospace; color: #fff; font-size: 1rem; font-weight: bold; background: #000; display: inline-block; padding: 8px 25px; border-radius: 20px; border: 1px solid #333; transform: translateZ(50px); box-shadow: 2px 2px 0 #222; }
-        
-        /* --- DICIONÁRIO DE ITENS --- */
         .hero-meanings { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; margin-top: 35px; transform: translateZ(30px); }
         .meaning-item { background: rgba(255, 255, 255, 0.04); border-left: 3px solid #3a3f4e; padding: 15px; font-size: 0.9rem; color: #e2e8f0; text-shadow: 1px 1px 2px #000; text-align: left; border-radius: 6px; transition: all 0.3s; }
         .meaning-item b { color: #00f2fe; font-weight: 900; letter-spacing: 1.5px; font-size: 1rem; display: block; margin-bottom: 5px; text-shadow: 1px 1px 0 #004d66, 2px 2px 0 #002e3d;}
         .meaning-item:hover { background: rgba(0, 242, 254, 0.1); border-left-color: #00f2fe; transform: translateX(10px) translateZ(10px); color: #fff; }
-        
-        /* --- CARDS 3D E BARRAS (COM ANIMAÇÃO DE ENTRADA) --- */
-        .grid-3d-container { 
-            display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; perspective: 1200px; margin-bottom: 20px; 
-            animation: smoothAppear 1s cubic-bezier(0.23, 1, 0.32, 1) forwards; /* Animação aplicada às grelhas */
-        }
-        .taf-card-3d { background: linear-gradient(135deg, rgba(26, 29, 36, 0.9), rgba(15, 18, 23, 0.9)); border: 1px solid #2c313c; border-top: 2px solid #3a3f4e; border-radius: 16px; padding: 25px; transform-style: preserve-3d; transition: all 0.5s cubic-bezier(0.23, 1, 0.32, 1); box-shadow: 0 10px 30px rgba(0,0,0,0.6); }
-        .taf-card-3d:hover { transform: rotateX(8deg) rotateY(-8deg) translateZ(20px); border-color: #00f2fe; box-shadow: -15px 20px 30px rgba(0, 242, 254, 0.2), inset 0 0 15px rgba(0, 242, 254, 0.1); }
-        .taf-card-3d.highlight:hover { border-color: #00ff88; box-shadow: -15px 20px 30px rgba(0, 255, 136, 0.2), inset 0 0 15px rgba(0, 255, 136, 0.1); }
-        
-        .taf-label { font-size: 0.85rem; color: #ffffff; font-weight: 900; letter-spacing: 2px; margin-bottom: 12px; transform: translateZ(30px); text-shadow: 1px 1px 2px #000; }
-        .taf-value { font-size: 3rem; font-weight: 900; color: #00ff88; font-family: 'Courier New', Courier, monospace; margin: 0; line-height: 1; transform: translateZ(50px); text-shadow: 1px 1px 0 #006633, 2px 2px 0 #004d26, 3px 3px 0 #00331a, 4px 4px 10px rgba(0, 255, 136, 0.4); }
-        .taf-value.cyan { color: #00f2fe; text-shadow: 1px 1px 0 #006680, 2px 2px 0 #004d66, 3px 3px 0 #00334d, 4px 4px 10px rgba(0, 242, 254, 0.4); }
-        .taf-value.gold { color: #FFD700; text-shadow: 1px 1px 0 #998000, 2px 2px 0 #665500, 3px 3px 0 #332b00, 4px 4px 10px rgba(255, 215, 0, 0.4); }
-        .taf-value.red { color: #ff4b4b; text-shadow: 1px 1px 0 #802626, 2px 2px 0 #4d1717, 3px 3px 0 #330f0f, 4px 4px 10px rgba(255, 75, 75, 0.4); }
-
-        .progress-container { width: 100%; background-color: #111; border-radius: 8px; margin-top: 15px; border: 1px solid #333; transform: translateZ(20px); box-shadow: 0 5px 10px rgba(0,0,0,0.8); }
-        .progress-bar { height: 8px; border-radius: 8px; background: linear-gradient(90deg, #004d7a, #00f2fe); transition: width 1.5s cubic-bezier(0.23, 1, 0.32, 1); }
-        .progress-bar.green { background: linear-gradient(90deg, #006633, #00ff88); }
-        .progress-bar.gold { background: linear-gradient(90deg, #b8860b, #FFD700); }
-        .progress-bar.red { background: linear-gradient(90deg, #8b0000, #ff4b4b); }
         div[data-baseweb="tab-list"] { border-bottom: none; gap: 10px; flex-wrap: wrap; justify-content: center; margin-bottom: 20px; }
         div[data-baseweb="tab"] { background: #15181e; color: #a1aabf; font-weight: 900; font-size: 1rem; padding: 12px 25px; border-radius: 8px; border: 1px solid #222; transition: all 0.3s; }
         div[aria-selected="true"] { background: linear-gradient(180deg, rgba(0, 242, 254, 0.15), transparent) !important; color: #fff !important; border: 1px solid #00f2fe !important; box-shadow: 0 0 20px rgba(0,242,254,0.3) !important; text-shadow: 1px 1px 2px #000; }
+        
+        /* --- ESTILOS DO SPOTIFY ULTRA PREMIUM --- */
+        .spotify-ultra-container {
+            position: relative;
+            background: linear-gradient(135deg, rgba(29, 185, 84, 0.1) 0%, rgba(5, 8, 15, 0.95) 100%);
+            border: 1px solid rgba(29, 185, 84, 0.3);
+            border-top: 3px solid #1DB954;
+            border-radius: 24px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.9), inset 0 0 80px rgba(29, 185, 84, 0.05);
+            text-align: center;
+            overflow: hidden;
+            animation: smoothAppear 1s cubic-bezier(0.23, 1, 0.32, 1) forwards;
+        }
+        .spotify-ultra-container::before {
+            content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%;
+            background: radial-gradient(circle, rgba(29, 185, 84, 0.15) 0%, transparent 50%);
+            animation: rotateGlow 12s linear infinite; z-index: 0; pointer-events: none;
+        }
+        @keyframes rotateGlow { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .spotify-ultra-content { position: relative; z-index: 1; }
+        
+        .spotify-title {
+            color: #fff; font-size: 2.8rem; font-weight: 900; letter-spacing: 4px; margin: 0 0 15px 0;
+            text-shadow: 0 0 20px rgba(29, 185, 84, 0.6), 2px 2px 0px #000;
+            display: flex; justify-content: center; align-items: center; gap: 15px;
+        }
+        .spotify-title span { color: #1DB954; }
+        .spotify-desc { color: #b3b3b3; font-size: 1.1rem; margin-bottom: 35px; font-weight: 800; letter-spacing: 1px; }
+        
+        .eq-container { display: flex; align-items: flex-end; justify-content: center; height: 35px; gap: 4px; margin-bottom: 25px; }
+        .eq-bar { width: 6px; background: #1DB954; border-radius: 4px; animation: equalize 1s ease-in-out infinite alternate; box-shadow: 0 0 10px #1DB954; }
+        .eq-bar:nth-child(1) { height: 15px; animation-delay: 0.1s; }
+        .eq-bar:nth-child(2) { height: 30px; animation-delay: 0.3s; }
+        .eq-bar:nth-child(3) { height: 20px; animation-delay: 0.0s; }
+        .eq-bar:nth-child(4) { height: 35px; animation-delay: 0.4s; }
+        .eq-bar:nth-child(5) { height: 10px; animation-delay: 0.2s; }
+        @keyframes equalize { 0% { height: 8px; } 100% { height: 35px; } }
+        
+        .spotify-iframe-wrapper {
+            border-radius: 20px; overflow: hidden; border: 2px solid rgba(29, 185, 84, 0.4);
+            box-shadow: 0 15px 50px rgba(0,0,0,0.9), 0 0 40px rgba(29, 185, 84, 0.2); background: #000;
+            transition: all 0.4s; position: relative; z-index: 2;
+        }
+        .spotify-iframe-wrapper:hover { transform: scale(1.01) translateZ(20px); border-color: #1DB954; box-shadow: 0 20px 60px rgba(0,0,0,0.9), 0 0 60px rgba(29, 185, 84, 0.4); }
         </style>
     """, unsafe_allow_html=True)
 
-    # ==============================================================================
-    # 2. CABEÇALHO 3D (SEM LINHAS EM BRANCO NO HTML)
-    # ==============================================================================
     agora = datetime.datetime.now().strftime("%H:%M:%S")
-    
     st.markdown(f"""
         <div class="hero-banner-3d">
             <div class="hero-content">
@@ -3064,12 +3091,13 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
                     <div class="meaning-item"><b>🫀 ZONAS VAM</b> Cálculo avançado de limiar anaeróbico e consumo máximo de oxigênio (VO2 Máx).</div>
                     <div class="meaning-item"><b>🎒 MARCHA TÁTICA</b> Simulação topográfica e desgaste metabólico de progressão com mochila na selva.</div>
                     <div class="meaning-item"><b>🛡️ CLEARANCE ESPCEX</b> Sistema gamificado de Níveis de Acesso Tático e matriz de prontidão global.</div>
+                    <div class="meaning-item"><b>🎵 ÁUDIO TFM</b> Player nativo Spotify integrado na interface de inteligência.</div>
                 </div>
             </div>
         </div>
     """, unsafe_allow_html=True)
 
-    tabs = st.tabs(["⛰️ Biometria Ocupacional", "🏃 Pacer", "💪 Tração", "🏋️ Mecânica", "🏊 Natação", "⚡ Zonas VAM", "🎒 Marcha Tática", "🛡️ Clearance EsPCEx"])
+    tabs = st.tabs(["⛰️ Ocupacional", "🏃 Pacer", "💪 Tração", "🏋️ Mecânica", "🏊 Natação", "⚡ VAM", "🎒 Marcha", "🛡️ Clearance", "🎵 Áudio TFM"])
 
     # ==============================================================================
     # ABA 1: BIOMETRIA OCUPACIONAL
@@ -3082,30 +3110,14 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
             fator_esforco = 1.0 + (inclinacao_terreno / 100)
             bateria_drenada = min((horas_roca / 10.0) * fator_esforco * 100, 95)
             bateria_residual = 100 - bateria_drenada
-            
-            recomendacao_treino = "TREINO NORMAL"
-            cor_bateria_texto = "green"
-            cor_bateria_barra = "green"
-            if bateria_residual < 40:
-                recomendacao_treino = "RECUPERAÇÃO ATIVA"
-                cor_bateria_texto = "cyan"
-                cor_bateria_barra = ""
-            if bateria_residual < 15:
-                recomendacao_treino = "REPOUSO OBRIGATÓRIO"
-                cor_bateria_texto = "red"
-                cor_bateria_barra = "red"
-
+            cor_velocimetro = "#00ff88"
+            if bateria_residual < 40: cor_velocimetro = "#00f2fe"
+            if bateria_residual < 15: cor_velocimetro = "#ff2b6d"
         with col_o2:
-            st.markdown(f"""
-                <div class="grid-3d-container">
-                    <div class="taf-card-3d"><div class="taf-label">🔋 BATERIA RESIDUAL DO OPERADOR</div><div class="taf-value {cor_bateria_texto}">{int(bateria_residual)}%</div><div class="progress-container"><div class="progress-bar {cor_bateria_barra}" style="width: {bateria_residual}%;"></div></div></div>
-                    <div class="taf-card-3d highlight"><div class="taf-label">🧠 DIRETRIZ SISTÊMICA</div><div class="taf-value" style="font-size: 2rem; padding-top:10px;">{recomendacao_treino}</div></div>
-                </div>
-            """, unsafe_allow_html=True)
+            st.plotly_chart(criar_velocimetro(bateria_residual, 100, "🔋 BATERIA RESIDUAL (%)", cor_velocimetro), use_container_width=True)
+            
         st.markdown("---")
-        x_m = np.linspace(-5, 5, 40)
-        y_m = np.linspace(-5, 5, 40)
-        X_m, Y_m = np.meshgrid(x_m, y_m)
+        x_m = np.linspace(-5, 5, 40); y_m = np.linspace(-5, 5, 40); X_m, Y_m = np.meshgrid(x_m, y_m)
         Z_m = np.exp(-(X_m**2 + Y_m**2)/10) * (inclinacao_terreno * 2) + np.random.normal(0, 0.5, X_m.shape)
         fig_b = go.Figure(data=[go.Surface(z=Z_m, x=X_m, y=Y_m, colorscale='Viridis', opacity=0.95, lighting=dict(roughness=0.9))])
         fig_b.update_layout(scene=dict(xaxis_title='Vetor X', yaxis_title='Vetor Y', zaxis_title='Altímetro (m)', xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), camera=dict(eye=dict(x=1.8, y=-1.8, z=0.5))), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=500)
@@ -3120,19 +3132,11 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
             distancia_meta = st.number_input("Meta de Distância (m)", 1000, 4000, 2450, 50, key="c1")
             tamanho_pista = st.number_input("Tamanho da Pista (m)", 100, 1000, 400, 50, key="c2")
             vel_media_kmh = (distancia_meta / 1000) / (12.0 / 60)
-            tempo_por_volta_seg = (12.0 * 60) / (distancia_meta / tamanho_pista)
-
         with col2:
-            st.markdown(f"""
-                <div class="grid-3d-container">
-                    <div class="taf-card-3d"><div class="taf-label">🔥 VEL. MÉDIA (KM/H)</div><div class="taf-value cyan">{vel_media_kmh:.2f}</div></div>
-                    <div class="taf-card-3d highlight"><div class="taf-label">⏱️ TEMPO / VOLTA</div><div class="taf-value">{int(tempo_por_volta_seg//60)}<span style="font-size:1.5rem;">m</span> {int(tempo_por_volta_seg%60)}<span style="font-size:1.5rem;">s</span></div></div>
-                </div>
-            """, unsafe_allow_html=True)
+            st.plotly_chart(criar_velocimetro(vel_media_kmh, 22, "🔥 VELOCIDADE MÉDIA (KM/H)", "#00f2fe", 12.25), use_container_width=True)
+            
         st.markdown("---")
-        sx = np.arange(1, 9)
-        dy = min(2000, distancia_meta - 450) + (((distancia_meta + 100 - min(2000, distancia_meta - 450)) / 7) * (sx - 1))
-        vz = (dy / 1000) / (12 / 60)
+        sx = np.arange(1, 9); dy = min(2000, distancia_meta - 450) + (((distancia_meta + 100 - min(2000, distancia_meta - 450)) / 7) * (sx - 1)); vz = (dy / 1000) / (12 / 60)
         fig_p = go.Figure(data=[go.Scatter3d(x=sx, y=dy, z=vz, mode='lines+markers', marker=dict(size=12, color=vz, colorscale='Teal', opacity=1.0, line=dict(color='white', width=2)), line=dict(color='rgba(0, 242, 254, 0.8)', width=8))])
         fig_p.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), camera=dict(eye=dict(x=1.8, y=-1.8, z=0.5))), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=500)
         st.plotly_chart(fig_p, use_container_width=True, theme=None)
@@ -3142,154 +3146,168 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
     # ==============================================================================
     with tabs[2]:
         col_f1, col_f2 = st.columns(2)
-        with col_f1: barras = st.number_input("Barras Máximas Realizadas", 0, 30, 8)
-        with col_f2: abdominais = st.number_input("Abdominais (1 min)", 0, 100, 45)
+        with col_f1: 
+            barras = st.number_input("Barras Máximas Realizadas", 0, 30, 8)
+            st.plotly_chart(criar_velocimetro(barras, 20, "💪 BARRAS (REPS)", "#00ff88", 3), use_container_width=True)
+        with col_f2: 
+            abdominais = st.number_input("Abdominais (1 min)", 0, 100, 45)
+            st.plotly_chart(criar_velocimetro(abdominais, 80, "🛡️ ABDOMINAIS (REPS)", "#00f2fe", 30), use_container_width=True)
 
-        st.markdown(f"""
-            <div class="grid-3d-container">
-                <div class="taf-card-3d {'highlight' if barras >= 3 else ''}"><div class="taf-label">💪 STATUS BARRA</div><div class="taf-value cyan">{barras}<span style="font-size:1.5rem; color:#888;">/3</span></div></div>
-                <div class="taf-card-3d {'highlight' if abdominais >= 30 else ''}"><div class="taf-label">🛡️ STATUS ABDOMINAL</div><div class="taf-value highlight">{abdominais}<span style="font-size:1.5rem; color:#888;">/30</span></div></div>
-            </div>
-        """, unsafe_allow_html=True)
         st.markdown("---")
-        xf, yf = np.meshgrid(np.linspace(1, 6, 20), np.linspace(1, 8, 20))
-        zf = np.clip(15 + (xf ** 1.9) * 6 - (np.log(yf + 1) * 12), 0, 100)
+        xf, yf = np.meshgrid(np.linspace(1, 6, 20), np.linspace(1, 8, 20)); zf = np.clip(15 + (xf ** 1.9) * 6 - (np.log(yf + 1) * 12), 0, 100)
         fig_f = go.Figure(data=[go.Surface(z=zf, x=xf, y=yf, colorscale='Teal', opacity=1.0, lighting=dict(roughness=0.1, specular=1.5))])
-        fig_f.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117")), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=500)
+        fig_f.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117")), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=400)
         st.plotly_chart(fig_f, use_container_width=True, theme=None)
 
     # ==============================================================================
     # ABA 4: MECÂNICA
     # ==============================================================================
     with tabs[3]:
-        col_flex1, col_flex2 = st.columns(2)
-        with col_flex1: flexoes = st.number_input("Flexões de Braço Realizadas", 0, 80, 25)
-        with col_flex2: peso_flex = st.number_input("Seu Peso Corporal (kg)", 40.0, 120.0, 68.0)
-        carga_elevada = peso_flex * 0.64
-        tonelagem = (carga_elevada * flexoes) / 1000
+        col_flex1, col_flex2 = st.columns([1, 2.5])
+        with col_flex1: 
+            flexoes = st.number_input("Flexões de Braço Realizadas", 0, 80, 25)
+            peso_flex = st.number_input("Seu Peso Corporal (kg)", 40.0, 120.0, 68.0)
+            tonelagem = ((peso_flex * 0.64) * flexoes) / 1000
+        with col_flex2:
+            st.plotly_chart(criar_velocimetro(tonelagem, 5, "💥 TONELAGEM MOVIMENTADA (TONS)", "#ff2b6d"), use_container_width=True)
 
-        st.markdown(f"""
-            <div class="grid-3d-container">
-                <div class="taf-card-3d"><div class="taf-label">🏋️ CARGA POR REP. (64% BW)</div><div class="taf-value cyan">{carga_elevada:.1f}<span style="font-size:1.5rem; color:#888;">kg</span></div></div>
-                <div class="taf-card-3d highlight"><div class="taf-label">💥 VOLUME TOTAL</div><div class="taf-value">{tonelagem:.2f}<span style="font-size:1.5rem; color:#888;">ton</span></div></div>
-            </div>
-        """, unsafe_allow_html=True)
         st.markdown("---")
-        reps_x = np.arange(1, flexoes + 1) if flexoes > 0 else np.array([0])
-        cadencia_y = np.linspace(1, 1.5, len(reps_x)) 
-        esforco_z = reps_x * cadencia_y
+        reps_x = np.arange(1, flexoes + 1) if flexoes > 0 else np.array([0]); cadencia_y = np.linspace(1, 1.5, len(reps_x)); esforco_z = reps_x * cadencia_y
         fig_fl = go.Figure(data=[go.Scatter3d(x=reps_x, y=cadencia_y, z=esforco_z, mode='markers', marker=dict(size=10, color=esforco_z, colorscale='Electric', opacity=0.9, symbol='diamond'))])
-        fig_fl.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117")), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=500)
+        fig_fl.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117")), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=400)
         st.plotly_chart(fig_fl, use_container_width=True, theme=None)
 
     # ==============================================================================
     # ABA 5: NATAÇÃO
     # ==============================================================================
     with tabs[4]:
-        tempo_natacao = st.slider("Tempo em Natação 50m (Segundos)", 20, 120, 50)
-        st.markdown(f"""
-            <div class="grid-3d-container">
-                <div class="taf-card-3d"><div class="taf-label">⏱️ TEMPO ATUAL (50M)</div><div class="taf-value cyan">{tempo_natacao}<span style="font-size:1.5rem; color:#888;">s</span></div></div>
-                <div class="taf-card-3d {'highlight' if tempo_natacao <= 55 else ''}"><div class="taf-label">🌊 STATUS ESPCEX</div><div class="taf-value" style="font-size:2rem; padding-top:10px;">{"APTO" if tempo_natacao <= 55 else "DÉFICIT"}</div></div>
-            </div>
-        """, unsafe_allow_html=True)
+        col_n1, col_n2 = st.columns([1, 2.5])
+        with col_n1:
+            tempo_natacao = st.slider("Tempo em Natação 50m (Segundos)", 20, 120, 50)
+        with col_n2:
+            cor_natacao = "#00ff88" if tempo_natacao <= 55 else "#ff2b6d"
+            st.plotly_chart(criar_velocimetro(tempo_natacao, 120, "⏱️ TEMPO (SEGUNDOS)", cor_natacao, 55), use_container_width=True)
+
         st.markdown("---")
-        xn, yn = np.meshgrid(np.linspace(0, 10, 40), np.linspace(0, 10, 40))
-        zn = np.sin(xn + (tempo_natacao/10)) * np.cos(yn) * (tempo_natacao/15) 
+        xn, yn = np.meshgrid(np.linspace(0, 10, 40), np.linspace(0, 10, 40)); zn = np.sin(xn + (tempo_natacao/10)) * np.cos(yn) * (tempo_natacao/15) 
         fig_n = go.Figure(data=[go.Surface(z=zn, x=xn, y=yn, colorscale='Blues', opacity=0.9, lighting=dict(specular=2.0))])
-        fig_n.update_layout(scene=dict(xaxis=dict(showgrid=False, backgroundcolor="#0d1117"), yaxis=dict(showgrid=False, backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117")), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=500)
+        fig_n.update_layout(scene=dict(xaxis=dict(showgrid=False, backgroundcolor="#0d1117"), yaxis=dict(showgrid=False, backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117")), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=400)
         st.plotly_chart(fig_n, use_container_width=True, theme=None)
 
     # ==============================================================================
     # ABA 6: ZONAS VAM
     # ==============================================================================
     with tabs[5]:
-        vam = st.slider("Sua Velocidade Aeróbica Máxima (km/h)", 10.0, 22.0, 15.0, 0.5)
-        st.markdown(f"""<div class="taf-card-3d highlight" style="margin-top: 15px; text-align: center;"><div class="taf-label">🫀 LIMIAR ANAERÓBICO (85% VAM)</div><div class="taf-value cyan">{(vam * 0.85):.2f} <span style="font-size:1.5rem; color:#888;">km/h</span></div></div>""", unsafe_allow_html=True)
+        col_v1, col_v2 = st.columns([1, 2.5])
+        with col_v1:
+            vam = st.slider("Sua Velocidade Aeróbica Máxima (km/h)", 10.0, 22.0, 15.0, 0.5)
+            limiar = vam * 0.85
+        with col_v2:
+            st.plotly_chart(criar_velocimetro(limiar, 25, "🫀 LIMIAR ANAERÓBICO (KM/H)", "#ff2b6d", 15), use_container_width=True)
+
         st.markdown("---")
-        xv, yv = np.meshgrid(np.linspace(8, 20, 30), np.linspace(0, 15, 30))
-        zv = (0.2 * (xv * 16.6667)) + (0.9 * (xv * 16.6667) * (yv/100)) + 3.5
+        xv, yv = np.meshgrid(np.linspace(8, 20, 30), np.linspace(0, 15, 30)); zv = (0.2 * (xv * 16.6667)) + (0.9 * (xv * 16.6667) * (yv/100)) + 3.5
         fig_v = go.Figure(data=[go.Surface(z=zv, x=xv, y=yv, colorscale='Inferno', opacity=1.0)])
-        fig_v.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117")), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=500)
+        fig_v.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117")), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=400)
         st.plotly_chart(fig_v, use_container_width=True, theme=None)
 
     # ==============================================================================
     # ABA 7: MARCHA TÁTICA
     # ==============================================================================
     with tabs[6]:
-        col_m1, col_m2 = st.columns(2)
+        col_m1, col_m2 = st.columns([1, 2.5])
         with col_m1:
             dist_marcha = st.slider("Distância da Marcha (km)", 4.0, 20.0, 8.0, 0.5)
             carga_mochila = st.slider("Peso da Mochila (kg)", 5.0, 30.0, 15.0, 1.0)
+            carga_tatica = dist_marcha * carga_mochila
         with col_m2:
-            st.markdown(f"""<div class="grid-3d-container" style="grid-template-columns: 1fr;"><div class="taf-card-3d highlight"><div class="taf-label">🎒 CARGA TÁTICA PROJETADA DE FADIGA</div><div class="taf-value">{dist_marcha * carga_mochila:.0f} <span style="font-size:1.5rem; color:#888;">kg/km</span></div></div></div>""", unsafe_allow_html=True)
+            st.plotly_chart(criar_velocimetro(carga_tatica, 600, "🎒 CARGA TÁTICA (KG/KM)", "#FFD700"), use_container_width=True)
+            
         st.markdown("---")
-        xt, yt = np.meshgrid(np.linspace(0, dist_marcha, 40), np.linspace(-2, 2, 40))
-        zt = np.sin(xt * 1.5) * np.cos(yt * 2) * (carga_mochila / 10) + np.random.normal(0, 0.1, xt.shape)
+        xt, yt = np.meshgrid(np.linspace(0, dist_marcha, 40), np.linspace(-2, 2, 40)); zt = np.sin(xt * 1.5) * np.cos(yt * 2) * (carga_mochila / 10) + np.random.normal(0, 0.1, xt.shape)
         fig_m = go.Figure(data=[go.Surface(z=zt, x=xt, y=yt, colorscale='Earth', opacity=1.0, lighting=dict(roughness=0.8, specular=0.2))])
-        fig_m.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), camera=dict(eye=dict(x=1.5, y=-1.5, z=0.8))), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=500)
+        fig_m.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), camera=dict(eye=dict(x=1.5, y=-1.5, z=0.8))), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=400)
         st.plotly_chart(fig_m, use_container_width=True, theme=None)
 
     # ==============================================================================
     # ABA 8: SISTEMA DE CLEARANCE ESPCEX
     # ==============================================================================
     with tabs[7]:
-        col_t1, col_t2 = st.columns(2)
+        col_t1, col_t2 = st.columns([1, 2.5])
         with col_t1:
-            t_cor = st.slider("Corrida 12min (metros)", 1500, 3200, 2200, 50, key="t1")
-            t_bar = st.slider("Flexão na Barra (reps)", 0, 15, 2, key="t2")
-            t_nat = st.slider("Natação 50m (segundos)", 100, 20, 60, key="t3") 
-        with col_t2:
-            t_abd = st.slider("Abdominal Supra (reps)", 0, 60, 25, key="t4")
-            t_flx = st.slider("Flexão de Braços (reps)", 0, 40, 15, key="t5")
+            t_cor = st.slider("Corrida 12min (m)", 1500, 3200, 2200, 50, key="t1")
+            t_bar = st.slider("Barra (reps)", 0, 15, 2, key="t2")
+            t_nat = st.slider("Natação 50m (s)", 100, 20, 60, key="t3") 
+            t_abd = st.slider("Abdominal (reps)", 0, 60, 25, key="t4")
+            t_flx = st.slider("Flexões (reps)", 0, 40, 15, key="t5")
 
-        p_cor = min((t_cor / 2450) * 100, 100)
-        p_bar = min((t_bar / 3) * 100, 100)
-        p_nat = min((55 / t_nat) * 100, 100) 
-        p_abd = min((t_abd / 30) * 100, 100)
-        p_flx = min((t_flx / 21) * 100, 100)
+        p_cor = min((t_cor / 2450) * 100, 100); p_bar = min((t_bar / 3) * 100, 100); p_nat = min((55 / t_nat) * 100, 100); p_abd = min((t_abd / 30) * 100, 100); p_flx = min((t_flx / 21) * 100, 100)
         prontidao_global = (p_cor + p_bar + p_nat + p_abd + p_flx) / 5
-
-        clearance_nivel = "NÍVEL 1: CIVIL"
-        clearance_cor_css = "red"
-        clearance_cor_grafico = 'Reds'
-        cor_texto_valor = "red"
-
-        if prontidao_global >= 50:
-            clearance_nivel = "NÍVEL 2: CANDIDATO"
-            clearance_cor_css = "" 
-            clearance_cor_grafico = 'Blues'
-            cor_texto_valor = "cyan"
-        if prontidao_global >= 80:
-            clearance_nivel = "NÍVEL 3: CADETE"
-            clearance_cor_css = "green"
-            clearance_cor_grafico = 'aggrnyl'
-            cor_texto_valor = "" 
-        if prontidao_global >= 95:
-            clearance_nivel = "ACESSO MÁX: OP. SELVA"
-            clearance_cor_css = "gold"
-            clearance_cor_grafico = 'Wistia' 
-            cor_texto_valor = "gold"
-
-        st.markdown(f"""
-            <div class="grid-3d-container">
-                <div class="taf-card-3d"><div class="taf-label">🎯 ÍNDICE DE PRONTIDÃO</div><div class="taf-value {cor_texto_valor}">{int(prontidao_global)}%</div><div class="progress-container"><div class="progress-bar {clearance_cor_css}" style="width: {prontidao_global}%;"></div></div></div>
-                <div class="taf-card-3d highlight"><div class="taf-label">🛡️ CLEARANCE DE ACESSO TÁTICO</div><div class="taf-value {cor_texto_valor}" style="font-size: 1.8rem; padding-top: 10px;">{clearance_nivel}</div></div>
-            </div>
-        """, unsafe_allow_html=True)
+        clearance_cor_grafico = 'Reds'; cor_vel = "#ff4b4b"
+        if prontidao_global >= 50: clearance_cor_grafico = 'Blues'; cor_vel = "#00f2fe"
+        if prontidao_global >= 80: clearance_cor_grafico = 'aggrnyl'; cor_vel = "#00ff88"
+        if prontidao_global >= 95: clearance_cor_grafico = 'Wistia'; cor_vel = "#FFD700"
+        with col_t2:
+            st.plotly_chart(criar_velocimetro(prontidao_global, 100, "🎯 ÍNDICE DE PRONTIDÃO GLOBAL (%)", cor_vel, 80), use_container_width=True)
 
         st.markdown("---")
-        u = np.linspace(0, 2 * np.pi, 120) 
-        v = np.linspace(0, 2 * np.pi, 60)  
-        U, V = np.meshgrid(u, v)
-        X_t = (4 + 1 * np.cos(V)) * np.cos(U)
-        Y_t = (4 + 1 * np.cos(V)) * np.sin(U)
-        Z_t = 1 * np.sin(V)
+        u = np.linspace(0, 2 * np.pi, 120); v = np.linspace(0, 2 * np.pi, 60); U, V = np.meshgrid(u, v)
+        X_t = (4 + 1 * np.cos(V)) * np.cos(U); Y_t = (4 + 1 * np.cos(V)) * np.sin(U); Z_t = 1 * np.sin(V)
         Matriz_Cores = np.where(U <= ((prontidao_global/100) * 2 * np.pi), 1, 0)
-
         fig_d = go.Figure(data=[go.Surface(x=X_t, y=Y_t, z=Z_t, surfacecolor=Matriz_Cores, colorscale=clearance_cor_grafico, cmin=0, cmax=1, showscale=False, opacity=1.0, lighting=dict(ambient=0.5, diffuse=0.8, specular=1.5, roughness=0.1), contours=dict(x=dict(show=False), y=dict(show=False), z=dict(show=False)))])
-        fig_d.update_layout(scene=dict(xaxis=dict(showgrid=False, showticklabels=False, backgroundcolor="#0d1117", title=""), yaxis=dict(showgrid=False, showticklabels=False, backgroundcolor="#0d1117", title=""), zaxis=dict(showgrid=False, showticklabels=False, backgroundcolor="#0d1117", title=""), camera=dict(eye=dict(x=0, y=-1.5, z=1.8))), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=550)
+        fig_d.update_layout(scene=dict(xaxis=dict(showgrid=False, showticklabels=False, backgroundcolor="#0d1117", title=""), yaxis=dict(showgrid=False, showticklabels=False, backgroundcolor="#0d1117", title=""), zaxis=dict(showgrid=False, showticklabels=False, backgroundcolor="#0d1117", title=""), camera=dict(eye=dict(x=0, y=-1.5, z=1.8))), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=450)
         st.plotly_chart(fig_d, use_container_width=True, theme=None)
+
+   # ==============================================================================
+    # ABA 9: ÁUDIO TFM (SPOTIFY NATIVO ISOLADO)
+    # ==============================================================================
+    with tabs[8]:
+        import streamlit.components.v1 as components
+        
+        codigo_spotify = """
+        <style>
+        body { 
+            background-color: transparent; 
+            margin: 0; 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+        }
+        .spotify-ultra-container {
+            background: linear-gradient(135deg, rgba(29, 185, 84, 0.1) 0%, rgba(5, 8, 15, 0.95) 100%);
+            border: 1px solid rgba(29, 185, 84, 0.3);
+            border-top: 3px solid #1DB954;
+            border-radius: 24px;
+            padding: 30px;
+            text-align: center;
+        }
+        .spotify-title { 
+            color: #fff; 
+            font-size: 2.2rem; 
+            font-weight: 900; 
+            margin: 0 0 10px 0; 
+            text-shadow: 0 0 20px rgba(29, 185, 84, 0.6); 
+        }
+        .spotify-title span { color: #1DB954; }
+        .spotify-desc { color: #b3b3b3; font-size: 1rem; margin-bottom: 25px; }
+        .spotify-iframe-wrapper { 
+            border-radius: 20px; 
+            overflow: hidden; 
+            border: 2px solid rgba(29, 185, 84, 0.4); 
+            box-shadow: 0 15px 50px rgba(0,0,0,0.9); 
+        }
+        </style>
+
+        <div class="spotify-ultra-container">
+            <h2 class="spotify-title"><span>🎧</span> SPOTIFY TÁTICO</h2>
+            <p class="spotify-desc">Sincronização Ativa. Faça o login direto no terminal abaixo para aceder à sua biblioteca sem sair do sistema.</p>
+            <div class="spotify-iframe-wrapper">
+                <iframe src="https://open.spotify.com/embed/playlist/37i9dQZF1DX76Wlfdnj7bg?utm_source=generator&theme=0" width="100%" height="700" frameBorder="0" allowfullscreen="" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="lazy"></iframe>
+            </div>
+        </div>
+        """
+        
+        # Carrega o HTML de forma isolada e segura, prevenindo o erro do React
+        components.html(codigo_spotify, height=900, scrolling=False)
+   
 # ====================================================
 # MÓDULO 14: NUTRIÇÃO & CALORIAS
 # ====================================================
