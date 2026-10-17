@@ -2967,321 +2967,329 @@ elif menu == "🎲 Sorteador de Temas & Textos Base":
 # ====================================================
 # MÓDULO 13: PACER TAF
 # ====================================================
-# =============================================================================
-# 1. IMPORTAÇÃO DE BIBLIOTECAS (Motor do Aplicativo)
-# =============================================================================
-elif menu == "🏃 PACER TAF":
+elif menu == "🏃 Módulo 13: Pacer TAF":
+    
     import pandas as pd
     import numpy as np
-    import plotly.express as px
     import plotly.graph_objects as go
-    import streamlit.components.v1 as components
+    import datetime
 
-
-
-    # =============================================================================
-    # 3. INJEÇÃO DE HTML, CSS E JAVASCRIPT DE ALTO PADRÃO (PREMIUM)
-    # =============================================================================
+    # ==============================================================================
+    # 1. FRONTEND: CSS ENTERPRISE 3D (COM ANIMAÇÃO DE ENTRADA CINEMATOGRÁFICA)
+    # ==============================================================================
     st.markdown("""
         <style>
-        /* Importação de fontes futuristas e táticas */
-        @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&family=Inter:wght@400;600&display=swap');
-
-        /* Fundo Master da Aplicação com Padrão Tático */
-        .stApp {
-            background-color: #05090c;
-            background-image: radial-gradient(rgba(0, 255, 204, 0.08) 1px, transparent 1px);
-            background-size: 30px 30px;
-            font-family: 'Inter', sans-serif;
-            color: #ffffff;
+        .main { background-color: #0d1117; } 
+        
+        /* --- ANIMAÇÃO DE ENTRADA SUAVE --- */
+        @keyframes smoothAppear {
+            0% { opacity: 0; transform: translateY(50px) scale(0.98); }
+            100% { opacity: 1; transform: translateY(0) scale(1); }
         }
 
-        /* Cards de Métricas Premium (Glassmorphism + Neon Pulsante) */
-        div[data-testid="stMetric"] {
-            background: linear-gradient(145deg, rgba(10, 20, 25, 0.8) 0%, rgba(0, 0, 0, 0.5) 100%);
-            backdrop-filter: blur(25px);
-            -webkit-backdrop-filter: blur(25px);
-            border: 1px solid rgba(0, 255, 204, 0.15);
-            border-top: 1px solid rgba(0, 255, 204, 0.4);
-            border-radius: 18px;
-            padding: 25px;
-            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.6), inset 0 0 20px rgba(0, 255, 204, 0.05);
-            transition: all 0.5s cubic-bezier(0.25, 0.8, 0.25, 1);
+        /* --- HERO BANNER 3D --- */
+        .hero-banner-3d { 
+            perspective: 1500px; margin-bottom: 40px; 
+            animation: smoothAppear 1.2s cubic-bezier(0.23, 1, 0.32, 1) forwards; /* Animação aplicada aqui */
         }
+        .hero-content {
+            background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(5, 8, 15, 0.98) 100%);
+            border: 1px solid rgba(0, 242, 254, 0.2); border-top: 3px solid #00f2fe; border-bottom: 3px solid #00f2fe; border-radius: 20px; padding: 40px 30px; text-align: center;
+            transform-style: preserve-3d; transform: rotateX(4deg); box-shadow: 0 30px 60px rgba(0,0,0,0.8), inset 0 0 40px rgba(0, 242, 254, 0.05); transition: all 0.6s cubic-bezier(0.23, 1, 0.32, 1);
+        }
+        .hero-content:hover { transform: rotateX(0deg) translateZ(40px); box-shadow: 0 40px 80px rgba(0,242,254,0.15), inset 0 0 60px rgba(0, 242, 254, 0.1); border-color: #00ff88; }
+        
+        /* --- INTEGRAÇÃO GOOGLE --- */
+        .hero-google-badge { display: inline-block; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); padding: 8px 20px; border-radius: 30px; font-size: 0.85rem; color: #ffffff; text-shadow: 1px 1px 2px #000; transform: translateZ(50px); margin-bottom: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.5); }
+        .hero-google-badge span { background: linear-gradient(90deg, #4285F4, #EA4335, #FBBC05, #34A853); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-weight: 900; letter-spacing: 1px; }
+        
+        /* --- TEXTOS 3D NÍTIDOS --- */
+        .hero-title { 
+            color: #ffffff; font-size: 3.8rem; font-weight: 900; letter-spacing: 6px; margin: 0 0 5px 0; transform: translateZ(90px); line-height: 1.1;
+            text-shadow: 1px 1px 0 #005c7a, 2px 2px 0 #004d66, 3px 3px 0 #003d52, 4px 4px 0 #002e3d, 5px 5px 0 #001f29, 6px 6px 15px rgba(0, 242, 254, 0.5); 
+        }
+        .hero-subtitle { color: #00f2fe; font-size: 1.1rem; font-weight: 900; letter-spacing: 3px; text-transform: uppercase; margin-bottom: 25px; transform: translateZ(60px); text-shadow: 1px 1px 0 #004d66, 2px 2px 0 #002e3d; }
+        .hero-status { font-family: 'Courier New', monospace; color: #fff; font-size: 1rem; font-weight: bold; background: #000; display: inline-block; padding: 8px 25px; border-radius: 20px; border: 1px solid #333; transform: translateZ(50px); box-shadow: 2px 2px 0 #222; }
+        
+        /* --- DICIONÁRIO DE ITENS --- */
+        .hero-meanings { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; margin-top: 35px; transform: translateZ(30px); }
+        .meaning-item { background: rgba(255, 255, 255, 0.04); border-left: 3px solid #3a3f4e; padding: 15px; font-size: 0.9rem; color: #e2e8f0; text-shadow: 1px 1px 2px #000; text-align: left; border-radius: 6px; transition: all 0.3s; }
+        .meaning-item b { color: #00f2fe; font-weight: 900; letter-spacing: 1.5px; font-size: 1rem; display: block; margin-bottom: 5px; text-shadow: 1px 1px 0 #004d66, 2px 2px 0 #002e3d;}
+        .meaning-item:hover { background: rgba(0, 242, 254, 0.1); border-left-color: #00f2fe; transform: translateX(10px) translateZ(10px); color: #fff; }
+        
+        /* --- CARDS 3D E BARRAS (COM ANIMAÇÃO DE ENTRADA) --- */
+        .grid-3d-container { 
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; perspective: 1200px; margin-bottom: 20px; 
+            animation: smoothAppear 1s cubic-bezier(0.23, 1, 0.32, 1) forwards; /* Animação aplicada às grelhas */
+        }
+        .taf-card-3d { background: linear-gradient(135deg, rgba(26, 29, 36, 0.9), rgba(15, 18, 23, 0.9)); border: 1px solid #2c313c; border-top: 2px solid #3a3f4e; border-radius: 16px; padding: 25px; transform-style: preserve-3d; transition: all 0.5s cubic-bezier(0.23, 1, 0.32, 1); box-shadow: 0 10px 30px rgba(0,0,0,0.6); }
+        .taf-card-3d:hover { transform: rotateX(8deg) rotateY(-8deg) translateZ(20px); border-color: #00f2fe; box-shadow: -15px 20px 30px rgba(0, 242, 254, 0.2), inset 0 0 15px rgba(0, 242, 254, 0.1); }
+        .taf-card-3d.highlight:hover { border-color: #00ff88; box-shadow: -15px 20px 30px rgba(0, 255, 136, 0.2), inset 0 0 15px rgba(0, 255, 136, 0.1); }
+        
+        .taf-label { font-size: 0.85rem; color: #ffffff; font-weight: 900; letter-spacing: 2px; margin-bottom: 12px; transform: translateZ(30px); text-shadow: 1px 1px 2px #000; }
+        .taf-value { font-size: 3rem; font-weight: 900; color: #00ff88; font-family: 'Courier New', Courier, monospace; margin: 0; line-height: 1; transform: translateZ(50px); text-shadow: 1px 1px 0 #006633, 2px 2px 0 #004d26, 3px 3px 0 #00331a, 4px 4px 10px rgba(0, 255, 136, 0.4); }
+        .taf-value.cyan { color: #00f2fe; text-shadow: 1px 1px 0 #006680, 2px 2px 0 #004d66, 3px 3px 0 #00334d, 4px 4px 10px rgba(0, 242, 254, 0.4); }
+        .taf-value.gold { color: #FFD700; text-shadow: 1px 1px 0 #998000, 2px 2px 0 #665500, 3px 3px 0 #332b00, 4px 4px 10px rgba(255, 215, 0, 0.4); }
+        .taf-value.red { color: #ff4b4b; text-shadow: 1px 1px 0 #802626, 2px 2px 0 #4d1717, 3px 3px 0 #330f0f, 4px 4px 10px rgba(255, 75, 75, 0.4); }
 
-        /* Efeito de levitação extrema ao passar o mouse */
-        div[data-testid="stMetric"]:hover {
-            transform: translateY(-8px) scale(1.02);
-            box-shadow: 0 20px 40px rgba(0, 255, 204, 0.25), inset 0 0 30px rgba(0, 255, 204, 0.1);
-            border-color: rgba(0, 255, 204, 1);
-        }
-
-        /* Valores Numéricos Estilo HUD */
-        div[data-testid="stMetricValue"] {
-            font-family: 'Rajdhani', sans-serif !important;
-            color: #00ffcc !important;
-            text-shadow: 0px 0px 20px rgba(0, 255, 204, 0.8), 0px 0px 40px rgba(0, 255, 204, 0.4);
-            font-weight: 700;
-            font-size: 2.6rem !important;
-            letter-spacing: 2px;
-        }
-
-        /* Títulos em Degradê Dinâmico */
-        h1, h2, h3 {
-            font-family: 'Rajdhani', sans-serif;
-            background: linear-gradient(to right, #00ffcc, #0088ff, #bc13fe);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            text-transform: uppercase;
-            letter-spacing: 3px;
-        }
-
-        /* Personalização Premium das Abas (Tabs) */
-        button[data-baseweb="tab"] {
-            background-color: transparent !important;
-            color: #666 !important;
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 1.1rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            transition: all 0.3s ease;
-        }
-        button[data-baseweb="tab"][aria-selected="true"] {
-            color: #fff !important;
-            text-shadow: 0 0 10px rgba(0, 255, 204, 0.8);
-            border-bottom: 4px solid #00ffcc !important;
-            background: linear-gradient(to top, rgba(0, 255, 204, 0.1), transparent) !important;
-            border-radius: 10px 10px 0 0;
-        }
-
-        /* Barra de rolagem customizada */
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: #05090c; }
-        ::-webkit-scrollbar-thumb { background: #00ffcc; border-radius: 10px; }
+        .progress-container { width: 100%; background-color: #111; border-radius: 8px; margin-top: 15px; border: 1px solid #333; transform: translateZ(20px); box-shadow: 0 5px 10px rgba(0,0,0,0.8); }
+        .progress-bar { height: 8px; border-radius: 8px; background: linear-gradient(90deg, #004d7a, #00f2fe); transition: width 1.5s cubic-bezier(0.23, 1, 0.32, 1); }
+        .progress-bar.green { background: linear-gradient(90deg, #006633, #00ff88); }
+        .progress-bar.gold { background: linear-gradient(90deg, #b8860b, #FFD700); }
+        .progress-bar.red { background: linear-gradient(90deg, #8b0000, #ff4b4b); }
+        div[data-baseweb="tab-list"] { border-bottom: none; gap: 10px; flex-wrap: wrap; justify-content: center; margin-bottom: 20px; }
+        div[data-baseweb="tab"] { background: #15181e; color: #a1aabf; font-weight: 900; font-size: 1rem; padding: 12px 25px; border-radius: 8px; border: 1px solid #222; transition: all 0.3s; }
+        div[aria-selected="true"] { background: linear-gradient(180deg, rgba(0, 242, 254, 0.15), transparent) !important; color: #fff !important; border: 1px solid #00f2fe !important; box-shadow: 0 0 20px rgba(0,242,254,0.3) !important; text-shadow: 1px 1px 2px #000; }
         </style>
-
-        <!-- Injeção de JS para o Console do Cliente -->
-        <script>
-            console.log("%c [TAF PRO 3D ENGINE] Sistema Inicializado com Sucesso ", "background: #00ffcc; color: #000; font-weight: bold; font-size: 14px;");
-        </script>
     """, unsafe_allow_html=True)
 
-    # Função auxiliar padronizada para os Gráficos 3D (Fundo escuro/transparente, iluminação de estúdio)
-    def apply_3d_layout(fig, title=""):
-        fig.update_layout(
-            title=dict(text=title, font=dict(family='Rajdhani', color='#00ffcc', size=22)),
-            scene=dict(
-                xaxis=dict(backgroundcolor="rgba(0,0,0,0)", gridcolor="#1a2630", showbackground=True, zerolinecolor="#00ffcc"),
-                yaxis=dict(backgroundcolor="rgba(0,0,0,0)", gridcolor="#1a2630", showbackground=True, zerolinecolor="#00ffcc"),
-                zaxis=dict(backgroundcolor="rgba(0,0,0,0)", gridcolor="#1a2630", showbackground=True, zerolinecolor="#00ffcc"),
-            ),
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            margin=dict(l=10, r=10, b=10, t=50),
-            font=dict(color='#88929b', family='Inter')
-        )
-        return fig
-
-    # =============================================================================
-    # 4. BARRA LATERAL (SIDEBAR) E ROTEAMENTO DE MÓDULOS
-    # =============================================================================
-    st.sidebar.image("https://cdn-icons-png.flaticon.com/512/2936/2936886.png", width=100)
-    st.sidebar.markdown("## 🏅 **SISTEMA ELITE**")
-    st.sidebar.markdown("---")
-
-    menu = st.sidebar.radio(
-        "Navegação do Sistema",
-        [
-            "🏠 Página Inicial",
-            "🏃 Módulo 13: Pacer TAF",
-            "💪 Outros Módulos..."
-        ]
-    )
-
-    st.sidebar.markdown("---")
-    st.sidebar.info("Módulo 13 carregado com Engine Gráfica 3D Avançada.")
-
-    # =============================================================================
-    # 5. ESTRUTURA DOS MÓDULOS
-    # =============================================================================
-
-    if menu == "🏠 Página Inicial":
-        st.header("Bem-vindo ao TAF Pro Tracker 3D")
-        st.markdown("Selecione o **Módulo 13: Pacer TAF** na barra lateral para acessar o painel tático operacional completo.")
-
-    # -----------------------------------------------------------------------------
-    # MÓDULO 13: CENTRAL TAF ELITE 3D (COMPLETO)
-    # -----------------------------------------------------------------------------
-    elif menu == "🏃 Módulo 13: Pacer TAF":
-        st.header("🏃 Módulo 13: Comando TAF Elite 3D")
-        st.markdown("Painel tático operacional. **Análises biomecânicas, projeções espaciais e hidrodinâmicas** rodando em tempo real.")
-
-        # Criação das 5 Abas Internas Principais
-        tab_pacer, tab_treino, tab_evo, tab_natacao, tab_spotify = st.tabs([
-            "🏃 PACER 3D", 
-            "💪 MAPA DE FADIGA", 
-            "📈 DISPERSÃO BIOMECÂNICA", 
-            "🐟 EFEITO PEIXE (ÁGUA)", 
-            "🎧 ZONA DE FOCO"
-        ])
-
-        # -----------------------------------------------------
-        # ABA 1: PACER DE CORRIDA 3D
-        # -----------------------------------------------------
-        with tab_pacer:
-            col1, col2 = st.columns([1, 1.2])
-            
-            with col1:
-                st.markdown("### ⚙️ Parâmetros do Edital")
-                distancia_meta = st.number_input("Meta de Distância (metros)", min_value=1000, max_value=4000, value=2450, step=50)
-                tamanho_pista = st.number_input("Tamanho da Pista (metros)", min_value=100, max_value=1000, value=400, step=50)
-
-            tempo_min = 12.0
-            vel_media_kmh = (distancia_meta / 1000) / (tempo_min / 60)
-            total_voltas = distancia_meta / tamanho_pista
-            tempo_por_volta_seg = (tempo_min * 60) / total_voltas
-
-            with col2:
-                st.markdown("### 🎯 HUD de Execução")
-                c_a, c_b = st.columns(2)
-                c_a.metric("Velocidade Alvo", f"{vel_media_kmh:.2f} km/h")
-                c_b.metric("Total de Voltas", f"{total_voltas:.2f} 🔄")
-                st.metric(f"Pace / Volta ({int(tamanho_pista)}m)", f"{int(tempo_por_volta_seg // 60)}min {int(tempo_por_volta_seg % 60)}seg")
-
-            st.markdown("---")
-            
-            metas_semanais = []
-            base_dist = min(2000, distancia_meta - 450)
-            incremento = (distancia_meta + 100 - base_dist) / 7
-
-            for sem in range(1, 9):
-                dist_sem = base_dist + (incremento * (sem - 1))
-                vel_sem = (dist_sem / 1000) / (12 / 60)
-                metas_semanais.append({
-                    "Semana": f"Semana {sem}",
-                    "Sem_Num": sem,
-                    "Meta (m)": int(dist_sem),
-                    "Velocidade": round(vel_sem, 2)
-                })
-
-            df_pacer = pd.DataFrame(metas_semanais)
-            
-            col_tab, col_graf = st.columns([1, 2])
-            with col_tab:
-                st.markdown("<br><br>", unsafe_allow_html=True)
-                st.dataframe(df_pacer.drop(columns=["Sem_Num"]), use_container_width=True, hide_index=True)
-
-            with col_graf:
-                # Gráfico 3D corrigido com scatter_3d e update_traces para gradiente de cores perfeito
-                fig_pacer_3d = px.scatter_3d(
-                    df_pacer, x='Sem_Num', y='Velocidade', z='Meta (m)', 
-                    text='Semana', color='Velocidade', color_continuous_scale='Aggrnyl'
-                )
-                fig_pacer_3d.update_traces(mode='lines+markers', marker=dict(size=8, symbol='diamond'), line=dict(width=6))
-                st.plotly_chart(apply_3d_layout(fig_pacer_3d, "Trajetória Espacial de Pace"), use_container_width=True)
-
-        # -----------------------------------------------------
-        # ABA 2: MAPA DE FADIGA MUSCULAR (Superfície 3D)
-        # -----------------------------------------------------
-        with tab_treino:
-            st.markdown("### 🦾 Topografia 3D do Desgaste Físico")
-            
-            c1, c2, c3 = st.columns(3)
-            c1.info("⬆️ **Barra Fixa:** Máxima Tensão Negativa.")
-            c2.warning("⬇️ **Flexão:** Isometria no Ponto Zero.")
-            c3.error("🔥 **Abdômen:** Explosão AMRAP.")
-                
-            x_series = np.array([1, 2, 3, 4, 5]) 
-            y_intensidade = np.array([50, 60, 70, 80, 90, 100])
-            X, Y = np.meshgrid(x_series, y_intensidade)
-            Z = (X * 12) + (Y / 1.5) + np.sin(X * Y) * 15 
-            
-            fig_surface = go.Figure(data=[go.Surface(
-                z=Z, x=X, y=Y, colorscale='Turbo',
-                lighting=dict(ambient=0.4, diffuse=0.8, fresnel=0.2, specular=1.5, roughness=0.1),
-                lightposition=dict(x=100, y=100, z=200)
-            )])
-            fig_surface.update_layout(scene=dict(xaxis_title='Séries', yaxis_title='Intensidade (%)', zaxis_title='Exaustão'))
-            st.plotly_chart(apply_3d_layout(fig_surface, "Relevo de Falha Muscular"), use_container_width=True)
-
-        # -----------------------------------------------------
-        # ABA 3: DISPERSÃO BIOMECÂNICA (Nuvem 3D)
-        # -----------------------------------------------------
-        with tab_evo:
-            st.markdown("### 🧬 Mapeamento Cruzado de Desempenho")
-            
-            np.random.seed(15)
-            df_evo = pd.DataFrame({
-                "Semana": np.arange(1, 13),
-                "Peso (kg)": np.linspace(85, 73, 12) + np.random.normal(0, 0.3, 12),
-                "Barras": np.linspace(2, 15, 12) + np.random.normal(0, 0.5, 12),
-                "VO2 Máx": np.linspace(35, 55, 12) + np.random.normal(0, 2, 12)
-            })
-
-            fig_3d = px.scatter_3d(
-                df_evo, x='Semana', y='Peso (kg)', z='Barras', 
-                color='VO2 Máx', size='VO2 Máx', color_continuous_scale='Inferno'
-            )
-            fig_3d.update_traces(marker=dict(line=dict(width=2, color='DarkSlateGrey')))
-            st.plotly_chart(apply_3d_layout(fig_3d, "Matriz: Peso x Força x Oxigênio"), use_container_width=True)
-
-        # -----------------------------------------------------
-        # ABA 4: EFEITO PEIXE (Hidrodinâmica e Túnel de Água 3D)
-        # -----------------------------------------------------
-        with tab_natacao:
-            st.markdown("### 🐟 Hidrodinâmica: Paradigma do Peixe")
-            st.markdown("A diferença entre o corpo humano e a vida marinha através da visualização do **Coeficiente de Arrasto 3D**.")
-            
-            c_nat1, c_nat2 = st.columns(2)
-            with c_nat1:
-                st.error("🏊‍♂️ **Atleta (Humano):** Corpo gera turbulência frontal severa (Área Vermelha).")
-            with c_nat2:
-                st.info("🦈 **Morfologia do Peixe:** Design de torpedo zera o atrito (Área Azul Lisa).")
-
-            tempo_natação = st.slider("Tempo Alvo na Água (Segundos para 50m)", 20, 90, 45)
-            st.metric("Velocidade Média (Humano)", f"{(50 / tempo_natação):.2f} m/s")
-
-            y_peixe = np.linspace(0, 100, 30)
-            x_peixe = np.linspace(-10, 10, 30)
-            X_p, Y_p = np.meshgrid(x_peixe, y_peixe)
-            
-            Z_humano = np.cos(X_p * 1.5) * np.sin(Y_p * 0.5) * 15 
-            Z_peixe = -np.exp(-(X_p**2 + (Y_p-50)**2)/40) * 25 
-
-            fig_peixe = go.Figure()
-            fig_peixe.add_trace(go.Surface(z=Z_humano, x=X_p, y=Y_p, colorscale='Reds', opacity=0.7, name='Turbulência Humana', showscale=False))
-            fig_peixe.add_trace(go.Surface(z=Z_peixe, x=X_p, y=Y_p, colorscale='Blues', opacity=0.9, name='Fluxo Perfeito (Peixe)'))
-
-            fig_peixe.update_layout(scene=dict(xaxis_title='Eixo X', yaxis_title='Deslocamento', zaxis_title='Resistência (Drag)'))
-            st.plotly_chart(apply_3d_layout(fig_peixe, "Túnel de Água: Atrito Humano vs Torpedo Natural"), use_container_width=True)
-
-        # -----------------------------------------------------
-        # ABA 5: ZONA DE FOCO (Spotify Embed Cyberpunk/Neon)
-        # -----------------------------------------------------
-        with tab_spotify:
-            st.markdown("### 🎧 Imersão Neural: Sincronia 180 BPM")
-            st.markdown("Frequência de áudio projetada para forçar o sistema nervoso central a adotar a **cadência tática de corrida**.")
-            
-            spotify_html = """
-            <div style="
-                border-radius: 20px; 
-                border: 2px solid rgba(0, 255, 204, 0.6); 
-                box-shadow: 0 0 30px rgba(0, 255, 204, 0.2), inset 0 0 20px rgba(0,255,204,0.1); 
-                padding: 10px; 
-                background: rgba(0,0,0,0.5); 
-                backdrop-filter: blur(10px);
-            ">
-                <iframe src="https://open.spotify.com/embed/playlist/37i9dQZF1DXaXB8fQg7xif?utm_source=generator&theme=0" 
-                width="100%" height="400" frameBorder="0" allowfullscreen="" 
-                allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="lazy">
-                </iframe>
+    # ==============================================================================
+    # 2. CABEÇALHO 3D (SEM LINHAS EM BRANCO NO HTML)
+    # ==============================================================================
+    agora = datetime.datetime.now().strftime("%H:%M:%S")
+    
+    st.markdown(f"""
+        <div class="hero-banner-3d">
+            <div class="hero-content">
+                <div class="hero-google-badge">Operação suportada pelo <span>Google AI Plus</span></div>
+                <h1 class="hero-title">NÚCLEO DE INTELIGÊNCIA</h1>
+                <div class="hero-subtitle">Módulo de Preparação Física e Tática — EsPCEx</div>
+                <div class="hero-status"><span style="color:#00ff88;">●</span> OPERADOR: ARRUDA | ⏱️ {agora} | SENSOR DE PROFUNDIDADE ATIVO</div>
+                <div class="hero-meanings">
+                    <div class="meaning-item"><b>⛰️ BIOMETRIA OCUPACIONAL</b> Cálculo de bateria residual baseada no desgaste do trabalho rural em montanha.</div>
+                    <div class="meaning-item"><b>🎯 PACER VETORIAL</b> Simulação matemática de ritmo balístico para a prova de corrida de 12 minutos.</div>
+                    <div class="meaning-item"><b>💪 TRAÇÃO & CORE</b> Projeção neuromuscular de fadiga para superação das provas de barra fixa e abdominal.</div>
+                    <div class="meaning-item"><b>🏋️ MECÂNICA E CARGA</b> Análise de tonelagem física e carga relativa corporal nas flexões de braço.</div>
+                    <div class="meaning-item"><b>🌊 NATAÇÃO TÁTICA</b> Monitoramento de resistência hidrodinâmica e tempo subaquático (50 metros).</div>
+                    <div class="meaning-item"><b>🫀 ZONAS VAM</b> Cálculo avançado de limiar anaeróbico e consumo máximo de oxigênio (VO2 Máx).</div>
+                    <div class="meaning-item"><b>🎒 MARCHA TÁTICA</b> Simulação topográfica e desgaste metabólico de progressão com mochila na selva.</div>
+                    <div class="meaning-item"><b>🛡️ CLEARANCE ESPCEX</b> Sistema gamificado de Níveis de Acesso Tático e matriz de prontidão global.</div>
+                </div>
             </div>
-            """
-            components.html(spotify_html, height=450)
+        </div>
+    """, unsafe_allow_html=True)
 
-elif menu == "💪 Outros Módulos...":
-    st.header("🛠️ Outros Módulos")
-    st.write("Insira os demais módulos do seu projeto corporativo seguindo a mesma estrutura de roteamento.")
+    tabs = st.tabs(["⛰️ Biometria Ocupacional", "🏃 Pacer", "💪 Tração", "🏋️ Mecânica", "🏊 Natação", "⚡ Zonas VAM", "🎒 Marcha Tática", "🛡️ Clearance EsPCEx"])
+
+    # ==============================================================================
+    # ABA 1: BIOMETRIA OCUPACIONAL
+    # ==============================================================================
+    with tabs[0]:
+        col_o1, col_o2 = st.columns([1, 2.5])
+        with col_o1:
+            horas_roca = st.slider("Horas Trabalhadas (Café)", 0.0, 12.0, 8.0, 0.5)
+            inclinacao_terreno = st.slider("Inclinação da Montanha (Graus)", 0, 45, 20)
+            fator_esforco = 1.0 + (inclinacao_terreno / 100)
+            bateria_drenada = min((horas_roca / 10.0) * fator_esforco * 100, 95)
+            bateria_residual = 100 - bateria_drenada
+            
+            recomendacao_treino = "TREINO NORMAL"
+            cor_bateria_texto = "green"
+            cor_bateria_barra = "green"
+            if bateria_residual < 40:
+                recomendacao_treino = "RECUPERAÇÃO ATIVA"
+                cor_bateria_texto = "cyan"
+                cor_bateria_barra = ""
+            if bateria_residual < 15:
+                recomendacao_treino = "REPOUSO OBRIGATÓRIO"
+                cor_bateria_texto = "red"
+                cor_bateria_barra = "red"
+
+        with col_o2:
+            st.markdown(f"""
+                <div class="grid-3d-container">
+                    <div class="taf-card-3d"><div class="taf-label">🔋 BATERIA RESIDUAL DO OPERADOR</div><div class="taf-value {cor_bateria_texto}">{int(bateria_residual)}%</div><div class="progress-container"><div class="progress-bar {cor_bateria_barra}" style="width: {bateria_residual}%;"></div></div></div>
+                    <div class="taf-card-3d highlight"><div class="taf-label">🧠 DIRETRIZ SISTÊMICA</div><div class="taf-value" style="font-size: 2rem; padding-top:10px;">{recomendacao_treino}</div></div>
+                </div>
+            """, unsafe_allow_html=True)
+        st.markdown("---")
+        x_m = np.linspace(-5, 5, 40)
+        y_m = np.linspace(-5, 5, 40)
+        X_m, Y_m = np.meshgrid(x_m, y_m)
+        Z_m = np.exp(-(X_m**2 + Y_m**2)/10) * (inclinacao_terreno * 2) + np.random.normal(0, 0.5, X_m.shape)
+        fig_b = go.Figure(data=[go.Surface(z=Z_m, x=X_m, y=Y_m, colorscale='Viridis', opacity=0.95, lighting=dict(roughness=0.9))])
+        fig_b.update_layout(scene=dict(xaxis_title='Vetor X', yaxis_title='Vetor Y', zaxis_title='Altímetro (m)', xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), camera=dict(eye=dict(x=1.8, y=-1.8, z=0.5))), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=500)
+        st.plotly_chart(fig_b, use_container_width=True, theme=None)
+
+    # ==============================================================================
+    # ABA 2: CORRIDA PACER
+    # ==============================================================================
+    with tabs[1]:
+        col1, col2 = st.columns([1, 2.5])
+        with col1:
+            distancia_meta = st.number_input("Meta de Distância (m)", 1000, 4000, 2450, 50, key="c1")
+            tamanho_pista = st.number_input("Tamanho da Pista (m)", 100, 1000, 400, 50, key="c2")
+            vel_media_kmh = (distancia_meta / 1000) / (12.0 / 60)
+            tempo_por_volta_seg = (12.0 * 60) / (distancia_meta / tamanho_pista)
+
+        with col2:
+            st.markdown(f"""
+                <div class="grid-3d-container">
+                    <div class="taf-card-3d"><div class="taf-label">🔥 VEL. MÉDIA (KM/H)</div><div class="taf-value cyan">{vel_media_kmh:.2f}</div></div>
+                    <div class="taf-card-3d highlight"><div class="taf-label">⏱️ TEMPO / VOLTA</div><div class="taf-value">{int(tempo_por_volta_seg//60)}<span style="font-size:1.5rem;">m</span> {int(tempo_por_volta_seg%60)}<span style="font-size:1.5rem;">s</span></div></div>
+                </div>
+            """, unsafe_allow_html=True)
+        st.markdown("---")
+        sx = np.arange(1, 9)
+        dy = min(2000, distancia_meta - 450) + (((distancia_meta + 100 - min(2000, distancia_meta - 450)) / 7) * (sx - 1))
+        vz = (dy / 1000) / (12 / 60)
+        fig_p = go.Figure(data=[go.Scatter3d(x=sx, y=dy, z=vz, mode='lines+markers', marker=dict(size=12, color=vz, colorscale='Teal', opacity=1.0, line=dict(color='white', width=2)), line=dict(color='rgba(0, 242, 254, 0.8)', width=8))])
+        fig_p.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), camera=dict(eye=dict(x=1.8, y=-1.8, z=0.5))), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=500)
+        st.plotly_chart(fig_p, use_container_width=True, theme=None)
+
+    # ==============================================================================
+    # ABA 3: BARRA E ABDOMINAL
+    # ==============================================================================
+    with tabs[2]:
+        col_f1, col_f2 = st.columns(2)
+        with col_f1: barras = st.number_input("Barras Máximas Realizadas", 0, 30, 8)
+        with col_f2: abdominais = st.number_input("Abdominais (1 min)", 0, 100, 45)
+
+        st.markdown(f"""
+            <div class="grid-3d-container">
+                <div class="taf-card-3d {'highlight' if barras >= 3 else ''}"><div class="taf-label">💪 STATUS BARRA</div><div class="taf-value cyan">{barras}<span style="font-size:1.5rem; color:#888;">/3</span></div></div>
+                <div class="taf-card-3d {'highlight' if abdominais >= 30 else ''}"><div class="taf-label">🛡️ STATUS ABDOMINAL</div><div class="taf-value highlight">{abdominais}<span style="font-size:1.5rem; color:#888;">/30</span></div></div>
+            </div>
+        """, unsafe_allow_html=True)
+        st.markdown("---")
+        xf, yf = np.meshgrid(np.linspace(1, 6, 20), np.linspace(1, 8, 20))
+        zf = np.clip(15 + (xf ** 1.9) * 6 - (np.log(yf + 1) * 12), 0, 100)
+        fig_f = go.Figure(data=[go.Surface(z=zf, x=xf, y=yf, colorscale='Teal', opacity=1.0, lighting=dict(roughness=0.1, specular=1.5))])
+        fig_f.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117")), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=500)
+        st.plotly_chart(fig_f, use_container_width=True, theme=None)
+
+    # ==============================================================================
+    # ABA 4: MECÂNICA
+    # ==============================================================================
+    with tabs[3]:
+        col_flex1, col_flex2 = st.columns(2)
+        with col_flex1: flexoes = st.number_input("Flexões de Braço Realizadas", 0, 80, 25)
+        with col_flex2: peso_flex = st.number_input("Seu Peso Corporal (kg)", 40.0, 120.0, 68.0)
+        carga_elevada = peso_flex * 0.64
+        tonelagem = (carga_elevada * flexoes) / 1000
+
+        st.markdown(f"""
+            <div class="grid-3d-container">
+                <div class="taf-card-3d"><div class="taf-label">🏋️ CARGA POR REP. (64% BW)</div><div class="taf-value cyan">{carga_elevada:.1f}<span style="font-size:1.5rem; color:#888;">kg</span></div></div>
+                <div class="taf-card-3d highlight"><div class="taf-label">💥 VOLUME TOTAL</div><div class="taf-value">{tonelagem:.2f}<span style="font-size:1.5rem; color:#888;">ton</span></div></div>
+            </div>
+        """, unsafe_allow_html=True)
+        st.markdown("---")
+        reps_x = np.arange(1, flexoes + 1) if flexoes > 0 else np.array([0])
+        cadencia_y = np.linspace(1, 1.5, len(reps_x)) 
+        esforco_z = reps_x * cadencia_y
+        fig_fl = go.Figure(data=[go.Scatter3d(x=reps_x, y=cadencia_y, z=esforco_z, mode='markers', marker=dict(size=10, color=esforco_z, colorscale='Electric', opacity=0.9, symbol='diamond'))])
+        fig_fl.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117")), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=500)
+        st.plotly_chart(fig_fl, use_container_width=True, theme=None)
+
+    # ==============================================================================
+    # ABA 5: NATAÇÃO
+    # ==============================================================================
+    with tabs[4]:
+        tempo_natacao = st.slider("Tempo em Natação 50m (Segundos)", 20, 120, 50)
+        st.markdown(f"""
+            <div class="grid-3d-container">
+                <div class="taf-card-3d"><div class="taf-label">⏱️ TEMPO ATUAL (50M)</div><div class="taf-value cyan">{tempo_natacao}<span style="font-size:1.5rem; color:#888;">s</span></div></div>
+                <div class="taf-card-3d {'highlight' if tempo_natacao <= 55 else ''}"><div class="taf-label">🌊 STATUS ESPCEX</div><div class="taf-value" style="font-size:2rem; padding-top:10px;">{"APTO" if tempo_natacao <= 55 else "DÉFICIT"}</div></div>
+            </div>
+        """, unsafe_allow_html=True)
+        st.markdown("---")
+        xn, yn = np.meshgrid(np.linspace(0, 10, 40), np.linspace(0, 10, 40))
+        zn = np.sin(xn + (tempo_natacao/10)) * np.cos(yn) * (tempo_natacao/15) 
+        fig_n = go.Figure(data=[go.Surface(z=zn, x=xn, y=yn, colorscale='Blues', opacity=0.9, lighting=dict(specular=2.0))])
+        fig_n.update_layout(scene=dict(xaxis=dict(showgrid=False, backgroundcolor="#0d1117"), yaxis=dict(showgrid=False, backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117")), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=500)
+        st.plotly_chart(fig_n, use_container_width=True, theme=None)
+
+    # ==============================================================================
+    # ABA 6: ZONAS VAM
+    # ==============================================================================
+    with tabs[5]:
+        vam = st.slider("Sua Velocidade Aeróbica Máxima (km/h)", 10.0, 22.0, 15.0, 0.5)
+        st.markdown(f"""<div class="taf-card-3d highlight" style="margin-top: 15px; text-align: center;"><div class="taf-label">🫀 LIMIAR ANAERÓBICO (85% VAM)</div><div class="taf-value cyan">{(vam * 0.85):.2f} <span style="font-size:1.5rem; color:#888;">km/h</span></div></div>""", unsafe_allow_html=True)
+        st.markdown("---")
+        xv, yv = np.meshgrid(np.linspace(8, 20, 30), np.linspace(0, 15, 30))
+        zv = (0.2 * (xv * 16.6667)) + (0.9 * (xv * 16.6667) * (yv/100)) + 3.5
+        fig_v = go.Figure(data=[go.Surface(z=zv, x=xv, y=yv, colorscale='Inferno', opacity=1.0)])
+        fig_v.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117")), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=500)
+        st.plotly_chart(fig_v, use_container_width=True, theme=None)
+
+    # ==============================================================================
+    # ABA 7: MARCHA TÁTICA
+    # ==============================================================================
+    with tabs[6]:
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            dist_marcha = st.slider("Distância da Marcha (km)", 4.0, 20.0, 8.0, 0.5)
+            carga_mochila = st.slider("Peso da Mochila (kg)", 5.0, 30.0, 15.0, 1.0)
+        with col_m2:
+            st.markdown(f"""<div class="grid-3d-container" style="grid-template-columns: 1fr;"><div class="taf-card-3d highlight"><div class="taf-label">🎒 CARGA TÁTICA PROJETADA DE FADIGA</div><div class="taf-value">{dist_marcha * carga_mochila:.0f} <span style="font-size:1.5rem; color:#888;">kg/km</span></div></div></div>""", unsafe_allow_html=True)
+        st.markdown("---")
+        xt, yt = np.meshgrid(np.linspace(0, dist_marcha, 40), np.linspace(-2, 2, 40))
+        zt = np.sin(xt * 1.5) * np.cos(yt * 2) * (carga_mochila / 10) + np.random.normal(0, 0.1, xt.shape)
+        fig_m = go.Figure(data=[go.Surface(z=zt, x=xt, y=yt, colorscale='Earth', opacity=1.0, lighting=dict(roughness=0.8, specular=0.2))])
+        fig_m.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), camera=dict(eye=dict(x=1.5, y=-1.5, z=0.8))), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=500)
+        st.plotly_chart(fig_m, use_container_width=True, theme=None)
+
+    # ==============================================================================
+    # ABA 8: SISTEMA DE CLEARANCE ESPCEX
+    # ==============================================================================
+    with tabs[7]:
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            t_cor = st.slider("Corrida 12min (metros)", 1500, 3200, 2200, 50, key="t1")
+            t_bar = st.slider("Flexão na Barra (reps)", 0, 15, 2, key="t2")
+            t_nat = st.slider("Natação 50m (segundos)", 100, 20, 60, key="t3") 
+        with col_t2:
+            t_abd = st.slider("Abdominal Supra (reps)", 0, 60, 25, key="t4")
+            t_flx = st.slider("Flexão de Braços (reps)", 0, 40, 15, key="t5")
+
+        p_cor = min((t_cor / 2450) * 100, 100)
+        p_bar = min((t_bar / 3) * 100, 100)
+        p_nat = min((55 / t_nat) * 100, 100) 
+        p_abd = min((t_abd / 30) * 100, 100)
+        p_flx = min((t_flx / 21) * 100, 100)
+        prontidao_global = (p_cor + p_bar + p_nat + p_abd + p_flx) / 5
+
+        clearance_nivel = "NÍVEL 1: CIVIL"
+        clearance_cor_css = "red"
+        clearance_cor_grafico = 'Reds'
+        cor_texto_valor = "red"
+
+        if prontidao_global >= 50:
+            clearance_nivel = "NÍVEL 2: CANDIDATO"
+            clearance_cor_css = "" 
+            clearance_cor_grafico = 'Blues'
+            cor_texto_valor = "cyan"
+        if prontidao_global >= 80:
+            clearance_nivel = "NÍVEL 3: CADETE"
+            clearance_cor_css = "green"
+            clearance_cor_grafico = 'aggrnyl'
+            cor_texto_valor = "" 
+        if prontidao_global >= 95:
+            clearance_nivel = "ACESSO MÁX: OP. SELVA"
+            clearance_cor_css = "gold"
+            clearance_cor_grafico = 'Wistia' 
+            cor_texto_valor = "gold"
+
+        st.markdown(f"""
+            <div class="grid-3d-container">
+                <div class="taf-card-3d"><div class="taf-label">🎯 ÍNDICE DE PRONTIDÃO</div><div class="taf-value {cor_texto_valor}">{int(prontidao_global)}%</div><div class="progress-container"><div class="progress-bar {clearance_cor_css}" style="width: {prontidao_global}%;"></div></div></div>
+                <div class="taf-card-3d highlight"><div class="taf-label">🛡️ CLEARANCE DE ACESSO TÁTICO</div><div class="taf-value {cor_texto_valor}" style="font-size: 1.8rem; padding-top: 10px;">{clearance_nivel}</div></div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("---")
+        u = np.linspace(0, 2 * np.pi, 120) 
+        v = np.linspace(0, 2 * np.pi, 60)  
+        U, V = np.meshgrid(u, v)
+        X_t = (4 + 1 * np.cos(V)) * np.cos(U)
+        Y_t = (4 + 1 * np.cos(V)) * np.sin(U)
+        Z_t = 1 * np.sin(V)
+        Matriz_Cores = np.where(U <= ((prontidao_global/100) * 2 * np.pi), 1, 0)
+
+        fig_d = go.Figure(data=[go.Surface(x=X_t, y=Y_t, z=Z_t, surfacecolor=Matriz_Cores, colorscale=clearance_cor_grafico, cmin=0, cmax=1, showscale=False, opacity=1.0, lighting=dict(ambient=0.5, diffuse=0.8, specular=1.5, roughness=0.1), contours=dict(x=dict(show=False), y=dict(show=False), z=dict(show=False)))])
+        fig_d.update_layout(scene=dict(xaxis=dict(showgrid=False, showticklabels=False, backgroundcolor="#0d1117", title=""), yaxis=dict(showgrid=False, showticklabels=False, backgroundcolor="#0d1117", title=""), zaxis=dict(showgrid=False, showticklabels=False, backgroundcolor="#0d1117", title=""), camera=dict(eye=dict(x=0, y=-1.5, z=1.8))), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=550)
+        st.plotly_chart(fig_d, use_container_width=True, theme=None)
 # ====================================================
 # MÓDULO 14: NUTRIÇÃO & CALORIAS
 # ====================================================
