@@ -1305,16 +1305,101 @@ st.sidebar.markdown(f"**Ciclos Pomodoro:** `{db.get('pomodoro_ciclos_totais', 0)
 # -----------------------------------------------------------------------------
 # MÓDULO 1: Painel & Cronograma da Rotina Diária
 # -----------------------------------------------------------------------------
+import streamlit as st
+import pandas as pd
+import datetime
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit.components.v1 as components
+import json
+
+# -----------------------------------------------------------------------------
+# INJEÇÃO DE CSS E ANIMAÇÕES (FRONTEND MELHORADO)
+# -----------------------------------------------------------------------------
+st.markdown("""
+<style>
+    /* Tema Base e Fundo */
+    .stApp {
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+        color: #e2e8f0;
+    }
+    
+    /* Efeito Glassmorphism para Containers */
+    [data-testid="stVerticalBlock"] > [style*="flex-direction: column;"] > [data-testid="stVerticalBlock"] {
+        background: rgba(30, 41, 59, 0.5);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 15px;
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        padding: 20px;
+    }
+
+    /* Cartões de Rotina (3D Hover Effect) */
+    .routine-card {
+        background: linear-gradient(145deg, #1e293b, #0f172a);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 12px;
+        padding: 20px;
+        box-shadow: 5px 5px 15px #0a0f1d, -5px -5px 15px #22334d;
+        transition: all 0.3s ease-in-out;
+        height: 100%;
+    }
+    .routine-card:hover {
+        transform: translateY(-8px) scale(1.02);
+        box-shadow: 0 15px 25px rgba(46, 125, 50, 0.4);
+        border-color: rgba(46, 125, 50, 0.5);
+    }
+    .routine-card h4 {
+        color: #4ade80;
+        margin-top: 0;
+        font-weight: 700;
+        text-shadow: 0 0 10px rgba(74, 222, 128, 0.3);
+    }
+
+    /* Estilo das Métricas (Efeito Neon/Glow) */
+    [data-testid="stMetricValue"] {
+        font-size: 2.2rem !important;
+        font-weight: 800 !important;
+        background: -webkit-linear-gradient(45deg, #4ade80, #3b82f6);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.4);
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 1rem !important;
+        color: #94a3b8 !important;
+        font-weight: 600 !important;
+    }
+
+    /* Botões Modernos */
+    .stButton>button {
+        background: linear-gradient(90deg, #16a34a 0%, #15803d 100%);
+        border: none;
+        box-shadow: 0 4px 15px rgba(22, 163, 74, 0.4);
+        transition: all 0.2s;
+    }
+    .stButton>button:hover {
+        transform: scale(1.05);
+        box-shadow: 0 6px 20px rgba(22, 163, 74, 0.6);
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# -----------------------------------------------------------------------------
+# LÓGICA DA INTERFACE - PAINEL PRINCIPAL
+# -----------------------------------------------------------------------------
 if menu == "📊 Painel & Rotina Diária":
     st.title(f"📊 QG EsPCEx - Painel de Prontidão de {nome_cadete}")
     st.caption("Visão integrada dos estudos noturnos, treino físico da madrugada, trabalho no campo e realização da AMSP.")
+    
     if not db.get("guia_inicial_concluido", False):
-        with st.container(border=True):
+        with st.container():
             st.info("Primeiro acesso? O Guia Inicial ajuda a configurar o painel, o TAF e suas metas.")
             st.button("👋 Abrir Guia Inicial", on_click=_navegar_qg, args=("👋 Guia Inicial",))
 
     modo_efa = efa_info["modo"]
 
+    # Extração de dados
     df_sessoes = pd.DataFrame(db["sessoes"])
     df_red = pd.DataFrame(db.get("redacoes", []))
     df_taf = pd.DataFrame(db.get("taf", []))
@@ -1328,6 +1413,7 @@ if menu == "📊 Painel & Rotina Diária":
     painel_config = db.get("painel_config", {})
     if not isinstance(painel_config, dict):
         painel_config = {}
+        
     opcoes_indicadores = [
         "Horas de estudo", "Questões respondidas", "Taxa de acerto", "Treinos TAF",
         "Dias até a prova", "AMSP pendentes", "Revisões pendentes", "Progresso do edital",
@@ -1335,12 +1421,13 @@ if menu == "📊 Painel & Rotina Diária":
     indicadores_salvos = painel_config.get("indicadores", opcoes_indicadores[:5])
     if not isinstance(indicadores_salvos, list):
         indicadores_salvos = opcoes_indicadores[:5]
+        
     with st.expander("🎛️ Personalizar indicadores do painel", expanded=False):
         with st.form("form_indicadores_painel"):
             indicadores_escolhidos = st.multiselect(
                 "Escolha quais cartões aparecem no topo",
                 opcoes_indicadores, default=[x for x in indicadores_salvos if x in opcoes_indicadores],
-                help="A seleção fica salva na sua conta.",
+                help="A seleção fica salva na sua conta."
             )
             if st.form_submit_button("Salvar meu painel", type="primary", use_container_width=True):
                 db["painel_config"] = {**painel_config, "indicadores": indicadores_escolhidos}
@@ -1351,6 +1438,7 @@ if menu == "📊 Painel & Rotina Diária":
     itens_edital = [item for item in db.get("edital", []) if isinstance(item, dict)]
     itens_edital_concluidos = sum(str(item.get("Status", "")).casefold() in {"revisado / dominado", "dominado"} for item in itens_edital)
     progresso_edital_pct = round(itens_edital_concluidos / len(itens_edital) * 100) if itens_edital else 0
+    
     dados_indicadores = {
         "Horas de estudo": ("⏱️ Horas de estudo", f"{total_horas:.1f} h"),
         "Questões respondidas": ("📝 Questões respondidas", f"{total_questoes}"),
@@ -1361,7 +1449,10 @@ if menu == "📊 Painel & Rotina Diária":
         "Revisões pendentes": ("🧠 Revisões pendentes", str(revisoes_pendentes_qtd)),
         "Progresso do edital": ("📋 Progresso do edital", f"{progresso_edital_pct}%"),
     }
+    
     indicadores_ativos = [item for item in indicadores_salvos if item in dados_indicadores]
+    
+    st.markdown("<br>", unsafe_allow_html=True)
     if indicadores_ativos:
         metric_cols = st.columns(min(len(indicadores_ativos), 6))
         for indice, item in enumerate(indicadores_ativos):
@@ -1376,6 +1467,7 @@ if menu == "📊 Painel & Rotina Diária":
     revisoes_hoje = listar_memorias(user_atual, limite=100, apenas_revisar=True)
     eventos_hoje = [e for e in eventos_proximos if e.get("data", "")[:10] == hoje_iso]
     materias_fracas = []
+    
     if not df_sessoes.empty and {"Matéria", "Questões", "Acertos"}.issubset(df_sessoes.columns):
         resumo_materia = df_sessoes.groupby("Matéria")[["Questões", "Acertos"]].sum()
         resumo_materia = resumo_materia[resumo_materia["Questões"] > 0]
@@ -1383,27 +1475,29 @@ if menu == "📊 Painel & Rotina Diária":
             resumo_materia["Aproveitamento"] = resumo_materia["Acertos"] / resumo_materia["Questões"]
             materias_fracas = list(resumo_materia.sort_values("Aproveitamento").head(2).index)
 
-    with st.container(border=True):
+    st.markdown("<br>", unsafe_allow_html=True)
+    with st.container():
         st.markdown("#### ✦ Missão do dia")
         st.caption(datetime.date.today().strftime("%A, %d/%m/%Y") + " · construída a partir do seu plano, revisões e calendário")
         missao_cols = st.columns(3)
         missao_idx = 0
+        
         if tarefas_hoje:
             tarefa = tarefas_hoje[0]
-            missao_cols[missao_idx].markdown("**Plano semanal**")
+            missao_cols[missao_idx].markdown("**🎯 Plano semanal**")
             missao_cols[missao_idx].write(f"{tarefa.get('materia', 'Estudo')}: {tarefa.get('atividade', '')}")
             missao_idx += 1
         if revisoes_hoje:
             item_revisao = revisoes_hoje[0]
-            missao_cols[missao_idx].markdown("**Revisão espaçada**")
+            missao_cols[missao_idx].markdown("**🧠 Revisão espaçada**")
             missao_cols[missao_idx].write(f"Revisar {item_revisao.get('materia', 'Geral')}: {item_revisao.get('texto', '')[:100]}")
             missao_idx += 1
         if eventos_hoje and missao_idx < 3:
-            missao_cols[missao_idx].markdown("**Compromisso de hoje**")
+            missao_cols[missao_idx].markdown("**📅 Compromisso de hoje**")
             missao_cols[missao_idx].write(f"{eventos_hoje[0]['hora']} · {eventos_hoje[0]['titulo']}")
             missao_idx += 1
         if materias_fracas and missao_idx < 3:
-            missao_cols[missao_idx].markdown("**Foco recomendado**")
+            missao_cols[missao_idx].markdown("**⚠️ Foco recomendado**")
             missao_cols[missao_idx].write("Resolver questões de " + ", ".join(materias_fracas))
             missao_idx += 1
         if missao_idx == 0:
@@ -1412,43 +1506,41 @@ if menu == "📊 Painel & Rotina Diária":
     _render_missao_diaria()
 
     st.markdown("---")
-    st.subheader(f"📅 Estrutura da Sua Rotina - Período [{modo_efa.upper()}] (Dia {dia_no_ciclo}/15)")
+    st.subheader(f"📅 Estrutura da Sua Rotina - Período [{modo_efa.upper()}]")
 
+    # Renderização Condicional da Rotina com Divs Estilizadas
     if modo_efa == "Em Casa":
         r1, r2, r3, r4 = st.columns(4)
         with r1:
             st.markdown("""
             <div class="routine-card">
             <h4>🌅 05:00 - 06:15</h4>
-            <b>Treino TAF + SPOTIFY</b><br>
-            Corrida, Flexão, Abdominal e Barra Fixa ao som de Marchas do Exército / Funk TAF.
+            <b>Treino TAF + SPOTIFY</b><br><br>
+            <span style="color:#94a3b8; font-size:0.9em;">Corrida, Flexão, Abdominal e Barra Fixa ao som de Marchas do Exército / Funk TAF.</span>
             </div>
             """, unsafe_allow_html=True)
-
         with r2:
             st.markdown("""
             <div class="routine-card">
             <h4>🚜 06:30 - 17:00</h4>
-            <b>Trabalho no Campo / Propriedade</b><br>
-            Atividades agrícolas e braçais da família na alternância.
+            <b>Trabalho no Campo</b><br><br>
+            <span style="color:#94a3b8; font-size:0.9em;">Atividades agrícolas e braçais da família na alternância.</span>
             </div>
             """, unsafe_allow_html=True)
-
         with r3:
             st.markdown("""
             <div class="routine-card">
             <h4>📖 17:00 - 18:30</h4>
-            <b>Descanso & AMSP (Matérias EFA)</b><br>
-            Pausa de recuperação e resolução da AMSP da EFA.
+            <b>Descanso & AMSP</b><br><br>
+            <span style="color:#94a3b8; font-size:0.9em;">Pausa de recuperação e resolução da AMSP da EFA.</span>
             </div>
             """, unsafe_allow_html=True)
-
         with r4:
             st.markdown("""
             <div class="routine-card">
             <h4>📚 18:30 - 22:30</h4>
-            <b>Estudos Noturnos EsPCEx</b><br>
-            Blocos de Pomodoro e plataforma Estratégia Militares.
+            <b>Estudos Noturnos</b><br><br>
+            <span style="color:#94a3b8; font-size:0.9em;">Blocos de Pomodoro e plataforma Estratégia Militares.</span>
             </div>
             """, unsafe_allow_html=True)
     else:
@@ -1457,63 +1549,186 @@ if menu == "📊 Painel & Rotina Diária":
             st.markdown("""
             <div class="routine-card">
             <h4>🌅 05:00 - 06:15</h4>
-            <b>Treino TAF Madrugada</b><br>
-            Treino de aptidão física militar com áudio motivacional.
+            <b>Treino TAF Madrugada</b><br><br>
+            <span style="color:#94a3b8; font-size:0.9em;">Treino de aptidão física militar com áudio motivacional.</span>
             </div>
             """, unsafe_allow_html=True)
-
         with r2:
             st.markdown("""
             <div class="routine-card">
             <h4>🏫 07:00 - 17:00</h4>
-            <b>Aulas Presenciais EFA</b><br>
-            Disciplinas teóricas e práticas da Escola Família Agrícola.
+            <b>Aulas Presenciais EFA</b><br><br>
+            <span style="color:#94a3b8; font-size:0.9em;">Disciplinas teóricas e práticas da Escola Família Agrícola.</span>
             </div>
             """, unsafe_allow_html=True)
-
         with r3:
             st.markdown("""
             <div class="routine-card">
             <h4>📚 18:30 - 22:30</h4>
-            <b>QG Noturno EsPCEx</b><br>
-            Revisão teórica, LDI, BQEM e simulados do Estratégia.
+            <b>QG Noturno EsPCEx</b><br><br>
+            <span style="color:#94a3b8; font-size:0.9em;">Revisão teórica, LDI, BQEM e simulados do Estratégia.</span>
             </div>
             """, unsafe_allow_html=True)
 
     st.markdown("---")
 
+    # -----------------------------------------------------------------------------
+    # GRÁFICOS MELHORADOS COM ASPECTO 3D
+    # -----------------------------------------------------------------------------
     col_g1, col_g2 = st.columns(2)
+    
     with col_g1:
         st.subheader("📈 Rendimento em Questões")
         if not df_sessoes.empty:
             df_mat = df_sessoes.groupby("Matéria")[["Acertos", "Questões"]].sum().reset_index()
             df_mat["Erros"] = df_mat["Questões"] - df_mat["Acertos"]
-            fig_mat = px.bar(df_mat, x="Matéria", y=["Acertos", "Erros"], barmode="stack", color_discrete_sequence=["#2e7d32", "#c62828"])
-            fig_mat.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e0e6ed")
+            
+            # Gráfico de Barras Estilizado Simulando 3D no Plotly
+            fig_mat = go.Figure()
+            fig_mat.add_trace(go.Bar(
+                x=df_mat["Matéria"], y=df_mat["Acertos"],
+                name='Acertos',
+                marker=dict(
+                    color='#10b981',
+                    line=dict(color='#059669', width=2)
+                )
+            ))
+            fig_mat.add_trace(go.Bar(
+                x=df_mat["Matéria"], y=df_mat["Erros"],
+                name='Erros',
+                marker=dict(
+                    color='#ef4444',
+                    line=dict(color='#b91c1c', width=2)
+                )
+            ))
+            fig_mat.update_layout(
+                barmode='stack',
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#e2e8f0"),
+                margin=dict(l=20, r=20, t=30, b=20),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            # Adicionando grid mais suave para dar profundidade
+            fig_mat.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255,255,255,0.1)')
             st.plotly_chart(fig_mat, use_container_width=True)
         else:
             st.info("Nenhuma bateria de questões registrada.")
 
     with col_g2:
         st.subheader("📋 Progresso do Edital")
-        df_edital = pd.DataFrame(db["edital"])
+        df_edital = pd.DataFrame(db.get("edital", []))
+        
         if not df_edital.empty:
             df_status = df_edital["Status"].value_counts().reset_index()
             df_status.columns = ["Status", "Quantidade"]
-            fig_edital = px.pie(df_status, names="Status", values="Quantidade", hole=0.4, color_discrete_map={"Não Iniciado": "#333333", "Teoria Lida": "#f57c00", "Exercícios Feitos": "#0288d1", "Revisado / Dominado": "#2e7d32"})
-            fig_edital.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="#e0e6ed")
-            st.plotly_chart(fig_edital, use_container_width=True)
-
+            
+            cores_map = {
+                "Não Iniciado": "#334155", 
+                "Teoria Lida": "#f59e0b", 
+                "Exercícios Feitos": "#3b82f6", 
+                "Revisado / Dominado": "#10b981"
+            }
+            
+            # Prepara os dados para o JavaScript do Highcharts 3D
+            data_for_hc = []
+            for _, row in df_status.iterrows():
+                # O item "Revisado / Dominado" fica levemente destacado
+                is_sliced = row["Status"] == "Revisado / Dominado"
+                data_for_hc.append({
+                    "name": row["Status"],
+                    "y": int(row["Quantidade"]),
+                    "color": cores_map.get(row["Status"], "#888888"),
+                    "sliced": is_sliced,
+                    "selected": is_sliced
+                })
+            
+            # Injeta o Highcharts 3D via HTML/JS (Gráfico de Rosca/Donut Premium)
+            hc_html = f"""
+            <html>
+            <head>
+                <script src="https://code.highcharts.com/highcharts.js"></script>
+                <script src="https://code.highcharts.com/highcharts-3d.js"></script>
+                <style>
+                    body {{ 
+                        background-color: transparent; 
+                        margin: 0; 
+                        padding: 0; 
+                        font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; 
+                    }}
+                    #container {{ height: 350px; width: 100%; }}
+                </style>
+            </head>
+            <body>
+                <div id="container"></div>
+                <script>
+                    Highcharts.chart('container', {{
+                        chart: {{
+                            type: 'pie',
+                            options3d: {{
+                                enabled: true,
+                                alpha: 45,
+                                beta: 0
+                            }},
+                            backgroundColor: 'transparent'
+                        }},
+                        title: {{
+                            text: null
+                        }},
+                        tooltip: {{
+                            pointFormat: '<b>{{point.percentage:.1f}}%</b><br>({{point.y}} itens)',
+                            backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                            style: {{ color: '#e2e8f0' }},
+                            borderWidth: 1,
+                            borderColor: '#334155'
+                        }},
+                        plotOptions: {{
+                            pie: {{
+                                allowPointSelect: true,
+                                cursor: 'pointer',
+                                depth: 45,
+                                innerSize: '30%', /* Cria o efeito Donut 3D */
+                                dataLabels: {{
+                                    enabled: true,
+                                    format: '<b>{{point.name}}</b>',
+                                    color: '#e2e8f0',
+                                    style: {{ 
+                                        textOutline: 'none', 
+                                        fontSize: '13px',
+                                        fontWeight: '600'
+                                    }}
+                                }}
+                            }}
+                        }},
+                        series: [{{
+                            name: 'Progresso',
+                            data: {json.dumps(data_for_hc)}
+                        }}],
+                        credits: {{
+                            enabled: false
+                        }}
+                    }});
+                </script>
+            </body>
+            </html>
+            """
+            
+            components.html(hc_html, height=360)
+        else:
+            st.info("Edital não importado ainda.")
+            
 # -----------------------------------------------------------------------------
 # PERSONALIZAÇÃO DO PAINEL
 # -----------------------------------------------------------------------------
 elif menu == "🎛️ Personalizar Painel":
     st.title("🎛️ Personalizar Painel")
     st.caption("Escolha os indicadores e as tarefas que aparecem na sua rotina diária.")
+    
     painel_config = db.get("painel_config", {})
     missao_config = db.get("config_missoes_diarias", {})
     if not isinstance(painel_config, dict): painel_config = {}
     if not isinstance(missao_config, dict): missao_config = {}
+    
     indicadores_disponiveis = [
         "Horas de estudo", "Questões respondidas", "Taxa de acerto", "Treinos TAF",
         "Dias até a prova", "AMSP pendentes", "Revisões pendentes", "Progresso do edital",
@@ -1524,28 +1739,29 @@ elif menu == "🎛️ Personalizar Painel":
         "revisao": "Revisão programada",
         "diario": "Registro no Diário de Bordo",
     }
+    
     missoes_atuais = missao_config.get("ativas", list(missoes_disponiveis))
     if not isinstance(missoes_atuais, list): missoes_atuais = list(missoes_disponiveis)
     extras_atuais = missao_config.get("extras", [])
     if not isinstance(extras_atuais, list): extras_atuais = []
 
-    with st.container(border=True):
+    with st.container():
         st.markdown("#### Sua visão de acompanhamento")
         with st.form("form_personalizar_painel_completo"):
             indicadores_personalizados = st.multiselect(
                 "Cartões de indicadores", indicadores_disponiveis,
                 default=[x for x in painel_config.get("indicadores", indicadores_disponiveis[:5]) if x in indicadores_disponiveis],
-                help="Você pode escolher e reordenar os indicadores do topo do painel.",
+                help="Você pode escolher e reordenar os indicadores do topo do painel."
             )
             missoes_personalizadas = st.multiselect(
                 "Missões que aparecem todo dia", list(missoes_disponiveis),
                 format_func=lambda chave: missoes_disponiveis[chave],
-                default=[x for x in missoes_atuais if x in missoes_disponiveis],
+                default=[x for x in missoes_atuais if x in missoes_disponiveis]
             )
             outras_missoes_texto = st.text_area(
                 "Outras missões diárias (uma por linha)",
                 value="\n".join(str(x) for x in extras_atuais[:5]), max_chars=500,
-                placeholder="Ex.: Separar material para amanhã\nConferir agenda da semana",
+                placeholder="Ex.: Separar material para amanhã\nConferir agenda da semana"
             )
             if st.form_submit_button("Salvar personalização", type="primary", use_container_width=True):
                 extras_limpos = list(dict.fromkeys(linha.strip()[:100] for linha in outras_missoes_texto.splitlines() if linha.strip()))[:5]
@@ -1561,8 +1777,9 @@ elif menu == "🎛️ Personalizar Painel":
             st.markdown("**Missão diária:** TAF planejado, estudo, revisão, diário e tarefas extras que você ativou.")
         else:
             st.info("Nenhum indicador selecionado. Você ainda verá as missões e gráficos do painel.")
+            
     st.button("Voltar ao painel", on_click=_navegar_qg, args=("📊 Painel & Rotina Diária",))
-
+   
 # -----------------------------------------------------------------------------
 # MÓDULO 2: Portal Estratégia Militares
 # -----------------------------------------------------------------------------
@@ -1590,213 +1807,7 @@ elif menu == "🦉 Portal Estratégia Militares":
 # -----------------------------------------------------------------------------
 # MÓDULO 3: Treino TAF + Player de Música Spotify
 # -----------------------------------------------------------------------------
-# #MODULO_TREINO_TAF_SPOTIFY
-elif "treino taf" in menu.lower() or "taf" in menu.lower():
-    import sqlite3
-    import datetime
-    import pandas as pd
-    import plotly.express as px
-    import streamlit.components.v1 as components
-    import streamlit as st
-
-    st.title("🏋️ Treinamento Físico Militar - TAF EsPCEx")
-    st.caption("Acompanhamento dos treinos das 05h00 e player oficial do Spotify integrado.")
-
-    # 1. BANCO DE DADOS LOCAL (SQLITE)
-    def init_db_taf():
-        conn = sqlite3.connect("dados_qg.db")
-        c = conn.cursor()
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS treinos_taf (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                data_treino TEXT NOT NULL,
-                modalidade TEXT NOT NULL,
-                flexoes INTEGER DEFAULT 0,
-                abdominais INTEGER DEFAULT 0,
-                barras INTEGER DEFAULT 0,
-                corrida_m INTEGER DEFAULT 0,
-                status_indice TEXT NOT NULL,
-                observacoes TEXT
-            )
-        """)
-        conn.commit()
-        
-        c.execute("PRAGMA table_info(treinos_taf)")
-        cols = [col[1] for col in c.fetchall()]
-        if "data_treino" not in cols:
-            c.execute("DROP TABLE treinos_taf")
-            c.execute("""
-                CREATE TABLE treinos_taf (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    data_treino TEXT NOT NULL,
-                    modalidade TEXT NOT NULL,
-                    flexoes INTEGER DEFAULT 0,
-                    abdominais INTEGER DEFAULT 0,
-                    barras INTEGER DEFAULT 0,
-                    corrida_m INTEGER DEFAULT 0,
-                    status_indice TEXT NOT NULL,
-                    observacoes TEXT
-                )
-            """)
-            conn.commit()
-        conn.close()
-
-    try:
-        init_db_taf()
-    except Exception as e:
-        st.error(f"Erro ao inicializar tabela TAF: {e}")
-
-    def salvar_treino_taf(data_t, modalidade, flex, abs_rep, bar, corr, status_ind, obs):
-        conn = sqlite3.connect("dados_qg.db")
-        c = conn.cursor()
-        c.execute("""
-            INSERT INTO treinos_taf (data_treino, modalidade, flexoes, abdominais, barras, corrida_m, status_indice, observacoes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (str(data_t), modalidade, flex, abs_rep, bar, corr, status_ind, obs))
-        conn.commit()
-        conn.close()
-
-    def carregar_treinos_taf():
-        try:
-            conn = sqlite3.connect("dados_qg.db")
-            df = pd.read_sql_query("""
-                SELECT 
-                    data_treino AS Data, 
-                    modalidade AS Foco, 
-                    flexoes AS Flexões, 
-                    abdominais AS Abdominais, 
-                    barras AS Barra, 
-                    corrida_m AS [Corrida (m)], 
-                    status_indice AS [Índice Mínimo], 
-                    observacoes AS Observações 
-                FROM treinos_taf 
-                ORDER BY data_treino ASC
-            """, conn)
-            conn.close()
-            return df
-        except Exception:
-            return pd.DataFrame()
-
-    # 2. ESTRUTURA DE ABAS
-    aba_registro, aba_evolucao, aba_spotify = st.tabs([
-        "➕ Cadastrar Treino (05h)",
-        "📈 Evolução Física",
-        "🎧 Spotify Player Integrado"
-    ])
-
-    # ABA 1: CADASTRAR TREINO
-    with aba_registro:
-        st.markdown("""
-        **Índices Mínimos Masculinos (EsPCEx):**
-        - 🏃‍♂️ **Corrida 12 min:** Mínimo `2.450 metros`
-        - 💪 **Flexão de Braço:** Mínimo `21 repetições`
-        - 🧘‍♂️ **Abdominal Supra:** Mínimo `30 repetições` (em 1 minuto)
-        - 🏋️‍♂️ **Barra Fixa:** Mínimo `3 repetições`
-        """)
-
-        with st.form("form_taf_novo", clear_on_submit=True):
-            col_t1, col_t2 = st.columns(2)
-            data_treino = col_t1.date_input("Data do Treino", datetime.date.today())
-            modalidade = col_t2.selectbox("Foco Principal", ["Treino Completo TAF", "Corrida de Tiro/Resistência", "Calistenia (Barra/Flexão/Abs)", "Simulado TAF Oficial"])
-
-            c_f1, c_f2, c_f3, c_f4 = st.columns(4)
-            flexoes = c_f1.number_input("Flexões de Braço", min_value=0, value=22)
-            abdominais = c_f2.number_input("Abdominais (1 min)", min_value=0, value=32)
-            barras = c_f3.number_input("Barra Fixa", min_value=0, value=4)
-            corrida_m = c_f4.number_input("Corrida 12 min (Metros)", min_value=0, value=2500, step=50)
-
-            obs_taf = st.text_input("Observações do Treino")
-
-            if st.form_submit_button("⚔️ Registrar Treino TAF", use_container_width=True):
-                ok_flex = flexoes >= 21
-                ok_abs = abdominais >= 30
-                ok_bar = barras >= 3
-                ok_cor = corrida_m >= 2450
-                aprovado_taf = ok_flex and ok_abs and ok_bar and ok_cor
-                status_str = "✅ APROVADO" if aprovado_taf else "⚠️ ABAIXO"
-
-                salvar_treino_taf(
-                    data_t=data_treino,
-                    modalidade=modalidade,
-                    flex=flexoes,
-                    abs_rep=abdominais,
-                    bar=barras,
-                    corr=corrida_m,
-                    status_ind=status_str,
-                    obs=obs_taf
-                )
-
-                if aprovado_taf:
-                    st.success("🎉 EXCELENTE! Atingiu todos os índices mínimos do TAF da EsPCEx!")
-                else:
-                    st.warning("Manter a constância nos treinos!")
-                st.rerun()
-
-    # ABA 2: EVOLUÇÃO FÍSICA
-    with aba_evolucao:
-        df_taf = carregar_treinos_taf()
-        if not df_taf.empty:
-            col_g_taf1, col_g_taf2 = st.columns(2)
-            with col_g_taf1:
-                fig_cor = px.line(df_taf, x="Data", y="Corrida (m)", markers=True, title="Evolução na Corrida de 12 Minutos")
-                fig_cor.add_hline(y=2450, line_dash="dash", line_color="green", annotation_text="Mínimo EsPCEx (2450m)")
-                fig_cor.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="#e0e6ed")
-                st.plotly_chart(fig_cor, use_container_width=True)
-
-            with col_g_taf2:
-                fig_rep = px.line(df_taf, x="Data", y=["Flexões", "Abdominais", "Barra"], markers=True, title="Repetições nos Exercícios de Força")
-                fig_rep.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="#e0e6ed")
-                st.plotly_chart(fig_rep, use_container_width=True)
-
-            st.dataframe(df_taf, use_container_width=True)
-        else:
-            st.info("Nenhum treino TAF cadastrado até o momento.")
-
-    # ABA 3: SPOTIFY
-    with aba_spotify:
-        st.subheader("🎧 Player Oficial do Spotify no QG EsPCEx")
-        st.caption("Ouça suas músicas diretamente pelo Spotify na plataforma durante o treino das 05h00:")
-
-        st.markdown("""
-        <div style="margin-bottom: 15px;">
-            <a href="spotify://" style="background-color: #1DB954; color: black; padding: 10px 18px; border-radius: 20px; text-decoration: none; font-weight: bold; display: inline-block;">
-                📱 Abrir App do Spotify no Telemóvel
-            </a>
-        </div>
-        """, unsafe_allow_html=True)
-
-        playlist_escolhida = st.selectbox("Escolher Estilo / Playlist do Spotify", [
-            "🥁 Canções e Marchas Militares do Exército Brasileiro",
-            "🔥 Funk Motivacional / Treino TAF (BPM Alto)",
-            "🎧 Workout Beats (Eletrónica / Hip-Hop)",
-            "⚡ Rock Workout (Treino Pesado)",
-            "🤠 Sertanejo / Gospel Workout",
-            "🔗 Cole o Seu Próprio Link do Spotify (Playlist/Música)"
-        ])
-
-        if playlist_escolhida == "🥁 Canções e Marchas Militares do Exército Brasileiro":
-            components.iframe("https://open.spotify.com/embed/playlist/37i9dQZF1DXdLENI3B52e1?utm_source=generator&theme=0", height=380)
-
-        elif playlist_escolhida == "🔥 Funk Motivacional / Treino TAF (BPM Alto)":
-            components.iframe("https://open.spotify.com/embed/playlist/37i9dQZF1DX8nt3K81J24A?utm_source=generator&theme=0", height=380)
-
-        elif playlist_escolhida == "🎧 Workout Beats (Eletrónica / Hip-Hop)":
-            components.iframe("https://open.spotify.com/embed/playlist/37i9dQZF1DX76Wlfd11S3M?utm_source=generator&theme=0", height=380)
-
-        elif playlist_escolhida == "⚡ Rock Workout (Treino Pesado)":
-            components.iframe("https://open.spotify.com/embed/playlist/37i9dQZF1DX3531lA3283T?utm_source=generator&theme=0", height=380)
-
-        elif playlist_escolhida == "🤠 Sertanejo / Gospel Workout":
-            components.iframe("https://open.spotify.com/embed/playlist/37i9dQZF1DXdS1C2By3I9e?utm_source=generator&theme=0", height=380)
-
-        elif playlist_escolhida == "🔗 Cole o Seu Próprio Link do Spotify (Playlist/Música)":
-            url_spotify = st.text_input("Cole aqui a URL da sua Playlist/Música do Spotify (ex: https://open.spotify.com/playlist/...)")
-            if url_spotify:
-                if "spotify.com" in url_spotify:
-                    embed_url = url_spotify.replace("open.spotify.com/", "open.spotify.com/embed/")
-                    components.iframe(embed_url, height=380)
-                else:
-                    st.warning("Insira uma URL válida do Spotify.")
+#
 # -----------------------------------------------------------------------------
 # MÓDULO 4: Alternância EFA & AMSP (15/15) - Disciplinas da EFA
 # -----------------------------------------------------------------------------
@@ -2956,96 +2967,456 @@ elif menu == "🎲 Sorteador de Temas & Textos Base":
 # ====================================================
 # MÓDULO 13: PACER TAF
 # ====================================================
-elif menu == "🏃 Módulo 13: Pacer TAF":
-    st.header("🏃 Módulo 13: Simulador Pacer de Corrida TAF")
-    st.markdown("Calcule o ritmo exato por volta e acompanhe metas progressivas para os **12 minutos de corrida**.")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        distancia_meta = st.number_input("Meta de Distância (metros)", min_value=1000, max_value=4000, value=2450, step=50)
-        tamanho_pista = st.number_input("Tamanho da Pista/Volta (metros)", min_value=100, max_value=1000, value=400, step=50)
-
-    tempo_min = 12.0
-    vel_media_kmh = (distancia_meta / 1000) / (tempo_min / 60)
-    total_voltas = distancia_meta / tamanho_pista
-    tempo_por_volta_seg = (tempo_min * 60) / total_voltas
-
-    with col2:
-        st.subheader("🎯 Métricas Táticas")
-        st.metric("Velocidade Média Necessária", f"{vel_media_kmh:.2f} km/h")
-        st.metric("Total de Voltas na Pista", f"{total_voltas:.2f} voltas")
-        st.metric("Tempo Exato por Volta (400m)", f"{int(tempo_por_volta_seg // 60)}min {int(tempo_por_volta_seg % 60)}seg")
-
-    st.markdown("---")
-    st.subheader("📈 Plano de Evolução Progressiva (8 Semanas)")
-    
-    metas_semanais = []
-    base_dist = min(2000, distancia_meta - 450)
-    incremento = (distancia_meta + 100 - base_dist) / 7
-
-    for sem in range(1, 9):
-        dist_sem = base_dist + (incremento * (sem - 1))
-        vel_sem = (dist_sem / 1000) / (12 / 60)
-        metas_semanais.append({
-            "Semana": f"Semana {sem}",
-            "Meta Corrida (m)": int(dist_sem),
-            "Velocidade (km/h)": round(vel_sem, 2),
-            "Status": "Concluído" if sem == 1 else "Pendente"
-        })
-
-    df_pacer = pd.DataFrame(metas_semanais)
-    st.dataframe(df_pacer, use_container_width=True, hide_index=True)
+# =============================================================================
+# 1. IMPORTAÇÃO DE BIBLIOTECAS (Motor do Aplicativo)
+# =============================================================================
+elif menu == "🏃 PACER TAF":
+    import pandas as pd
+    import numpy as np
+    import plotly.express as px
+    import plotly.graph_objects as go
+    import streamlit.components.v1 as components
 
 
+
+    # =============================================================================
+    # 3. INJEÇÃO DE HTML, CSS E JAVASCRIPT DE ALTO PADRÃO (PREMIUM)
+    # =============================================================================
+    st.markdown("""
+        <style>
+        /* Importação de fontes futuristas e táticas */
+        @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&family=Inter:wght@400;600&display=swap');
+
+        /* Fundo Master da Aplicação com Padrão Tático */
+        .stApp {
+            background-color: #05090c;
+            background-image: radial-gradient(rgba(0, 255, 204, 0.08) 1px, transparent 1px);
+            background-size: 30px 30px;
+            font-family: 'Inter', sans-serif;
+            color: #ffffff;
+        }
+
+        /* Cards de Métricas Premium (Glassmorphism + Neon Pulsante) */
+        div[data-testid="stMetric"] {
+            background: linear-gradient(145deg, rgba(10, 20, 25, 0.8) 0%, rgba(0, 0, 0, 0.5) 100%);
+            backdrop-filter: blur(25px);
+            -webkit-backdrop-filter: blur(25px);
+            border: 1px solid rgba(0, 255, 204, 0.15);
+            border-top: 1px solid rgba(0, 255, 204, 0.4);
+            border-radius: 18px;
+            padding: 25px;
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.6), inset 0 0 20px rgba(0, 255, 204, 0.05);
+            transition: all 0.5s cubic-bezier(0.25, 0.8, 0.25, 1);
+        }
+
+        /* Efeito de levitação extrema ao passar o mouse */
+        div[data-testid="stMetric"]:hover {
+            transform: translateY(-8px) scale(1.02);
+            box-shadow: 0 20px 40px rgba(0, 255, 204, 0.25), inset 0 0 30px rgba(0, 255, 204, 0.1);
+            border-color: rgba(0, 255, 204, 1);
+        }
+
+        /* Valores Numéricos Estilo HUD */
+        div[data-testid="stMetricValue"] {
+            font-family: 'Rajdhani', sans-serif !important;
+            color: #00ffcc !important;
+            text-shadow: 0px 0px 20px rgba(0, 255, 204, 0.8), 0px 0px 40px rgba(0, 255, 204, 0.4);
+            font-weight: 700;
+            font-size: 2.6rem !important;
+            letter-spacing: 2px;
+        }
+
+        /* Títulos em Degradê Dinâmico */
+        h1, h2, h3 {
+            font-family: 'Rajdhani', sans-serif;
+            background: linear-gradient(to right, #00ffcc, #0088ff, #bc13fe);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+        }
+
+        /* Personalização Premium das Abas (Tabs) */
+        button[data-baseweb="tab"] {
+            background-color: transparent !important;
+            color: #666 !important;
+            font-family: 'Rajdhani', sans-serif;
+            font-size: 1.1rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: all 0.3s ease;
+        }
+        button[data-baseweb="tab"][aria-selected="true"] {
+            color: #fff !important;
+            text-shadow: 0 0 10px rgba(0, 255, 204, 0.8);
+            border-bottom: 4px solid #00ffcc !important;
+            background: linear-gradient(to top, rgba(0, 255, 204, 0.1), transparent) !important;
+            border-radius: 10px 10px 0 0;
+        }
+
+        /* Barra de rolagem customizada */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #05090c; }
+        ::-webkit-scrollbar-thumb { background: #00ffcc; border-radius: 10px; }
+        </style>
+
+        <!-- Injeção de JS para o Console do Cliente -->
+        <script>
+            console.log("%c [TAF PRO 3D ENGINE] Sistema Inicializado com Sucesso ", "background: #00ffcc; color: #000; font-weight: bold; font-size: 14px;");
+        </script>
+    """, unsafe_allow_html=True)
+
+    # Função auxiliar padronizada para os Gráficos 3D (Fundo escuro/transparente, iluminação de estúdio)
+    def apply_3d_layout(fig, title=""):
+        fig.update_layout(
+            title=dict(text=title, font=dict(family='Rajdhani', color='#00ffcc', size=22)),
+            scene=dict(
+                xaxis=dict(backgroundcolor="rgba(0,0,0,0)", gridcolor="#1a2630", showbackground=True, zerolinecolor="#00ffcc"),
+                yaxis=dict(backgroundcolor="rgba(0,0,0,0)", gridcolor="#1a2630", showbackground=True, zerolinecolor="#00ffcc"),
+                zaxis=dict(backgroundcolor="rgba(0,0,0,0)", gridcolor="#1a2630", showbackground=True, zerolinecolor="#00ffcc"),
+            ),
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=10, r=10, b=10, t=50),
+            font=dict(color='#88929b', family='Inter')
+        )
+        return fig
+
+    # =============================================================================
+    # 4. BARRA LATERAL (SIDEBAR) E ROTEAMENTO DE MÓDULOS
+    # =============================================================================
+    st.sidebar.image("https://cdn-icons-png.flaticon.com/512/2936/2936886.png", width=100)
+    st.sidebar.markdown("## 🏅 **SISTEMA ELITE**")
+    st.sidebar.markdown("---")
+
+    menu = st.sidebar.radio(
+        "Navegação do Sistema",
+        [
+            "🏠 Página Inicial",
+            "🏃 Módulo 13: Pacer TAF",
+            "💪 Outros Módulos..."
+        ]
+    )
+
+    st.sidebar.markdown("---")
+    st.sidebar.info("Módulo 13 carregado com Engine Gráfica 3D Avançada.")
+
+    # =============================================================================
+    # 5. ESTRUTURA DOS MÓDULOS
+    # =============================================================================
+
+    if menu == "🏠 Página Inicial":
+        st.header("Bem-vindo ao TAF Pro Tracker 3D")
+        st.markdown("Selecione o **Módulo 13: Pacer TAF** na barra lateral para acessar o painel tático operacional completo.")
+
+    # -----------------------------------------------------------------------------
+    # MÓDULO 13: CENTRAL TAF ELITE 3D (COMPLETO)
+    # -----------------------------------------------------------------------------
+    elif menu == "🏃 Módulo 13: Pacer TAF":
+        st.header("🏃 Módulo 13: Comando TAF Elite 3D")
+        st.markdown("Painel tático operacional. **Análises biomecânicas, projeções espaciais e hidrodinâmicas** rodando em tempo real.")
+
+        # Criação das 5 Abas Internas Principais
+        tab_pacer, tab_treino, tab_evo, tab_natacao, tab_spotify = st.tabs([
+            "🏃 PACER 3D", 
+            "💪 MAPA DE FADIGA", 
+            "📈 DISPERSÃO BIOMECÂNICA", 
+            "🐟 EFEITO PEIXE (ÁGUA)", 
+            "🎧 ZONA DE FOCO"
+        ])
+
+        # -----------------------------------------------------
+        # ABA 1: PACER DE CORRIDA 3D
+        # -----------------------------------------------------
+        with tab_pacer:
+            col1, col2 = st.columns([1, 1.2])
+            
+            with col1:
+                st.markdown("### ⚙️ Parâmetros do Edital")
+                distancia_meta = st.number_input("Meta de Distância (metros)", min_value=1000, max_value=4000, value=2450, step=50)
+                tamanho_pista = st.number_input("Tamanho da Pista (metros)", min_value=100, max_value=1000, value=400, step=50)
+
+            tempo_min = 12.0
+            vel_media_kmh = (distancia_meta / 1000) / (tempo_min / 60)
+            total_voltas = distancia_meta / tamanho_pista
+            tempo_por_volta_seg = (tempo_min * 60) / total_voltas
+
+            with col2:
+                st.markdown("### 🎯 HUD de Execução")
+                c_a, c_b = st.columns(2)
+                c_a.metric("Velocidade Alvo", f"{vel_media_kmh:.2f} km/h")
+                c_b.metric("Total de Voltas", f"{total_voltas:.2f} 🔄")
+                st.metric(f"Pace / Volta ({int(tamanho_pista)}m)", f"{int(tempo_por_volta_seg // 60)}min {int(tempo_por_volta_seg % 60)}seg")
+
+            st.markdown("---")
+            
+            metas_semanais = []
+            base_dist = min(2000, distancia_meta - 450)
+            incremento = (distancia_meta + 100 - base_dist) / 7
+
+            for sem in range(1, 9):
+                dist_sem = base_dist + (incremento * (sem - 1))
+                vel_sem = (dist_sem / 1000) / (12 / 60)
+                metas_semanais.append({
+                    "Semana": f"Semana {sem}",
+                    "Sem_Num": sem,
+                    "Meta (m)": int(dist_sem),
+                    "Velocidade": round(vel_sem, 2)
+                })
+
+            df_pacer = pd.DataFrame(metas_semanais)
+            
+            col_tab, col_graf = st.columns([1, 2])
+            with col_tab:
+                st.markdown("<br><br>", unsafe_allow_html=True)
+                st.dataframe(df_pacer.drop(columns=["Sem_Num"]), use_container_width=True, hide_index=True)
+
+            with col_graf:
+                # Gráfico 3D corrigido com scatter_3d e update_traces para gradiente de cores perfeito
+                fig_pacer_3d = px.scatter_3d(
+                    df_pacer, x='Sem_Num', y='Velocidade', z='Meta (m)', 
+                    text='Semana', color='Velocidade', color_continuous_scale='Aggrnyl'
+                )
+                fig_pacer_3d.update_traces(mode='lines+markers', marker=dict(size=8, symbol='diamond'), line=dict(width=6))
+                st.plotly_chart(apply_3d_layout(fig_pacer_3d, "Trajetória Espacial de Pace"), use_container_width=True)
+
+        # -----------------------------------------------------
+        # ABA 2: MAPA DE FADIGA MUSCULAR (Superfície 3D)
+        # -----------------------------------------------------
+        with tab_treino:
+            st.markdown("### 🦾 Topografia 3D do Desgaste Físico")
+            
+            c1, c2, c3 = st.columns(3)
+            c1.info("⬆️ **Barra Fixa:** Máxima Tensão Negativa.")
+            c2.warning("⬇️ **Flexão:** Isometria no Ponto Zero.")
+            c3.error("🔥 **Abdômen:** Explosão AMRAP.")
+                
+            x_series = np.array([1, 2, 3, 4, 5]) 
+            y_intensidade = np.array([50, 60, 70, 80, 90, 100])
+            X, Y = np.meshgrid(x_series, y_intensidade)
+            Z = (X * 12) + (Y / 1.5) + np.sin(X * Y) * 15 
+            
+            fig_surface = go.Figure(data=[go.Surface(
+                z=Z, x=X, y=Y, colorscale='Turbo',
+                lighting=dict(ambient=0.4, diffuse=0.8, fresnel=0.2, specular=1.5, roughness=0.1),
+                lightposition=dict(x=100, y=100, z=200)
+            )])
+            fig_surface.update_layout(scene=dict(xaxis_title='Séries', yaxis_title='Intensidade (%)', zaxis_title='Exaustão'))
+            st.plotly_chart(apply_3d_layout(fig_surface, "Relevo de Falha Muscular"), use_container_width=True)
+
+        # -----------------------------------------------------
+        # ABA 3: DISPERSÃO BIOMECÂNICA (Nuvem 3D)
+        # -----------------------------------------------------
+        with tab_evo:
+            st.markdown("### 🧬 Mapeamento Cruzado de Desempenho")
+            
+            np.random.seed(15)
+            df_evo = pd.DataFrame({
+                "Semana": np.arange(1, 13),
+                "Peso (kg)": np.linspace(85, 73, 12) + np.random.normal(0, 0.3, 12),
+                "Barras": np.linspace(2, 15, 12) + np.random.normal(0, 0.5, 12),
+                "VO2 Máx": np.linspace(35, 55, 12) + np.random.normal(0, 2, 12)
+            })
+
+            fig_3d = px.scatter_3d(
+                df_evo, x='Semana', y='Peso (kg)', z='Barras', 
+                color='VO2 Máx', size='VO2 Máx', color_continuous_scale='Inferno'
+            )
+            fig_3d.update_traces(marker=dict(line=dict(width=2, color='DarkSlateGrey')))
+            st.plotly_chart(apply_3d_layout(fig_3d, "Matriz: Peso x Força x Oxigênio"), use_container_width=True)
+
+        # -----------------------------------------------------
+        # ABA 4: EFEITO PEIXE (Hidrodinâmica e Túnel de Água 3D)
+        # -----------------------------------------------------
+        with tab_natacao:
+            st.markdown("### 🐟 Hidrodinâmica: Paradigma do Peixe")
+            st.markdown("A diferença entre o corpo humano e a vida marinha através da visualização do **Coeficiente de Arrasto 3D**.")
+            
+            c_nat1, c_nat2 = st.columns(2)
+            with c_nat1:
+                st.error("🏊‍♂️ **Atleta (Humano):** Corpo gera turbulência frontal severa (Área Vermelha).")
+            with c_nat2:
+                st.info("🦈 **Morfologia do Peixe:** Design de torpedo zera o atrito (Área Azul Lisa).")
+
+            tempo_natação = st.slider("Tempo Alvo na Água (Segundos para 50m)", 20, 90, 45)
+            st.metric("Velocidade Média (Humano)", f"{(50 / tempo_natação):.2f} m/s")
+
+            y_peixe = np.linspace(0, 100, 30)
+            x_peixe = np.linspace(-10, 10, 30)
+            X_p, Y_p = np.meshgrid(x_peixe, y_peixe)
+            
+            Z_humano = np.cos(X_p * 1.5) * np.sin(Y_p * 0.5) * 15 
+            Z_peixe = -np.exp(-(X_p**2 + (Y_p-50)**2)/40) * 25 
+
+            fig_peixe = go.Figure()
+            fig_peixe.add_trace(go.Surface(z=Z_humano, x=X_p, y=Y_p, colorscale='Reds', opacity=0.7, name='Turbulência Humana', showscale=False))
+            fig_peixe.add_trace(go.Surface(z=Z_peixe, x=X_p, y=Y_p, colorscale='Blues', opacity=0.9, name='Fluxo Perfeito (Peixe)'))
+
+            fig_peixe.update_layout(scene=dict(xaxis_title='Eixo X', yaxis_title='Deslocamento', zaxis_title='Resistência (Drag)'))
+            st.plotly_chart(apply_3d_layout(fig_peixe, "Túnel de Água: Atrito Humano vs Torpedo Natural"), use_container_width=True)
+
+        # -----------------------------------------------------
+        # ABA 5: ZONA DE FOCO (Spotify Embed Cyberpunk/Neon)
+        # -----------------------------------------------------
+        with tab_spotify:
+            st.markdown("### 🎧 Imersão Neural: Sincronia 180 BPM")
+            st.markdown("Frequência de áudio projetada para forçar o sistema nervoso central a adotar a **cadência tática de corrida**.")
+            
+            spotify_html = """
+            <div style="
+                border-radius: 20px; 
+                border: 2px solid rgba(0, 255, 204, 0.6); 
+                box-shadow: 0 0 30px rgba(0, 255, 204, 0.2), inset 0 0 20px rgba(0,255,204,0.1); 
+                padding: 10px; 
+                background: rgba(0,0,0,0.5); 
+                backdrop-filter: blur(10px);
+            ">
+                <iframe src="https://open.spotify.com/embed/playlist/37i9dQZF1DXaXB8fQg7xif?utm_source=generator&theme=0" 
+                width="100%" height="400" frameBorder="0" allowfullscreen="" 
+                allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="lazy">
+                </iframe>
+            </div>
+            """
+            components.html(spotify_html, height=450)
+
+elif menu == "💪 Outros Módulos...":
+    st.header("🛠️ Outros Módulos")
+    st.write("Insira os demais módulos do seu projeto corporativo seguindo a mesma estrutura de roteamento.")
 # ====================================================
 # MÓDULO 14: NUTRIÇÃO & CALORIAS
 # ====================================================
 elif menu == "🥗 Nutrição & Calorias":
-    from zoneinfo import ZoneInfo
+    # Importações necessárias para o funcionamento do módulo
+    from zoneinfo import ZoneInfo # Para lidar com fusos horários reais
+    import datetime # Para manipular datas e horas dos registros
+    import re # Expressões regulares para formatar textos (slugs)
+    import time # Para criar efeitos de atraso (loading/spinners)
+    import pandas as pd # Para manipular e filtrar dados em tabelas
+    import numpy as np # Para cálculos matemáticos complexos
+    import plotly.express as px # Gráficos rápidos do Plotly
+    import plotly.graph_objects as go # Gráficos altamente customizáveis (Gauge, Donut 3D)
+    import streamlit.components.v1 as components # Para injetar HTML e JS puro
 
-    st.header("🥗 Nutrição & Calorias")
-    st.markdown("Estimativas, alimentos e hidratação organizados em um só lugar.")
+    # =====================================================================
+    # 🌟 1. CSS INJECTIONS: ANIMAÇÕES E VISUAL CYBERPUNK
+    # =====================================================================
+    # Este bloco injeta CSS diretamente na página do Streamlit para sobrescrever
+    # o design padrão e adicionar animações de flutuação, brilho neon e gradientes.
+    st.markdown("""
+        <style>
+        /* Fade-in: Faz a página inteira aparecer suavemente de baixo para cima */
+        @keyframes fadeInScale {
+            0% { opacity: 0; transform: scale(0.95); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+        
+        /* Gradient Shift: Move o fundo colorido do título em loop contínuo */
+        @keyframes gradientShift {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        
+        /* Float Effect: Faz os cartões de métricas subirem e descerem suavemente */
+        @keyframes floatEffect {
+            0% { transform: translateY(0px); }
+            50% { transform: translateY(-8px); }
+            100% { transform: translateY(0px); }
+        }
+        
+        /* Neon Pulse: Faz as bordas e sombras piscarem com luz neon (Ciano e Verde) */
+        @keyframes neonPulse {
+            0% { box-shadow: 0 0 10px rgba(0, 201, 255, 0.2); }
+            50% { box-shadow: 0 0 25px rgba(0, 201, 255, 0.6), 0 0 10px rgba(146, 254, 157, 0.4); }
+            100% { box-shadow: 0 0 10px rgba(0, 201, 255, 0.2); }
+        }
 
-    tab_estimativas, tab_catalogo, tab_planejador, tab_hidratacao = st.tabs([
-        "📊 Estimativas", "🥑 Catálogo de alimentos", "🍽️ Planejador de refeições", "💧 Hidratação"
-    ])
+        /* Aplica o Fade-in no container principal do app */
+        .block-container { animation: fadeInScale 0.8s ease-out; }
 
-    with tab_estimativas:
-        st.subheader("Estimativa diária")
-        st.caption("Os resultados são referências aproximadas; rotina, preparo e necessidades individuais variam.")
-        c_peso, c_altura, c_idade = st.columns(3)
-        peso = c_peso.number_input("Peso atual (kg)", min_value=40.0, max_value=150.0, value=68.0, step=0.5, key="nutri_peso")
-        altura = c_altura.number_input("Altura (cm)", min_value=130, max_value=220, value=175, key="nutri_altura")
-        idade = c_idade.number_input("Idade", min_value=14, max_value=60, value=17, key="nutri_idade")
+        /* Estilização das Métricas (Cartões com números grandes) */
+        [data-testid="stMetric"] {
+            background: rgba(20, 25, 35, 0.6) !important; /* Fundo escuro transparente */
+            backdrop-filter: blur(10px); /* Efeito de vidro borrado */
+            border: 1px solid rgba(0, 201, 255, 0.2);
+            border-radius: 15px;
+            padding: 15px !important;
+            animation: floatEffect 4s ease-in-out infinite; /* Efeito flutuante */
+            transition: all 0.3s ease;
+        }
+        
+        /* Efeito ao passar o mouse nas métricas (salto e brilho) */
+        [data-testid="stMetric"]:hover {
+            transform: scale(1.05) translateY(-5px);
+            border-color: #92FE9D;
+            box-shadow: 0 10px 30px rgba(146, 254, 157, 0.3);
+        }
 
-        c_roca, c_taf = st.columns(2)
-        nivel_roca = c_roca.selectbox(
-            "Intensidade do trabalho na propriedade",
-            ["Leve / Interno", "Moderado (Manejo/Café)", "Pesado (Capina/Carga)"], key="nutri_trabalho",
-        )
-        treino_taf = c_taf.selectbox(
-            "Treino TAF do dia",
-            ["Nenhum / Descanso", "Corrida Moderada", "Treino Intenso (Corrida + Barra + Abdominal)"], key="nutri_treino",
-        )
+        /* Estilização avançada para todos os botões do módulo */
+        .stButton>button {
+            transition: all 0.3s ease !important;
+            border: 1px solid rgba(0, 201, 255, 0.4) !important;
+            background: linear-gradient(45deg, rgba(0,0,0,0.4), rgba(0,201,255,0.1)) !important;
+            border-radius: 10px !important;
+        }
+        .stButton>button:hover {
+            transform: scale(1.05) !important;
+            background: rgba(0, 201, 255, 0.2) !important;
+            box-shadow: 0 0 15px rgba(0, 201, 255, 0.6) !important;
+            border-color: #00C9FF !important;
+        }
+        
+        /* Efeito hover nos gráficos Plotly para dar sensação 3D ao passar o mouse */
+        [data-testid="stGraph"] { transition: transform 0.4s ease, filter 0.4s ease; }
+        [data-testid="stGraph"]:hover {
+            transform: scale(1.02);
+            filter: drop-shadow(0px 10px 20px rgba(0, 201, 255, 0.2));
+        }
 
-        tmb = (10 * peso) + (6.25 * altura) - (5 * idade) + 5
-        fator_roca = 1.2 if "Leve" in nivel_roca else (1.45 if "Moderado" in nivel_roca else 1.7)
-        fator_taf = 0 if "Nenhum" in treino_taf else (250 if "Moderada" in treino_taf else 450)
-        gasto_total = (tmb * fator_roca) + fator_taf
-        agua_ml = peso * 40
-        proteina_g = peso * 1.8
-        carbo_g = peso * 5.0
+        /* Título com texto em gradiente animado */
+        .premium-title {
+            background: linear-gradient(270deg, #00C9FF, #92FE9D, #00C9FF);
+            background-size: 200% 200%;
+            animation: gradientShift 4s ease infinite;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+        </style>
+    """, unsafe_allow_html=True)
 
-        st.markdown("#### Indicadores calculados")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Gasto estimado", f"{int(gasto_total)} kcal")
-        m2.metric("Referência de água", f"{agua_ml / 1000:.2f} L")
-        m3.metric("Proteína estimada", f"{int(proteina_g)} g")
-        m4.metric("Carboidratos estimados", f"{int(carbo_g)} g")
-        st.caption("As estimativas não substituem orientação nutricional. A meta de hidratação pode ser ajustada na aba Hidratação.")
+    # =====================================================================
+    # 🖥️ 2. CABEÇALHO HTML ANIMADO (DASHBOARD)
+    # =====================================================================
+    # Este componente renderiza HTML puro, CSS local e um script JavaScript 
+    # para criar um relógio que roda em tempo real independentemente do Python.
+    components.html("""
+        <div style="background: linear-gradient(270deg, #0f2027, #203a43, #2c5364, #0f2027); background-size: 400% 400%; animation: gradientShift 8s ease infinite, neonPulse 3s infinite; padding: 25px; border-radius: 16px; text-align: center; color: white; font-family: 'Segoe UI', sans-serif; border: 1px solid rgba(0,201,255,0.3);">
+            <h1 style="margin:0; font-size: 28px; letter-spacing: 2px; text-shadow: 0 0 10px #00C9FF;">⚡ AGROLAR ENTERPRISE</h1>
+            <p style="color: #92FE9D; font-size: 14px; margin-top: 5px; font-weight: bold; text-transform: uppercase; letter-spacing: 3px;">Núcleo de Inteligência Corporal</p>
+            <div id="live-clock" style="margin-top: 15px; font-size: 18px; font-family: monospace; color: #FFF; background: rgba(0,0,0,0.5); display: inline-block; padding: 8px 20px; border-radius: 20px; border: 1px solid rgba(146,254,157,0.3); box-shadow: inset 0 0 10px rgba(0,0,0,0.8);"></div>
+            <style>
+                @keyframes gradientShift { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+                @keyframes neonPulse { 0% { box-shadow: 0 0 10px rgba(0,201,255,0.2); } 50% { box-shadow: 0 0 20px rgba(0,201,255,0.5); } 100% { box-shadow: 0 0 10px rgba(0,201,255,0.2); } }
+            </style>
+            <!-- Script JS para o relógio em tempo real -->
+            <script>
+                setInterval(() => {
+                    const now = new Date();
+                    document.getElementById('live-clock').innerText = "⏱️ " + now.toLocaleTimeString('pt-BR') + " | ONLINE";
+                }, 1000);
+            </script>
+        </div>
+    """, height=160)
 
-    # Valores médios de referência por 100 g, reunidos a partir da TACO/NEPA-Unicamp.
-    # A composição pode variar com marca, variedade, corte e método de preparo.
+    st.markdown("<h2 class='premium-title'>🥗 Painel Nutricional</h2>", unsafe_allow_html=True)
+
+    # =====================================================================
+    # 🗃️ 3. BASE DE DADOS LOCAL DE ALIMENTOS
+    # =====================================================================
+    # Lista de dicionários contendo a tabela nutricional padrão para cálculos.
     QG_CATALOGO_ALIMENTOS = [
         {"Alimento": "Arroz branco cozido", "Grupo": "Grãos", "Porção comum (g)": 150, "kcal/100 g": 128, "Proteína (g)": 2.5, "Carboidratos (g)": 28.1, "Gorduras (g)": 0.2},
         {"Alimento": "Feijão carioca cozido", "Grupo": "Leguminosas", "Porção comum (g)": 100, "kcal/100 g": 76, "Proteína (g)": 4.8, "Carboidratos (g)": 13.6, "Gorduras (g)": 0.5},
@@ -3065,252 +3436,288 @@ elif menu == "🥗 Nutrição & Calorias":
         {"Alimento": "Alface", "Grupo": "Verduras e legumes", "Porção comum (g)": 50, "kcal/100 g": 11, "Proteína (g)": 1.3, "Carboidratos (g)": 1.7, "Gorduras (g)": 0.2},
         {"Alimento": "Cenoura crua", "Grupo": "Verduras e legumes", "Porção comum (g)": 80, "kcal/100 g": 34, "Proteína (g)": 1.3, "Carboidratos (g)": 7.7, "Gorduras (g)": 0.2},
     ]
+    # Cria um dicionário rápido para buscar os alimentos pelo nome
     QG_ALIMENTO_POR_NOME = {item["Alimento"]: item for item in QG_CATALOGO_ALIMENTOS}
 
+    # =====================================================================
+    # 📑 4. DECLARAÇÃO DAS ABAS PRINCIPAIS
+    # =====================================================================
+    tab_estimativas, tab_catalogo, tab_planejador, tab_hidratacao = st.tabs([
+        "📊 Motor Corporal", "🥑 Banco de Dados", "🍽️ Sintetizador", "💧 Centro Hídrico"
+    ])
+
+    # =====================================================================
+    # ⚙️ ABA 1: MOTOR CORPORAL (CÁLCULOS METABÓLICOS)
+    # =====================================================================
+    with tab_estimativas:
+        st.subheader("⚙️ Calibração de Metabolismo")
+        
+        # Formulários de entrada das variáveis corporais do usuário
+        c_peso, c_altura, c_idade = st.columns(3)
+        peso = c_peso.number_input("Peso atual (kg)", min_value=40.0, max_value=150.0, value=68.0, step=0.5, key="nutri_peso")
+        altura = c_altura.number_input("Altura (cm)", min_value=130, max_value=220, value=175, key="nutri_altura")
+        idade = c_idade.number_input("Idade", min_value=14, max_value=60, value=17, key="nutri_idade")
+
+        c_roca, c_taf = st.columns(2)
+        nivel_roca = c_roca.selectbox("Intensidade na Roça", ["Leve / Interno", "Moderado (Manejo/Café)", "Pesado (Capina/Carga)"], key="nutri_trabalho")
+        treino_taf = c_taf.selectbox("Treino TAF de hoje", ["Nenhum / Descanso", "Corrida Moderada", "Treino Intenso (Corrida + Barra + Abdominal)"], key="nutri_treino")
+
+        # --- ALGORITMO DE GASTO CALÓRICO ---
+        # 1. TMB (Taxa Metabólica Basal) - Fórmula de Mifflin-St Jeor para homens
+        tmb = (10 * peso) + (6.25 * altura) - (5 * idade) + 5
+        
+        # 2. Multiplicador de Atividade (Trabalho na roça)
+        fator_roca_val = (tmb * 1.2) - tmb if "Leve" in nivel_roca else ((tmb * 1.45) - tmb if "Moderado" in nivel_roca else (tmb * 1.7) - tmb)
+        
+        # 3. Adicional de Atividade Física (Treino TAF)
+        fator_taf_val = 0 if "Nenhum" in treino_taf else (250 if "Moderada" in treino_taf else 450)
+        
+        # 4. Gasto Diário Total e Metas de Água e Macros
+        gasto_total = tmb + fator_roca_val + fator_taf_val
+        agua_ml = peso * 40 # Recomenda-se ~40ml de água por kg
+
+        # Renderiza os blocos fluantes com os resultados
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("🔥 Gasto Total", f"{int(gasto_total)} kcal")
+        m2.metric("💧 Hidratação Base", f"{agua_ml / 1000:.2f} L")
+        m3.metric("🥩 Meta Proteína", f"{int(peso * 1.8)} g")
+        m4.metric("🍚 Meta Carbo", f"{int(peso * 5.0)} g")
+
+        st.markdown("---")
+        
+        # --- GRÁFICO 1: Rosquinha de Distribuição Energética ---
+        fig_donut_gasto = go.Figure(data=[go.Pie(
+            labels=['Metabolismo Basal', 'Trabalho Físico', 'Treino TAF'], 
+            values=[tmb, fator_roca_val, fator_taf_val], 
+            hole=0.65, # Deixa o meio vazado criando a rosquinha
+            marker=dict(colors=['#00C9FF', '#92FE9D', '#FF2A6D'], line=dict(color='rgba(0,0,0,0)', width=2)),
+            textinfo='percent', textfont=dict(size=14, color='white', family="Arial Black")
+        )])
+        fig_donut_gasto.update_layout(
+            template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=0, r=0, b=0, t=10), height=350,
+            showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5)
+        )
+        # Adiciona a anotação central com texto iluminado
+        fig_donut_gasto.add_annotation(text=f"<span style='font-size:32px; font-weight:900; color:#92FE9D;'>{gasto_total:.0f}</span><br>KCAL", x=0.5, y=0.5, showarrow=False)
+        st.plotly_chart(fig_donut_gasto, use_container_width=True)
+
+    # =====================================================================
+    # 🥑 ABA 2: BANCO DE DADOS (CATÁLOGO FILTRÁVEL)
+    # =====================================================================
     with tab_catalogo:
-        st.subheader("Catálogo nutricional")
-        st.caption("Valores médios por 100 g e tamanhos de porção usuais. Confira o rótulo do produto quando disponível.")
+        st.subheader("🗄️ Matriz de Ingredientes")
         df_alimentos = pd.DataFrame(QG_CATALOGO_ALIMENTOS)
-        grupos_alimentos = ["Todos"] + sorted(df_alimentos["Grupo"].unique().tolist())
+        
+        # Lógica de filtros do DataFrame (por grupo ou pesquisa de texto)
         filtro_col1, filtro_col2 = st.columns([1, 1.5])
-        grupo_escolhido = filtro_col1.selectbox("Grupo de alimentos", grupos_alimentos, key="qg_nutri_grupo")
-        busca_alimento = filtro_col2.text_input("Buscar alimento", placeholder="Ex.: arroz, ovo, banana", key="qg_nutri_busca")
+        grupos_alimentos = ["Todos"] + sorted(df_alimentos["Grupo"].unique().tolist())
+        grupo_escolhido = filtro_col1.selectbox("Grupo", grupos_alimentos, key="qg_nutri_grupo")
+        busca_alimento = filtro_col2.text_input("Buscar", placeholder="Ex.: arroz", key="qg_nutri_busca")
+        
         df_filtrado = df_alimentos.copy()
-        if grupo_escolhido != "Todos":
+        if grupo_escolhido != "Todos": 
             df_filtrado = df_filtrado[df_filtrado["Grupo"] == grupo_escolhido]
-        if busca_alimento.strip():
+        if busca_alimento.strip(): 
             df_filtrado = df_filtrado[df_filtrado["Alimento"].str.contains(busca_alimento.strip(), case=False, na=False)]
+            
         st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
 
-        st.markdown("#### Calcular uma porção")
-        alimento_calculo = st.selectbox("Alimento", list(QG_ALIMENTO_POR_NOME), key="qg_nutri_item_calculo")
-        item_calculo = QG_ALIMENTO_POR_NOME[alimento_calculo]
-        slug_alimento = re.sub(r"[^a-z0-9]+", "_", alimento_calculo.casefold()).strip("_")
-        gramas_calculo = st.number_input(
-            "Quantidade em gramas", min_value=1, max_value=2000,
-            value=int(item_calculo["Porção comum (g)"]), step=10, key=f"qg_nutri_gramas_{slug_alimento}",
-        )
-        proporcao_calculo = gramas_calculo / 100
-        calc1, calc2, calc3, calc4 = st.columns(4)
-        calc1.metric("Energia", f"{item_calculo['kcal/100 g'] * proporcao_calculo:.0f} kcal")
-        calc2.metric("Proteína", f"{item_calculo['Proteína (g)'] * proporcao_calculo:.1f} g")
-        calc3.metric("Carboidratos", f"{item_calculo['Carboidratos (g)'] * proporcao_calculo:.1f} g")
-        calc4.metric("Gorduras", f"{item_calculo['Gorduras (g)'] * proporcao_calculo:.1f} g")
-        st.caption("Referência: Tabela Brasileira de Composição de Alimentos (TACO/NEPA-Unicamp). Preparo e variedade podem alterar os valores.")
-        st.markdown("[Consultar a publicação TACO](https://nepa.unicamp.br/publicacoes/tabela-taco/)")
-
+    # =====================================================================
+    # 🍽️ ABA 3: SINTETIZADOR (MONTAR REFEIÇÃO)
+    # =====================================================================
     with tab_planejador:
-        st.subheader("Monte uma refeição com o que você tem")
-        st.caption("Escolha os ingredientes disponíveis. As combinações e quantidades são sugestões editáveis, não uma prescrição alimentar.")
-        nomes_alimentos = list(QG_ALIMENTO_POR_NOME)
-        ingredientes_disponiveis = st.multiselect(
-            "Selecione seus ingredientes",
-            options=nomes_alimentos,
-            placeholder="Escolha um ou mais alimentos do catálogo...",
-            key=f"qg_planejador_ingredientes_{user_atual}",
-        )
-        refeicao_escolhida = st.selectbox(
-            "Tipo de refeição", ["Café da manhã", "Almoço", "Lanche", "Jantar", "Qualquer refeição"],
-            key=f"qg_planejador_tipo_{user_atual}",
-        )
-
-        QG_RECEITAS_SIMPLES = [
-            {"nome": "Aveia cremosa com banana", "tipo": "Café da manhã", "itens": {"Aveia em flocos": 30, "Leite integral": 200, "Banana-prata": 80}, "preparo": "Misture a aveia ao leite e sirva com a banana fatiada."},
-            {"nome": "Pão com ovo e tomate", "tipo": "Café da manhã", "itens": {"Pão francês": 50, "Ovo cozido": 50, "Tomate": 50}, "preparo": "Monte o pão com o ovo e o tomate fatiado."},
-            {"nome": "Prato de arroz, feijão e frango", "tipo": "Almoço", "itens": {"Arroz branco cozido": 150, "Feijão carioca cozido": 100, "Peito de frango grelhado": 100, "Alface": 30, "Tomate": 50}, "preparo": "Sirva o arroz, o feijão e o frango com alface e tomate."},
-            {"nome": "Prato de arroz, feijão e carne", "tipo": "Almoço", "itens": {"Arroz branco cozido": 150, "Feijão carioca cozido": 100, "Carne bovina magra grelhada": 100, "Cenoura crua": 50}, "preparo": "Combine o arroz e o feijão com a carne e a cenoura."},
-            {"nome": "Banana com aveia e leite", "tipo": "Lanche", "itens": {"Banana-prata": 80, "Aveia em flocos": 20, "Leite integral": 150}, "preparo": "Fatie a banana e sirva com aveia e leite."},
-            {"nome": "Batata-doce com ovo e tomate", "tipo": "Jantar", "itens": {"Batata-doce cozida": 150, "Ovo cozido": 100, "Tomate": 50}, "preparo": "Sirva a batata-doce com ovos e tomate."},
-            {"nome": "Tapioca com ovo e queijo", "tipo": "Qualquer refeição", "itens": {"Tapioca (beiju simples)": 60, "Ovo cozido": 50, "Queijo minas frescal": 30}, "preparo": "Recheie a tapioca com ovo e queijo minas."},
-            {"nome": "Arroz com ovo e salada", "tipo": "Jantar", "itens": {"Arroz branco cozido": 120, "Ovo cozido": 100, "Alface": 30, "Tomate": 50}, "preparo": "Sirva o arroz com ovos e salada de alface e tomate."},
-        ]
+        st.subheader("⚛️ Sintetizador Quântico")
+        
+        # Seleção múltipla para montar o prato
+        ingredientes_disponiveis = st.multiselect("Ingredientes", options=list(QG_ALIMENTO_POR_NOME), key=f"qg_planejador_ingredientes_{user_atual}")
 
         if ingredientes_disponiveis:
-            st.markdown("#### Ajuste das porções")
             quantidades_planejadas = {}
-            colunas_ingredientes = st.columns(2)
-            for indice_ingrediente, nome_ingrediente in enumerate(ingredientes_disponiveis):
-                item_ingrediente = QG_ALIMENTO_POR_NOME[nome_ingrediente]
-                slug_ingrediente = re.sub(r"[^a-z0-9]+", "_", nome_ingrediente.casefold()).strip("_")
-                quantidades_planejadas[nome_ingrediente] = colunas_ingredientes[indice_ingrediente % 2].number_input(
-                    f"{nome_ingrediente} (g)", min_value=1, max_value=2000,
-                    value=int(item_ingrediente["Porção comum (g)"]), step=10,
-                    key=f"qg_planejador_g_{user_atual}_{slug_ingrediente}",
-                )
+            colunas_ingredientes = st.columns(3)
+            
+            # Gera campos de gramas (Inputs) para cada alimento selecionado dinamicamente
+            for i, nome in enumerate(ingredientes_disponiveis):
+                item = QG_ALIMENTO_POR_NOME[nome]
+                slug = re.sub(r"[^a-z0-9]+", "_", nome.casefold()).strip("_") # Cria ID único sem espaços
+                quantidades_planejadas[nome] = colunas_ingredientes[i % 3].number_input(f"{nome} (g)", min_value=1, value=int(item["Porção comum (g)"]), step=10, key=f"g_{slug}")
 
-            total_prato = {"kcal": 0.0, "proteina": 0.0, "carboidratos": 0.0, "gorduras": 0.0}
+            # Processa e calcula os totais macro de cada alimento baseado nas gramas escolhidas
             linhas_prato = []
-            for nome_ingrediente, gramas_ingrediente in quantidades_planejadas.items():
-                item_ingrediente = QG_ALIMENTO_POR_NOME[nome_ingrediente]
-                fator_quantidade = gramas_ingrediente / 100
-                valores = {
-                    "kcal": item_ingrediente["kcal/100 g"] * fator_quantidade,
-                    "proteina": item_ingrediente["Proteína (g)"] * fator_quantidade,
-                    "carboidratos": item_ingrediente["Carboidratos (g)"] * fator_quantidade,
-                    "gorduras": item_ingrediente["Gorduras (g)"] * fator_quantidade,
-                }
-                for chave_valor, valor_nutricional in valores.items():
-                    total_prato[chave_valor] += valor_nutricional
+            for nome, gramas in quantidades_planejadas.items():
+                item = QG_ALIMENTO_POR_NOME[nome]
+                f = gramas / 100 # Fator de proporção (pois o banco está em base 100g)
                 linhas_prato.append({
-                    "Ingrediente": nome_ingrediente, "Quantidade (g)": gramas_ingrediente,
-                    "Energia (kcal)": round(valores["kcal"]), "Proteína (g)": round(valores["proteina"], 1),
-                    "Carboidratos (g)": round(valores["carboidratos"], 1), "Gorduras (g)": round(valores["gorduras"], 1),
+                    "Ingrediente": nome, "Quantidade (g)": gramas, "Energia (kcal)": item["kcal/100 g"] * f, 
+                    "Proteína (g)": item["Proteína (g)"] * f, "Carbo (g)": item["Carboidratos (g)"] * f, "Gordura (g)": item["Gorduras (g)"] * f,
                 })
-            st.dataframe(pd.DataFrame(linhas_prato), use_container_width=True, hide_index=True)
-            total1, total2, total3, total4 = st.columns(4)
-            total1.metric("Total estimado", f"{total_prato['kcal']:.0f} kcal")
-            total2.metric("Proteína", f"{total_prato['proteina']:.1f} g")
-            total3.metric("Carboidratos", f"{total_prato['carboidratos']:.1f} g")
-            total4.metric("Gorduras", f"{total_prato['gorduras']:.1f} g")
-
-            nomes_disponiveis = set(ingredientes_disponiveis)
-            receitas_compativeis = [
-                receita for receita in QG_RECEITAS_SIMPLES
-                if set(receita["itens"]).issubset(nomes_disponiveis)
-                and (refeicao_escolhida == "Qualquer refeição" or receita["tipo"] in (refeicao_escolhida, "Qualquer refeição"))
-            ]
-            if receitas_compativeis:
-                st.markdown("#### Combinações com os ingredientes selecionados")
-                for receita in receitas_compativeis:
-                    kcal_receita = sum(
-                        QG_ALIMENTO_POR_NOME[nome]["kcal/100 g"] * gramas / 100
-                        for nome, gramas in receita["itens"].items()
-                    )
-                    with st.container(border=True):
-                        st.markdown(f"**{receita['nome']}** · {receita['tipo']} · ~{kcal_receita:.0f} kcal")
-                        st.caption("Porções ilustrativas: " + " · ".join(f"{nome}: {gramas} g" for nome, gramas in receita["itens"].items()))
-                        st.write(receita["preparo"])
-            else:
-                st.info("Ainda não há uma combinação pronta para esse conjunto e tipo de refeição. O resumo acima calcula os ingredientes que você escolheu.")
+            
+            # Converte as linhas processadas num DataFrame e plota na tela
+            df_prato = pd.DataFrame(linhas_prato)
+            st.dataframe(df_prato.round(1), use_container_width=True, hide_index=True)
         else:
-            st.info("Selecione os alimentos disponíveis para montar e calcular uma refeição.")
+            st.info("Aguardando seleção de ingredientes...")
 
+    # =====================================================================
+    # 💧 ABA 4: CENTRO DE CONTROLE HÍDRICO (DB, GRÁFICOS E IA)
+    # =====================================================================
     with tab_hidratacao:
-        st.subheader("Registro de hidratação")
-        st.caption("Registre copos e garrafas e acompanhe seu histórico. A meta é editável e serve apenas como referência do app.")
-        try:
-            fuso_hidratacao = ZoneInfo("America/Sao_Paulo")
-        except Exception:
-            fuso_hidratacao = datetime.timezone(datetime.timedelta(hours=-3))
+        st.subheader("💧 Hub de Monitoramento Hídrico")
+        
+        # Controle de fuso horário confiável
+        try: fuso_hidratacao = ZoneInfo("America/Sao_Paulo")
+        except: fuso_hidratacao = datetime.timezone(datetime.timedelta(hours=-3))
 
+        # --- CONEXÃO COM O BANCO DE DADOS LOCAL DO USUÁRIO ---
         hidratacao_qg = db.get("nutricao_hidratacao", {})
-        if not isinstance(hidratacao_qg, dict):
-            hidratacao_qg = {}
-        registros_hidratacao = hidratacao_qg.get("registros", [])
-        if not isinstance(registros_hidratacao, list):
-            registros_hidratacao = []
-        registros_hidratacao = [
-            item for item in registros_hidratacao
-            if isinstance(item, dict) and str(item.get("ml", "")).isdigit() and 0 < int(item.get("ml", 0)) <= 5000
-        ]
-        hidratacao_qg["registros"] = registros_hidratacao
-
+        if not isinstance(hidratacao_qg, dict): hidratacao_qg = {}
+        # Filtra os dados existentes para garantir segurança e evitar corrompimento
+        registros_hidratacao = [item for item in hidratacao_qg.get("registros", []) if isinstance(item, dict) and str(item.get("ml", "")).isdigit()]
+        
+        # Função Auxiliar 1: Conversão de datas gravadas como String (ISO) de volta para Datetime
         def _qg_data_hidratacao(registro):
             try:
-                data_registro = datetime.datetime.fromisoformat(str(registro.get("data_hora", "")).replace("Z", "+00:00"))
-                if data_registro.tzinfo is None:
-                    data_registro = data_registro.replace(tzinfo=fuso_hidratacao)
-                return data_registro.astimezone(fuso_hidratacao)
-            except (TypeError, ValueError, OverflowError):
-                return None
+                dt = datetime.datetime.fromisoformat(str(registro.get("data_hora", "")).replace("Z", "+00:00"))
+                if dt.tzinfo is None: dt = dt.replace(tzinfo=fuso_hidratacao)
+                return dt.astimezone(fuso_hidratacao)
+            except: return None
 
-        def _qg_registrar_hidratacao(volume_ml, origem):
-            volume_ml = int(volume_ml)
-            if not 1 <= volume_ml <= 5000:
-                return
-            registros_hidratacao.append({
-                "data_hora": datetime.datetime.now(fuso_hidratacao).isoformat(timespec="seconds"),
-                "ml": volume_ml, "origem": str(origem)[:40],
-            })
-            hidratacao_qg["registros"] = registros_hidratacao[-1500:]
+        # Função Auxiliar 2: Insere o log de água na lista, limita a 1500 logs, e salva no banco de dados principal
+        def _qg_registrar_hidratacao(volume_ml):
+            registros_hidratacao.append({"data_hora": datetime.datetime.now(fuso_hidratacao).isoformat(timespec="seconds"), "ml": int(volume_ml), "origem": "Sistema"})
+            hidratacao_qg["registros"] = registros_hidratacao[-1500:] # Mantém apenas as últimas 1500 entradas para salvar memória
             db["nutricao_hidratacao"] = hidratacao_qg
-            salvar_dados_usuario(user_atual, db)
+            salvar_dados_usuario(user_atual, db) # Persiste os dados (Requer que a função 'salvar_dados_usuario' exista globalmente no seu app)
+            st.toast(f"Fluído reabastecido! +{volume_ml}ml", icon="🌊")
 
+        # Puxa a meta diária salva no DB ou calcula via fórmula de Peso
         meta_salva_ml = hidratacao_qg.get("meta_ml", int(round(agua_ml)))
-        try:
-            meta_salva_ml = max(500, min(10000, int(meta_salva_ml)))
-        except (TypeError, ValueError):
-            meta_salva_ml = int(round(agua_ml))
-        with st.form(f"qg_form_meta_hidratacao_{user_atual}"):
-            meta_nova_ml = st.number_input(
-                "Meta diária de referência (ml)", min_value=500, max_value=10000,
-                value=meta_salva_ml, step=100, help="Pode ajustar ou deixar a estimativa inicial do app."
+        
+        # --- CÁLCULOS DE ESTATÍSTICA DE ÁGUA (HOJE E SEMANA) ---
+        hoje = datetime.datetime.now(fuso_hidratacao).date()
+        
+        # Filtra apenas registros que aconteceram na data de hoje
+        reg_hoje = [(r, _qg_data_hidratacao(r)) for r in registros_hidratacao if _qg_data_hidratacao(r) and _qg_data_hidratacao(r).date() == hoje]
+        total_hoje = sum(int(r["ml"]) for r, _ in reg_hoje) # Soma as MLs de hoje
+        
+        falta_agua = max(0, meta_salva_ml - total_hoje)
+        progresso = min(1.0, total_hoje / max(1, meta_salva_ml)) # Garante que não divida por zero e fique entre 0% e 100%
+
+        # Calcula a soma diária pros últimos 7 dias para traçar histórico
+        datas_semana = [hoje - datetime.timedelta(days=d) for d in range(6, -1, -1)]
+        totais_semana = {d: 0 for d in datas_semana}
+        for r in registros_hidratacao:
+            d = _qg_data_hidratacao(r)
+            if d and d.date() in totais_semana: totais_semana[d.date()] += int(r["ml"])
+        
+        media_7d = sum(totais_semana.values()) / 7 # Média dos 7 dias
+        
+        # --- STATUS DINÂMICO E DIAGNÓSTICO (ESTILO JOGO) ---
+        if progresso >= 1: status_cor, status_txt = "#92FE9D", "Excelência (Meta Atingida!)"
+        elif progresso >= 0.6: status_cor, status_txt = "#00C9FF", "Adequado (Continue bebendo)"
+        else: status_cor, status_txt = "#FF2A6D", "Alerta Crítico (Risco)"
+
+        # 1. PAINEL SUPERIOR: Métricas em Cartões Flutuantes (Hover effects definidos via CSS lá no topo)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Tanque Atual", f"{total_hoje} ml")
+        m2.metric("Faltante", f"{falta_agua} ml")
+        m3.metric("Média Semanal", f"{int(media_7d)} ml")
+        m4.metric("Status do Corpo", status_txt)
+
+        st.markdown("---")
+        
+        # 2. CONTROLES: Botoeira de Entrada e Calibração de Metas
+        col_botoes, col_config = st.columns([2, 1])
+        with col_botoes:
+            st.markdown("#### ⚡ Injetar Fluído")
+            btn1, btn2, btn3, btn4 = st.columns(4)
+            # O st.rerun recarrega a interface pra mostrar o dado atualizado imediatamente. Time.sleep dá tempo do toast aparecer.
+            if btn1.button("🥛 200 ml", use_container_width=True): _qg_registrar_hidratacao(200); time.sleep(0.5); st.rerun()
+            if btn2.button("🥤 300 ml", use_container_width=True): _qg_registrar_hidratacao(300); time.sleep(0.5); st.rerun()
+            if btn3.button("💧 500 ml", use_container_width=True): _qg_registrar_hidratacao(500); time.sleep(0.5); st.rerun()
+            if btn4.button("🚰 750 ml", use_container_width=True): _qg_registrar_hidratacao(750); time.sleep(0.5); st.rerun()
+        
+        with col_config:
+            with st.expander("⚙️ Calibrar Meta Hídrica"):
+                nova_meta = st.number_input("Nova Meta (ml)", min_value=500, max_value=10000, value=meta_salva_ml, step=100)
+                if st.button("Salvar Meta", use_container_width=True):
+                    hidratacao_qg["meta_ml"] = int(nova_meta)
+                    db["nutricao_hidratacao"] = hidratacao_qg
+                    salvar_dados_usuario(user_atual, db)
+                    st.toast("Diretriz Hídrica Atualizada!", icon="🎯")
+                    time.sleep(0.5); st.rerun()
+
+        st.markdown("---")
+        
+        # 3. GRÁFICOS VISUAIS (VELOCÍMETRO E HISTÓRICO)
+        graf1, graf2 = st.columns(2)
+        
+        with graf1:
+            st.markdown("#### 🚀 Velocímetro de Abastecimento")
+            # --- GRÁFICO 2: Gauge (Velocímetro) - Mostra progresso diário contra a meta.
+            # O 'steps' cria as zonas de cores (vermelho no começo, ciano no meio, verde no final).
+            fig_gauge = go.Figure(go.Indicator(
+                mode = "gauge+number+delta",
+                value = total_hoje,
+                domain = {'x': [0, 1], 'y': [0, 1]},
+                delta = {'reference': meta_salva_ml, 'position': "top", 'decreasing': {'color': '#FF2A6D'}, 'increasing': {'color': '#92FE9D'}},
+                number = {'font': {'size': 40, 'color': status_cor}},
+                gauge = {
+                    'axis': {'range': [None, meta_salva_ml], 'tickwidth': 1, 'tickcolor': "white"},
+                    'bar': {'color': status_cor, 'thickness': 0.7},
+                    'bgcolor': "rgba(255,255,255,0.05)",
+                    'borderwidth': 0,
+                    'steps': [
+                        {'range': [0, meta_salva_ml*0.4], 'color': "rgba(255, 42, 109, 0.2)"},
+                        {'range': [meta_salva_ml*0.4, meta_salva_ml*0.8], 'color': "rgba(0, 201, 255, 0.2)"},
+                        {'range': [meta_salva_ml*0.8, meta_salva_ml*1.5], 'color': "rgba(146, 254, 157, 0.2)"}
+                    ],
+                    'threshold': {'line': {'color': "white", 'width': 4}, 'thickness': 1, 'value': meta_salva_ml}
+                }
+            ))
+            fig_gauge.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=350, margin=dict(l=20, r=20, b=20, t=20))
+            st.plotly_chart(fig_gauge, use_container_width=True)
+
+        with graf2:
+            st.markdown("#### 📊 Histórico de 7 Dias")
+            # --- GRÁFICO 3: Barras Plotly Express ---
+            df_semana = pd.DataFrame({"Dia": [d.strftime("%d/%m") for d in datas_semana], "Volume": [totais_semana[d] for d in datas_semana]})
+            
+            # Gera gráfico de barras dinâmico e desenha uma linha pontilhada verde marcando a Meta Salva.
+            fig_barras = px.bar(df_semana, x="Dia", y="Volume", text="Volume", color="Volume", color_continuous_scale="Blues")
+            fig_barras.add_hline(y=meta_salva_ml, line_dash="dash", line_color="#92FE9D", annotation_text=" META", annotation_position="top right", annotation_font_color="#92FE9D")
+            fig_barras.update_traces(textposition='outside', marker_line_color='rgba(0,0,0,0)', marker_line_width=0)
+            fig_barras.update_layout(
+                template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=350, margin=dict(l=0, r=0, b=0, t=10),
+                xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.1)"), coloraxis_showscale=False
             )
-            salvar_meta_hidratacao = st.form_submit_button("Salvar meta", use_container_width=True)
-        if salvar_meta_hidratacao:
-            hidratacao_qg["meta_ml"] = int(meta_nova_ml)
-            db["nutricao_hidratacao"] = hidratacao_qg
-            salvar_dados_usuario(user_atual, db)
-            meta_salva_ml = int(meta_nova_ml)
-            st.success("Meta de referência salva na sua conta.")
+            st.plotly_chart(fig_barras, use_container_width=True)
 
-        st.markdown("#### Registro rápido")
-        agua_col1, agua_col2, agua_col3, agua_col4 = st.columns(4)
-        if agua_col1.button("🥛 Copo · 200 ml", use_container_width=True, key=f"qg_agua_copo_{user_atual}"):
-            _qg_registrar_hidratacao(200, "Copo")
-            st.toast("Copo registrado.")
-        if agua_col2.button("🥤 Copo grande · 300 ml", use_container_width=True, key=f"qg_agua_copo_grande_{user_atual}"):
-            _qg_registrar_hidratacao(300, "Copo grande")
-            st.toast("Copo grande registrado.")
-        if agua_col3.button("💧 Garrafa · 500 ml", use_container_width=True, key=f"qg_agua_garrafa_{user_atual}"):
-            _qg_registrar_hidratacao(500, "Garrafa")
-            st.toast("Garrafa registrada.")
-        if agua_col4.button("🚰 Garrafa · 750 ml", use_container_width=True, key=f"qg_agua_garrafa_750_{user_atual}"):
-            _qg_registrar_hidratacao(750, "Garrafa grande")
-            st.toast("Garrafa grande registrada.")
+        st.markdown("---")
+        
+        # 4. INTELIGÊNCIA ARTIFICIAL E RESUMO DIÁRIO
+        col_diag, col_historico = st.columns([1.5, 1])
+        
+        with col_diag:
+            st.markdown("#### 🧠 Inteligência Hídrica")
+            # Texto dinâmico: se altera de acordo com a seleção que o usuário fez na aba 1 (Treino TAF)
+            if "Intenso" in treino_taf:
+                dica_taf = "⚠️ **Atenção:** Você tem Treino TAF Intenso hoje. Adicione pelo menos 500ml extras durante/após a atividade para repor eletrólitos."
+            elif "Moderada" in treino_taf:
+                dica_taf = "🏃‍♂️ **Dica:** Corrida leve hoje! Beba água cerca de 30 mins antes do treino para melhorar a performance."
+            else:
+                dica_taf = "🔋 **Recuperação:** Hoje é dia de descanso. Mantenha o fluxo constante para recuperar os músculos."
+                
+            st.info(f"**Análise de Perfil:** Para o seu peso configurado de {peso}kg, a base fisiológica de hidratação é {agua_ml}ml diários. {dica_taf}")
 
-        with st.expander("Registrar outra quantidade"):
-            with st.form(f"qg_form_hidratacao_manual_{user_atual}"):
-                volume_manual_ml = st.number_input("Volume consumido (ml)", min_value=50, max_value=3000, value=250, step=50)
-                origem_manual = st.text_input("Descrição opcional", value="Registro manual", max_chars=40)
-                registrar_manual = st.form_submit_button("Adicionar ao histórico", type="primary", use_container_width=True)
-            if registrar_manual:
-                _qg_registrar_hidratacao(volume_manual_ml, origem_manual.strip() or "Registro manual")
-                st.success("Consumo registrado.")
-
-        hoje_hidratacao = datetime.datetime.now(fuso_hidratacao).date()
-        registros_hoje = []
-        for registro_hidratacao in registros_hidratacao:
-            data_hidratacao = _qg_data_hidratacao(registro_hidratacao)
-            if data_hidratacao and data_hidratacao.date() == hoje_hidratacao:
-                registros_hoje.append((registro_hidratacao, data_hidratacao))
-        total_agua_hoje = sum(int(registro["ml"]) for registro, _ in registros_hoje)
-        progresso_agua = min(1.0, total_agua_hoje / max(1, meta_salva_ml))
-        st.progress(progresso_agua, text=f"Hoje: {total_agua_hoje:,} ml de {meta_salva_ml:,} ml")
-        h1, h2, h3 = st.columns(3)
-        h1.metric("Total registrado hoje", f"{total_agua_hoje / 1000:.2f} L")
-        h2.metric("Registros hoje", len(registros_hoje))
-        h3.metric("Falta para a meta", f"{max(0, meta_salva_ml - total_agua_hoje):,} ml")
-
-        datas_hidratacao = [hoje_hidratacao - datetime.timedelta(days=deslocamento) for deslocamento in range(6, -1, -1)]
-        totais_semana = {dia: 0 for dia in datas_hidratacao}
-        for registro_hidratacao in registros_hidratacao:
-            data_hidratacao = _qg_data_hidratacao(registro_hidratacao)
-            if data_hidratacao and data_hidratacao.date() in totais_semana:
-                totais_semana[data_hidratacao.date()] += int(registro_hidratacao["ml"])
-        df_hidratacao_semana = pd.DataFrame({
-            "Dia": [dia.strftime("%d/%m") for dia in datas_hidratacao],
-            "Água (ml)": [totais_semana[dia] for dia in datas_hidratacao],
-        })
-        st.markdown("#### Últimos sete dias")
-        fig_hidratacao = px.bar(df_hidratacao_semana, x="Dia", y="Água (ml)", text="Água (ml)")
-        fig_hidratacao.update_traces(marker_color="#63e5dc", texttemplate="%{text:,} ml", textposition="outside", cliponaxis=False)
-        fig_hidratacao.update_layout(
-            height=300, margin=dict(l=10, r=10, t=20, b=10),
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#dceafb"), xaxis_title=None, yaxis_title="ml",
-            yaxis=dict(gridcolor="rgba(151,184,214,.12)", rangemode="tozero"),
-        )
-        st.plotly_chart(fig_hidratacao, use_container_width=True, config={"displayModeBar": False})
-
-        if registros_hoje:
-            st.markdown("#### Registros de hoje")
-            linhas_hidratacao = [
-                {"Horário": data_registro.strftime("%H:%M"), "Volume": f"{registro['ml']} ml", "Tipo": registro.get("origem", "Registro")}
-                for registro, data_registro in sorted(registros_hoje, key=lambda par: par[1], reverse=True)[:12]
-            ]
-            st.dataframe(pd.DataFrame(linhas_hidratacao), use_container_width=True, hide_index=True)
-
+        with col_historico:
+            st.markdown("#### 📜 Últimas Entradas")
+            # Mostra apenas as 5 últimas bebidas de hoje
+            if reg_hoje:
+                linhas = [{"Hora": dt.strftime("%H:%M:%S"), "Injeção": f"{r['ml']} ml"} for r, dt in sorted(reg_hoje, key=lambda p: p[1], reverse=True)[:5]]
+                st.dataframe(pd.DataFrame(linhas), use_container_width=True, hide_index=True)
+            else:
+                st.caption("Nenhuma atividade registrada no sistema hoje.")
 
 # ====================================================
 # MÓDULO 15: CALC. AGROPECUÁRIA
