@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
+import os
 import re
 import tempfile
+import time
 import uuid
 import html
+import datetime
+import sqlite3
+import threading
+import secrets as py_secrets
+import urllib.request
 from pathlib import Path
 
 import streamlit as st
@@ -15,38 +23,231 @@ import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 import random
-import urllib.request
 
-
-# --- Segurança local (antes security.py) ---
-import hashlib
-import hmac
-import json
-import os
-import re
-import tempfile
-from pathlib import Path
-
+# =============================================================================
+# SEGURANÇA LOCAL
+# =============================================================================
 _USERS_STORE_PATH = Path("usuarios.json")
 _ITERATIONS = 600_000
 _ATTEMPT_FILE = Path(".qg_login_attempts.json")
 _USER_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
+_SQLITE_CONNECT_LOCAL = sqlite3.connect
+
+
+def _qg_database_url() -> str:
+    """Lê a conexão PostgreSQL apenas de Secrets ou de uma variável de ambiente."""
+    try:
+        valor = st.secrets.get("QG_DATABASE_URL", "")
+    except Exception:
+        valor = ""
+    return str(valor or os.environ.get("QG_DATABASE_URL", "")).strip()
+
+
+def _qg_cloud_enabled() -> bool:
+    return bool(_qg_database_url())
+
+
+@st.cache_resource(show_spinner=False)
+def _qg_initialize_cloud_storage(database_url: str) -> bool:
+    """Cria as tabelas de contas, progresso, tentativas, sessões e snapshot SQLite."""
+    import psycopg
+
+    with psycopg.connect(database_url, connect_timeout=8) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS qg_users (
+            username TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS qg_user_data (
+            username TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS qg_login_attempts (
+            attempt_key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS qg_auth_sessions (
+            session_hash TEXT PRIMARY KEY, username TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL,
+            revoked_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS qg_auth_sessions_username_idx ON qg_auth_sessions (username)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS qg_sqlite_snapshot (
+            snapshot_id SMALLINT PRIMARY KEY CHECK (snapshot_id = 1),
+            payload BYTEA NOT NULL, version BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""")
+    return True
+
+
+def _qg_pg_connection():
+    """Abre a base configurada e garante que o esquema do QG existe."""
+    database_url = _qg_database_url()
+    if not database_url:
+        raise RuntimeError("QG_DATABASE_URL não foi configurada.")
+    _qg_initialize_cloud_storage(database_url)
+    import psycopg
+    return psycopg.connect(database_url, connect_timeout=8)
+
+
+def _qg_json_or_default(texto, padrao):
+    try:
+        valor = json.loads(texto)
+        return valor
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return padrao
+
+
+def _qg_proteger_senha_legada(conta: dict) -> dict:
+    """Converte senhas em texto puro de cadastros antigos para PBKDF2 antes da migração."""
+    protegida = dict(conta)
+    senha = str(protegida.get("senha", ""))
+    e_hash_sha256 = len(senha) == 64 and all(c in "0123456789abcdef" for c in senha.casefold())
+    if senha and not senha.startswith("pbkdf2_sha256$") and not e_hash_sha256:
+        protegida["senha"] = hash_senha(senha)
+    return protegida
+
+
+@st.cache_resource(show_spinner=False)
+def _qg_sqlite_runtime_state():
+    """Mantém um único arquivo SQLite local sincronizado e serializado por processo."""
+    return {"lock": threading.RLock(), "ready": False, "database_url": "", "version": 0, "force_upload": False}
+
+
+def _qg_digest_file(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _qg_write_local_sqlite_snapshot(path: Path, payload: bytes) -> None:
+    """Restaura atomicamente o snapshot cloud antes de abrir conexões SQLite."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=".qg-cloud-db-", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as arquivo:
+            arquivo.write(payload)
+            arquivo.flush()
+            os.fsync(arquivo.fileno())
+        for sufixo in ("-wal", "-shm"):
+            Path(str(path) + sufixo).unlink(missing_ok=True)
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def _qg_load_sqlite_snapshot(path: Path, database_url: str) -> int:
+    """Carrega o banco compartilhado completo do PostgreSQL na primeira conexão."""
+    with _qg_pg_connection() as conn:
+        row = conn.execute("SELECT version, payload FROM qg_sqlite_snapshot WHERE snapshot_id = 1").fetchone()
+    if row:
+        _qg_write_local_sqlite_snapshot(path, bytes(row[1]))
+        return int(row[0])
+    return 0
+
+
+def _qg_upload_sqlite_snapshot(path: Path, state: dict) -> None:
+    """Persiste as tabelas SQLite existentes sem reescrever os módulos que as usam."""
+    if not path.is_file():
+        return
+    payload = path.read_bytes()
+    with _qg_pg_connection() as conn:
+        # Um bloqueio transacional evita que dois processos sobrescrevam o mesmo snapshot ao mesmo tempo.
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (894784853,))
+        row = conn.execute("SELECT version FROM qg_sqlite_snapshot WHERE snapshot_id = 1 FOR UPDATE").fetchone()
+        versao_remota = int(row[0]) if row else 0
+        if versao_remota != int(state.get("version", 0)):
+            # Protege dados de outra instância: sinaliza para buscar a versão atual antes da próxima operação.
+            state["ready"] = False
+            state["force_upload"] = False
+            raise RuntimeError("O banco foi alterado por outra instância. Atualize a página e repita a operação.")
+        nova_versao = versao_remota + 1
+        conn.execute("""INSERT INTO qg_sqlite_snapshot (snapshot_id, payload, version, updated_at)
+            VALUES (1, %s, %s, NOW())
+            ON CONFLICT (snapshot_id) DO UPDATE
+            SET payload = EXCLUDED.payload, version = EXCLUDED.version, updated_at = NOW()""",
+            (payload, nova_versao))
+    state["version"] = nova_versao
+    state["force_upload"] = False
+
+
+class _QGCloudSQLiteConnection(sqlite3.Connection):
+    """Conexão SQLite compatível com pandas que sincroniza o arquivo ao fechar."""
+    def _qg_attach(self, state: dict, path: Path) -> None:
+        self._qg_state = state
+        self._qg_path = path
+        self._qg_changes_before = self.total_changes
+        self._qg_schema_before = self.execute("PRAGMA schema_version").fetchone()[0]
+        self._qg_cloud_closed = False
+
+    def close(self) -> None:
+        if getattr(self, "_qg_cloud_closed", True):
+            return
+        state = self._qg_state
+        try:
+            schema_after = self.execute("PRAGMA schema_version").fetchone()[0]
+            database_alterado = (
+                self.total_changes != self._qg_changes_before
+                or schema_after != self._qg_schema_before
+                or state.get("force_upload")
+            )
+            super().close()
+            if database_alterado:
+                _qg_upload_sqlite_snapshot(self._qg_path, state)
+        finally:
+            self._qg_cloud_closed = True
+            state["lock"].release()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+def _qg_sqlite_connect(database=":memory:", *args, **kwargs):
+    """Usa PostgreSQL como armazenamento durável do SQLite compartilhado quando configurado."""
+    if not _qg_cloud_enabled() or str(database) == ":memory:" or Path(str(database)).name != "dados_qg.db":
+        return _SQLITE_CONNECT_LOCAL(database, *args, **kwargs)
+
+    state = _qg_sqlite_runtime_state()
+    state["lock"].acquire()
+    try:
+        database_url = _qg_database_url()
+        path = Path(str(database)).resolve()
+        if not state["ready"] or state["database_url"] != database_url:
+            state["version"] = _qg_load_sqlite_snapshot(path, database_url)
+            state["database_url"] = database_url
+            state["ready"] = True
+            state["force_upload"] = state["version"] == 0
+        kwargs.pop("factory", None)
+        connection = _SQLITE_CONNECT_LOCAL(
+            database, *args, factory=_QGCloudSQLiteConnection, **kwargs
+        )
+        connection._qg_attach(state, path)
+        return connection
+    except Exception:
+        state["lock"].release()
+        raise
+
+
+# Redireciona apenas conexões para dados_qg.db; arquivos temporários e bancos :memory: seguem SQLite local.
+sqlite3.connect = _qg_sqlite_connect
 
 
 def normalizar_usuario(valor: str) -> str:
     usuario = str(valor or "").strip().casefold()
     return usuario if _USER_RE.fullmatch(usuario) else ""
 
-
 def senha_forte(senha: str) -> bool:
     return len(senha) >= 12 and any(c.isalpha() for c in senha) and any(c.isdigit() for c in senha)
-
 
 def hash_senha(senha: str) -> str:
     salt = os.urandom(16)
     digest = hashlib.pbkdf2_hmac("sha256", senha.encode("utf-8"), salt, _ITERATIONS)
     return f"pbkdf2_sha256${_ITERATIONS}${salt.hex()}${digest.hex()}"
-
 
 def verificar_senha(senha: str, armazenada: str) -> bool:
     """Valida hashes novos e hashes SHA-256 legados, para migração no login."""
@@ -60,8 +261,30 @@ def verificar_senha(senha: str, armazenada: str) -> bool:
     except (ValueError, TypeError):
         return False
 
-
 def carregar_usuarios() -> dict:
+    if _qg_cloud_enabled():
+        with _qg_pg_connection() as conn:
+            rows = conn.execute("SELECT username, payload FROM qg_users ORDER BY username").fetchall()
+        if not rows:
+            # Migra automaticamente cadastros legados locais na primeira inicialização da base remota.
+            try:
+                legado = json.loads(_USERS_STORE_PATH.read_text(encoding="utf-8"))
+                if isinstance(legado, dict) and legado:
+                    migrados = {
+                        normalizar_usuario(username): _qg_proteger_senha_legada(conta)
+                        for username, conta in legado.items()
+                        if normalizar_usuario(username) and isinstance(conta, dict)
+                    }
+                    salvar_usuarios(migrados)
+                    return migrados
+            except (OSError, json.JSONDecodeError):
+                pass
+        usuarios = {}
+        for username, payload in rows:
+            usuario = _qg_json_or_default(payload, {})
+            if isinstance(usuario, dict):
+                usuarios[str(username)] = usuario
+        return usuarios
     try:
         data = json.loads(_USERS_STORE_PATH.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
@@ -69,7 +292,45 @@ def carregar_usuarios() -> dict:
         return {}
 
 
+def carregar_usuario(username: str) -> dict:
+    """Busca apenas o cadastro necessário para login/perfil, sem carregar hashes de todas as contas."""
+    username = normalizar_usuario(username)
+    if not username:
+        return {}
+    if _qg_cloud_enabled():
+        with _qg_pg_connection() as conn:
+            row = conn.execute("SELECT payload FROM qg_users WHERE username = %s", (username,)).fetchone()
+        if row:
+            valor = _qg_json_or_default(row[0], {})
+            return valor if isinstance(valor, dict) else {}
+        # Migração sob demanda do usuário correspondente, caso a instalação ainda tenha usuarios.json.
+        try:
+            legados = json.loads(_USERS_STORE_PATH.read_text(encoding="utf-8"))
+            conta = legados.get(username, {}) if isinstance(legados, dict) else {}
+            if isinstance(conta, dict) and conta:
+                conta = _qg_proteger_senha_legada(conta)
+                salvar_usuarios({username: conta})
+                return conta
+        except (OSError, json.JSONDecodeError):
+            pass
+        return {}
+    usuarios = carregar_usuarios()
+    conta = usuarios.get(username, {})
+    return conta if isinstance(conta, dict) else {}
+
 def salvar_usuarios(usuarios: dict) -> None:
+    if _qg_cloud_enabled():
+        with _qg_pg_connection() as conn:
+            for username, payload in usuarios.items():
+                username_limpo = normalizar_usuario(username)
+                if not username_limpo or not isinstance(payload, dict):
+                    continue
+                conn.execute("""INSERT INTO qg_users (username, payload, updated_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (username) DO UPDATE
+                    SET payload = EXCLUDED.payload, updated_at = NOW()""",
+                    (username_limpo, json.dumps(payload, ensure_ascii=False)))
+        return
     _USERS_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix="usuarios-", suffix=".tmp", dir=str(_USERS_STORE_PATH.parent))
     try:
@@ -82,30 +343,56 @@ def salvar_usuarios(usuarios: dict) -> None:
         if os.path.exists(temp_name):
             os.unlink(temp_name)
 
-
 def verificar_credencial(valor: str, armazenada: str) -> bool:
-    """Verifica segredo PBKDF2 e migra de forma transparente valores legados."""
     if armazenada.startswith("pbkdf2_sha256$"):
         return verificar_senha(valor, armazenada)
     if len(armazenada) == 64 and all(c in "0123456789abcdef" for c in armazenada.casefold()):
         return verificar_senha(valor, armazenada)
     return hmac.compare_digest(str(valor).encode("utf-8"), str(armazenada).encode("utf-8"))
 
-
 def tempo_bloqueio(chave: str) -> int:
-    """Retorna segundos restantes do bloqueio por excesso de tentativas."""
+    if _qg_cloud_enabled():
+        with _qg_pg_connection() as conn:
+            row = conn.execute("SELECT payload FROM qg_login_attempts WHERE attempt_key = %s", (str(chave),)).fetchone()
+        estado_item = _qg_json_or_default(row[0], {}) if row else {}
+        try:
+            ate = float(estado_item.get("bloqueado_ate", 0))
+            return max(0, int(ate - time.time() + 0.999))
+        except (TypeError, ValueError, AttributeError):
+            return 0
     try:
         estado = json.loads(_ATTEMPT_FILE.read_text(encoding="utf-8"))
         item = estado.get(str(chave), {})
         ate = float(item.get("bloqueado_ate", 0))
-        return max(0, int(ate - __import__("time").time() + 0.999))
+        return max(0, int(ate - time.time() + 0.999))
     except (OSError, ValueError, json.JSONDecodeError, AttributeError):
         return 0
 
-
 def registrar_tentativa(chave: str, sucesso: bool) -> None:
-    """Rate limit persistente e compartilhado entre sessões do app."""
-    import time
+    if _qg_cloud_enabled():
+        chave = str(chave)
+        with _qg_pg_connection() as conn:
+            # Serializa tentativas da mesma conta, inclusive se mais de uma sessão tentar ao mesmo tempo.
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (chave,))
+            row = conn.execute(
+                "SELECT payload FROM qg_login_attempts WHERE attempt_key = %s FOR UPDATE", (chave,)
+            ).fetchone()
+            item = _qg_json_or_default(row[0], {}) if row else {}
+            agora = time.time()
+            if sucesso:
+                conn.execute("DELETE FROM qg_login_attempts WHERE attempt_key = %s", (chave,))
+                return
+            tentativas = [float(t) for t in item.get("tentativas", []) if agora - float(t) < 600]
+            tentativas.append(agora)
+            proximo = {"tentativas": tentativas, "bloqueado_ate": agora + 90 if len(tentativas) >= 5 else 0}
+            if proximo["bloqueado_ate"]:
+                proximo["tentativas"] = []
+            conn.execute("""INSERT INTO qg_login_attempts (attempt_key, payload, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (attempt_key) DO UPDATE
+                SET payload = EXCLUDED.payload, updated_at = NOW()""",
+                (chave, json.dumps(proximo)))
+        return
     try:
         estado = json.loads(_ATTEMPT_FILE.read_text(encoding="utf-8"))
         if not isinstance(estado, dict):
@@ -134,19 +421,12 @@ def registrar_tentativa(chave: str, sucesso: bool) -> None:
         if os.path.exists(temp_name):
             os.unlink(temp_name)
 
-
-# --- Memória persistente e revisão espaçada (antes memory.py) ---
-import datetime
-import json
-import os
-import tempfile
-import uuid
-from pathlib import Path
-
+# =============================================================================
+# MEMÓRIA PERSISTENTE E REVISÃO ESPAÇADA
+# =============================================================================
 DATA_DIR = Path("dados_usuarios")
 SCHEMA_VERSION = 3
 INTERVALOS_REVISAO = (1, 3, 7, 14, 30)
-
 
 def _arquivo_usuario(username: str) -> Path:
     user_id = normalizar_usuario(username)
@@ -158,7 +438,6 @@ def _arquivo_usuario(username: str) -> Path:
         raise ValueError("Caminho de dados inválido.")
     return path
 
-
 def _padrao(edital_factory):
     hoje = datetime.date.today()
     return {
@@ -169,26 +448,43 @@ def _padrao(edital_factory):
         "data_prova": str(hoje + datetime.timedelta(days=320)), "memorias": [],
     }
 
-
 def carregar_dados_usuario(username: str, edital_factory) -> dict:
     path = _arquivo_usuario(username)
     dados = _padrao(edital_factory)
     fonte = path
     legado = Path(f"dados_espcex_{normalizar_usuario(username)}.json")
-    if not path.exists() and legado.is_file() and legado.resolve().parent == Path.cwd().resolve():
-        fonte = legado
-    try:
-        carregados = json.loads(fonte.read_text(encoding="utf-8"))
-        if isinstance(carregados, dict):
-            dados.update(carregados)
-    except (OSError, json.JSONDecodeError):
-        pass
+    migrar_para_nuvem = False
+    if _qg_cloud_enabled():
+        with _qg_pg_connection() as conn:
+            row = conn.execute("SELECT payload FROM qg_user_data WHERE username = %s", (normalizar_usuario(username),)).fetchone()
+        if row:
+            carregados = _qg_json_or_default(row[0], {})
+            if isinstance(carregados, dict):
+                dados.update(carregados)
+        else:
+            if not path.exists() and legado.is_file() and legado.resolve().parent == Path.cwd().resolve():
+                fonte = legado
+            try:
+                carregados = json.loads(fonte.read_text(encoding="utf-8"))
+                if isinstance(carregados, dict):
+                    dados.update(carregados)
+                    migrar_para_nuvem = fonte.is_file()
+            except (OSError, json.JSONDecodeError):
+                pass
+    else:
+        if not path.exists() and legado.is_file() and legado.resolve().parent == Path.cwd().resolve():
+            fonte = legado
+        try:
+            carregados = json.loads(fonte.read_text(encoding="utf-8"))
+            if isinstance(carregados, dict):
+                dados.update(carregados)
+        except (OSError, json.JSONDecodeError):
+            pass
     for chave, valor in _padrao(edital_factory).items():
         dados.setdefault(chave, valor)
     dados["schema_version"] = SCHEMA_VERSION
     if not isinstance(dados.get("memorias"), list):
         dados["memorias"] = []
-    # Upgrade entries made by the earlier notes-only memory panel.
     for item in dados["memorias"]:
         if isinstance(item, dict):
             item.setdefault("id", uuid.uuid4().hex[:12])
@@ -201,15 +497,24 @@ def carregar_dados_usuario(username: str, edital_factory) -> dict:
             item.setdefault("falhas", 0)
             item.setdefault("revisao_em", str(datetime.date.today()))
             item.setdefault("fixada", False)
+    if migrar_para_nuvem:
+        salvar_dados_usuario(username, dados)
     return dados
-
 
 def salvar_dados_usuario(username: str, dados: dict) -> None:
     path = _arquivo_usuario(username)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(dados)
     payload["schema_version"] = SCHEMA_VERSION
     payload["atualizado_em"] = datetime.datetime.now().isoformat(timespec="seconds")
+    if _qg_cloud_enabled():
+        with _qg_pg_connection() as conn:
+            conn.execute("""INSERT INTO qg_user_data (username, payload, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (username) DO UPDATE
+                SET payload = EXCLUDED.payload, updated_at = NOW()""",
+                (normalizar_usuario(username), json.dumps(payload, ensure_ascii=False)))
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f"{path.stem}-", suffix=".tmp", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -221,6 +526,73 @@ def salvar_dados_usuario(username: str, dados: dict) -> None:
         if os.path.exists(temp_name):
             os.unlink(temp_name)
 
+
+def _qg_hash_session(token: str) -> str:
+    """Armazena somente o hash do identificador de sessão no banco remoto."""
+    return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+
+
+def _qg_criar_sessao(username: str) -> str:
+    """Emite um token aleatório que fica apenas na sessão privada do Streamlit."""
+    token = py_secrets.token_urlsafe(32)
+    if _qg_cloud_enabled():
+        with _qg_pg_connection() as conn:
+            conn.execute("""INSERT INTO qg_auth_sessions (session_hash, username, expires_at)
+                VALUES (%s, %s, NOW() + INTERVAL '8 hours')""",
+                (_qg_hash_session(token), normalizar_usuario(username)))
+    return token
+
+
+def _qg_renovar_sessao(token: str, username: str) -> bool:
+    """Renova a sessão ativa por oito horas após uma interação do usuário."""
+    if not token:
+        return False
+    if not _qg_cloud_enabled():
+        return True
+    with _qg_pg_connection() as conn:
+        row = conn.execute("""UPDATE qg_auth_sessions
+            SET expires_at = NOW() + INTERVAL '8 hours'
+            WHERE session_hash = %s AND username = %s AND revoked_at IS NULL AND expires_at > NOW()
+            RETURNING session_hash""",
+            (_qg_hash_session(token), normalizar_usuario(username))).fetchone()
+    return bool(row)
+
+
+def _qg_revogar_sessao(token: str) -> None:
+    """Revoga a sessão no PostgreSQL durante logout ou expiração por inatividade."""
+    if token and _qg_cloud_enabled():
+        with _qg_pg_connection() as conn:
+            conn.execute("UPDATE qg_auth_sessions SET revoked_at = NOW() WHERE session_hash = %s AND revoked_at IS NULL",
+                         (_qg_hash_session(token),))
+
+
+def _qg_revogar_sessoes_usuario(username: str) -> None:
+    """Invalida sessões antigas depois de uma redefinição de senha."""
+    if username and _qg_cloud_enabled():
+        with _qg_pg_connection() as conn:
+            conn.execute("UPDATE qg_auth_sessions SET revoked_at = NOW() WHERE username = %s AND revoked_at IS NULL",
+                         (normalizar_usuario(username),))
+
+
+def _qg_revogar_todas_sessoes() -> None:
+    """Ação administrativa para encerrar todas as sessões de cadetes na nuvem."""
+    if _qg_cloud_enabled():
+        with _qg_pg_connection() as conn:
+            conn.execute("UPDATE qg_auth_sessions SET revoked_at = NOW() WHERE revoked_at IS NULL")
+
+
+def _qg_persistir_sqlite_restaurado() -> None:
+    """Publica imediatamente no PostgreSQL um SQLite restaurado pelo administrador."""
+    if not _qg_cloud_enabled():
+        return
+    state = _qg_sqlite_runtime_state()
+    state["lock"].acquire()
+    try:
+        state["ready"] = True
+        state["database_url"] = _qg_database_url()
+        _qg_upload_sqlite_snapshot(Path("dados_qg.db").resolve(), state)
+    finally:
+        state["lock"].release()
 
 def listar_memorias(username: str, limite: int = 100, materia: str | None = None,
                     busca: str = "", apenas_revisar: bool = False) -> list[dict]:
@@ -237,13 +609,11 @@ def listar_memorias(username: str, limite: int = 100, materia: str | None = None
     itens.sort(key=lambda x: (not bool(x.get("fixada")), _data(x.get("revisao_em")), x.get("criada_em", "")), reverse=False)
     return itens[:max(1, min(int(limite), 500))]
 
-
 def _data(valor) -> datetime.date:
     try:
         return datetime.date.fromisoformat(str(valor)[:10])
     except (TypeError, ValueError):
         return datetime.date.today()
-
 
 def adicionar_memoria(username: str, texto: str, materia: str = "Geral", tipo: str = "Anotação",
                       tags: list[str] | None = None, prioridade: str = "Média") -> str:
@@ -264,7 +634,6 @@ def adicionar_memoria(username: str, texto: str, materia: str = "Geral", tipo: s
     salvar_dados_usuario(username, dados)
     return memoria_id
 
-
 def registrar_revisao(username: str, memoria_id: str, lembrou: bool) -> None:
     dados = carregar_dados_usuario(username, lambda: [])
     hoje = datetime.date.today()
@@ -283,7 +652,6 @@ def registrar_revisao(username: str, memoria_id: str, lembrou: bool) -> None:
             break
     salvar_dados_usuario(username, dados)
 
-
 def alternar_memoria_fixada(username: str, memoria_id: str) -> None:
     dados = carregar_dados_usuario(username, lambda: [])
     for item in dados.get("memorias", []):
@@ -292,12 +660,10 @@ def alternar_memoria_fixada(username: str, memoria_id: str) -> None:
             break
     salvar_dados_usuario(username, dados)
 
-
 def remover_memoria(username: str, memoria_id: str) -> None:
     dados = carregar_dados_usuario(username, lambda: [])
     dados["memorias"] = [x for x in dados.get("memorias", []) if not isinstance(x, dict) or x.get("id") != memoria_id]
     salvar_dados_usuario(username, dados)
-
 
 def estatisticas_memoria(username: str) -> dict:
     dados = carregar_dados_usuario(username, lambda: [])
@@ -314,13 +680,9 @@ def estatisticas_memoria(username: str) -> dict:
         "por_materia": {m: sum(x.get("materia", "Geral") == m for x in itens) for m in sorted({x.get("materia", "Geral") for x in itens})},
     }
 
-import datetime
-import json
-import os
-import time
-import sqlite3
-
-
+# =============================================================================
+# SETUP PLOTLY & PREFS
+# =============================================================================
 pio.templates["qg_enterprise"] = go.layout.Template(layout=go.Layout(
     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
     font={"family": "Inter, Manrope, sans-serif", "color": "#dbe9f7", "size": 12},
@@ -334,9 +696,6 @@ pio.templates["qg_enterprise"] = go.layout.Template(layout=go.Layout(
 ))
 pio.templates.default = "qg_enterprise"
 
-# =============================================================================
-# TRAVA GLOBAL DE MANUTENÇÃO
-# =============================================================================
 def verificar_bloqueio_manutencao():
     try:
         conn = sqlite3.connect("dados_qg.db")
@@ -344,9 +703,7 @@ def verificar_bloqueio_manutencao():
         c.execute("SELECT valor FROM config_qg WHERE chave = 'modo_manutencao'")
         res = c.fetchone()
         conn.close()
-
         status_manutencao = res[0] if res else "Desativado"
-
         if status_manutencao == "Ativado":
             if not st.session_state.get("admin_autenticado", False):
                 st.error("🚨 **SISTEMA EM MANUTENÇÃO PROGRAMADA**")
@@ -358,9 +715,6 @@ def verificar_bloqueio_manutencao():
     except Exception:
         pass
 
-# =============================================================================
-# 2. RASTREAMENTO E CADASTRO AUTOMÁTICO DE USUÁRIOS
-# =============================================================================
 def registrar_acesso_usuario(nome_usuario):
     try:
         conn = sqlite3.connect("dados_qg.db")
@@ -376,26 +730,18 @@ def registrar_acesso_usuario(nome_usuario):
         agora = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         c.execute("SELECT id FROM usuarios_qg WHERE nome_usuario = ?", (nome_usuario,))
         row = c.fetchone()
-        
         if row:
             c.execute("UPDATE usuarios_qg SET ultimo_acesso = ? WHERE id = ?", (agora, row[0]))
         else:
             c.execute("INSERT INTO usuarios_qg (nome_usuario, data_cadastro, ultimo_acesso) VALUES (?, ?, ?)", (nome_usuario, agora, agora))
-        
         conn.commit()
         conn.close()
     except Exception:
         pass
 
-if "acesso_plataforma_notificado" not in st.session_state:
-    st.session_state["acesso_plataforma_notificado"] = True
-    # Define quem é o usuário atual para registrar (se tiver sistema de login, altere aqui)
-    usr_atual = st.session_state.get("nome_usuario", "Usuário Visitante")
-    registrar_acesso_usuario(usr_atual)
-
-# -----------------------------------------------------------------------------
-# Configuração da Página, Proteção Contra Tradução e Tema EsPCEx / EFA
-# -----------------------------------------------------------------------------
+# =============================================================================
+# CONFIGURAÇÃO DE PÁGINA
+# =============================================================================
 st.set_page_config(
     page_title="QG EsPCEx - Preparação de Cadetes",
     page_icon="⚔️",
@@ -403,254 +749,621 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Execute a trava após configurar a página Streamlit.
+# Verifica a conexão antes de autenticar ou ler dados: com Secrets configurado, o app nunca cai silenciosamente no armazenamento temporário.
+_qg_url_inicial = _qg_database_url()
+if _qg_url_inicial:
+    try:
+        _qg_initialize_cloud_storage(_qg_url_inicial)
+    except Exception:
+        st.error("Não foi possível conectar ao banco persistente. Confira QG_DATABASE_URL em Secrets e a disponibilidade do PostgreSQL.")
+        st.stop()
+
 verificar_bloqueio_manutencao()
 
-# Proteção contra erros de remoção de nós do DOM causados por tradução automática
-st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
-
-# Estilização CSS Verde Oliva / Exército / EFA
-st.markdown("""
-    <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap');
-:root { --bg:#07111f; --panel:#0d1b2a; --panel-2:#102338; --line:rgba(141,181,212,.16); --text:#e8f1fb; --muted:#8ba1b7; --cyan:#59e1d2; --blue:#5d91ff; --violet:#a88cff; --amber:#f3bf62; }
-.stApp { background:radial-gradient(ellipse at 15% -5%,rgba(36,103,141,.22),transparent 38%),radial-gradient(ellipse at 92% 9%,rgba(96,65,154,.16),transparent 32%),var(--bg); color:var(--text); font-family:'Manrope',sans-serif; }
-[data-testid="stHeader"] { background:rgba(7,17,31,.72); }
-.block-container { max-width:1500px; padding-top:2rem; padding-bottom:3rem; }
-[data-testid="stSidebar"] { background:linear-gradient(180deg,#0b1827 0%,#081321 100%); border-right:1px solid var(--line); }
-[data-testid="stSidebar"] * { color:var(--text); }
-[data-testid="stSidebar"] [data-testid="stMetric"] { background:#102338; border:1px solid var(--line); }
-[data-testid="stSidebar"] hr { border-color:var(--line); }
-h1,h2,h3,h4 { letter-spacing:-.035em; color:#f2f7ff; }
-h1 { font-weight:800; }
-[data-testid="stCaptionContainer"] p, [data-testid="stMarkdownContainer"] small { color:var(--muted); }
-[data-testid="stMetric"] { background:linear-gradient(145deg,rgba(17,39,60,.96),rgba(10,26,42,.95)); border:1px solid var(--line); border-radius:16px; padding:17px 18px; box-shadow:0 12px 32px rgba(0,0,0,.15); }
-[data-testid="stMetricLabel"] { color:#9ab0c6; font-size:.82rem; text-transform:uppercase; letter-spacing:.075em; }
-[data-testid="stMetricValue"] { color:#f4f8ff; font-family:'DM Mono',monospace; }
-[data-testid="stVerticalBlockBorderWrapper"] { border-radius:18px; border-color:var(--line); background:linear-gradient(145deg,rgba(15,32,50,.94),rgba(9,23,38,.94)); }
-[data-testid="stExpander"] { border:1px solid var(--line); border-radius:14px; background:rgba(13,27,42,.72); }
-.stButton>button, .stFormSubmitButton>button { border-radius:10px; font-weight:700; border:1px solid rgba(89,225,210,.35); background:#10283b; color:#eaf8ff; transition:all .2s ease; }
-.stButton>button[kind="primary"], .stFormSubmitButton>button[kind="primary"] { background:linear-gradient(110deg,#137f83,#315fbd); border:1px solid rgba(89,225,210,.8); color:white; box-shadow:0 0 22px rgba(62,190,205,.15); }
-.stButton>button:hover, .stFormSubmitButton>button:hover { border-color:var(--cyan); color:white; box-shadow:0 0 20px rgba(89,225,210,.16); transform:translateY(-1px); }
-.stTabs [data-baseweb="tab-list"] { gap:7px; border-bottom:1px solid var(--line); }
-.stTabs [data-baseweb="tab"] { border-radius:9px 9px 0 0; }
-.stTabs [aria-selected="true"] { color:var(--cyan)!important; }
-[data-testid="stDataFrame"] { border:1px solid var(--line); border-radius:13px; overflow:hidden; }
-[data-baseweb="input"] > div, [data-baseweb="select"] > div, [data-testid="stDateInput"] input, [data-testid="stTimeInput"] input, textarea { background:#0b1a2a!important; border-color:var(--line)!important; border-radius:10px!important; }
-[data-testid="stProgressBar"] > div > div { background:linear-gradient(90deg,var(--cyan),var(--blue),var(--violet)); }
-[data-testid="stAlert"] { border-radius:12px; }
-.espcex-badge { display:inline-flex; gap:8px; align-items:center; background:rgba(89,225,210,.08); color:var(--cyan); padding:7px 12px; border-radius:999px; font:600 .78rem 'DM Mono',monospace; border:1px solid rgba(89,225,210,.24); letter-spacing:.04em; }
-.routine-card, .insight-box { background:linear-gradient(145deg,rgba(17,39,60,.96),rgba(10,26,42,.96)); border:1px solid var(--line); border-left:3px solid var(--cyan); border-radius:14px; padding:17px 18px; margin:8px 0 12px; box-shadow:0 12px 26px rgba(0,0,0,.12); }
-.routine-card h4 { color:var(--cyan); font-family:'DM Mono',monospace; }
-.qg-hero { display:flex; justify-content:space-between; align-items:center; gap:18px; padding:19px 22px; margin:0 0 24px; border:1px solid rgba(89,225,210,.22); border-radius:18px; background:linear-gradient(112deg,rgba(13,37,56,.97),rgba(22,35,63,.82)); box-shadow:0 18px 46px rgba(0,0,0,.19); }
-.qg-hero-kicker { color:var(--cyan); font:500 .72rem 'DM Mono',monospace; text-transform:uppercase; letter-spacing:.16em; }
-.qg-hero-title { margin:5px 0 0; font-size:1.15rem; font-weight:800; color:#f4f8ff; }
-.qg-live { color:#a6b9cc; font:500 .72rem 'DM Mono',monospace; white-space:nowrap; }
-.qg-live:before { content:''; display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--cyan); box-shadow:0 0 12px var(--cyan); margin-right:8px; }
-@media (max-width:700px) { .block-container { padding-top:1rem; padding-left:1rem; padding-right:1rem; } .qg-hero { align-items:flex-start; flex-direction:column; } }
-
-[data-testid="stSidebar"] [data-testid="stRadio"] label { border-radius:10px; padding:7px 10px; transition:background .18s ease, border .18s ease; border:1px solid transparent; }
-[data-testid="stSidebar"] [data-testid="stRadio"] label:hover { background:rgba(89,225,210,.07); border-color:rgba(89,225,210,.18); }
-[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) { background:linear-gradient(100deg,rgba(24,125,131,.22),rgba(49,95,189,.13)); border-color:rgba(89,225,210,.24); }
-[data-testid="stPlotlyChart"] { border:1px solid rgba(141,181,212,.11); border-radius:15px; background:rgba(10,25,41,.30); padding:5px; }
-.diary-card { border-left:3px solid #59e1d2; }
-
-/* QG Enterprise: painel futurista, consistente e adaptável a telas pequenas. */
+# Tema 3D global: CSS é aplicado pela página; o JS só adiciona inclinação leve aos cartões.
+st.markdown("""<style>
 :root {
-  color-scheme:dark; --bg:#07101b; --panel:#0b1725; --panel-raised:#102033;
-  --line:rgba(151,184,214,.15); --text:#eef5ff; --muted:#9aacc0;
-  --cyan:#63e5dc; --blue:#78a5ff; --violet:#b09aff; --radius:18px;
+  color-scheme: dark;
+  --qg-bg: #07101b;
+  --qg-panel: rgba(12, 27, 43, .88);
+  --qg-panel-raised: rgba(18, 39, 59, .94);
+  --qg-line: rgba(143, 190, 220, .20);
+  --qg-text: #eff7ff;
+  --qg-muted: #9db2c7;
+  --qg-cyan: #63e5dc;
+  --qg-blue: #78a5ff;
+  --qg-violet: #b09aff;
+  --qg-gold: #f3bf62;
+  --qg-shadow: 0 22px 55px rgba(0, 0, 0, .38);
 }
-.stApp,[data-testid="stAppViewContainer"] {
-  background:radial-gradient(ellipse at 8% 0%,rgba(33,130,153,.16),transparent 34%),
-    radial-gradient(ellipse at 100% 18%,rgba(103,76,176,.13),transparent 31%),
-    linear-gradient(rgba(151,184,214,.025) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(151,184,214,.025) 1px,transparent 1px),#07101b;
-  background-size:auto,auto,48px 48px,48px 48px,auto;
-  color:var(--text); font-family:Inter,"Segoe UI",Manrope,system-ui,sans-serif;
+
+* { box-sizing: border-box; }
+.stApp {
+  color: var(--qg-text);
+  background:
+    radial-gradient(ellipse at 12% 0%, rgba(27, 112, 139, .18), transparent 36%),
+    radial-gradient(ellipse at 88% 13%, rgba(73, 80, 163, .20), transparent 35%),
+    linear-gradient(145deg, #050b14 0%, #081523 46%, #0c1022 100%) !important;
+  font-family: Inter, Manrope, ui-sans-serif, system-ui, sans-serif;
+  isolation: isolate;
+  overflow-x: clip;
+  overflow-y: visible;
 }
-.block-container { max-width:1600px; padding-top:1.45rem; padding-bottom:3.5rem; }
+.stApp::before, .stApp::after {
+  content: "";
+  position: fixed;
+  inset: -35%;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: 50%;
+  filter: blur(2px);
+}
+.stApp::before {
+  background: radial-gradient(ellipse at 30% 45%, rgba(42, 175, 184, .10), transparent 46%),
+              radial-gradient(ellipse at 68% 58%, rgba(97, 111, 227, .12), transparent 43%);
+  animation: qgAurora 34s ease-in-out infinite alternate;
+}
+.stApp::after {
+  inset: auto -15% -48%;
+  height: 72vh;
+  background: radial-gradient(ellipse, rgba(62, 108, 188, .14), transparent 68%);
+  animation: qgDrift 17s ease-in-out infinite alternate;
+}
+@keyframes qgAurora {
+  0% { transform: rotate(-8deg) scale(.94) translate3d(-1%, 0, 0); }
+  100% { transform: rotate(8deg) scale(1.10) translate3d(2%, 1%, 0); }
+}
+@keyframes qgDrift {
+  from { transform: translate3d(-3%, 0, 0); opacity: .55; }
+  to { transform: translate3d(3%, -5%, 0); opacity: 1; }
+}
+
+[data-testid="stAppViewContainer"] { background: transparent; }
+/* Mantém a área principal do Streamlit como superfície de rolagem vertical da página. */
+[data-testid="stMain"] {
+  overflow-x:hidden !important;
+  overflow-y:auto !important;
+  min-height:0;
+  scroll-behavior:smooth;
+  -webkit-overflow-scrolling:touch;
+}
+.main .block-container { max-width: 1680px; padding-top: 2rem; padding-bottom: 4rem; }
+[data-testid="stHeader"] { background: rgba(5, 11, 20, .58); backdrop-filter: blur(16px); }
 [data-testid="stSidebar"] {
-  background:linear-gradient(180deg,rgba(11,24,39,.99),rgba(6,14,24,.99));
-  border-right:1px solid rgba(151,184,214,.13); box-shadow:16px 0 45px rgba(0,0,0,.12);
+  background: linear-gradient(180deg, rgba(8, 19, 32, .97), rgba(5, 10, 19, .98));
+  border-right: 1px solid rgba(99, 229, 220, .16);
+  box-shadow: 18px 0 55px rgba(0, 0, 0, .32);
 }
-[data-testid="stSidebar"]>div:first-child { padding-top:1.1rem; }
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color:#dbe8f5; }
-[data-testid="stSidebar"] [data-testid="stRadio"]>label,
-[data-testid="stSidebar"] [data-testid="stExpander"] summary {
-  color:#aebed0; font-size:.72rem; font-weight:750; letter-spacing:.12em; text-transform:uppercase;
+[data-testid="stSidebar"] > div:first-child { background: transparent; }
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { color: #eaf7ff; }
+[data-testid="stSidebar"] [data-testid="stMetric"] { margin: .35rem 0; }
+
+/* Superfícies em vidro e profundidade */
+[data-testid="stVerticalBlockBorderWrapper"] > div,
+[data-testid="stExpander"],
+[data-testid="stForm"],
+[data-testid="stTabs"] {
+  border: 1px solid var(--qg-line) !important;
+  border-radius: 19px !important;
+  background: linear-gradient(145deg, rgba(17, 39, 59, .70), rgba(8, 20, 34, .80)) !important;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, .22), inset 0 1px rgba(255, 255, 255, .035);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  transform-style: preserve-3d;
+  transition: transform .28s ease, box-shadow .28s ease, border-color .28s ease;
 }
-[data-testid="stSidebar"] [data-testid="stRadio"]>div { gap:4px; }
-[data-testid="stSidebar"] [data-testid="stRadio"] label {
-  min-height:38px; padding:8px 10px; border:1px solid transparent; border-radius:11px;
-  color:#b7c7d7; transition:background .18s ease,border-color .18s ease,transform .18s ease;
+[data-testid="stVerticalBlockBorderWrapper"] > div:hover,
+[data-testid="stExpander"]:hover,
+[data-testid="stForm"]:hover {
+  transform: perspective(1200px) translateY(-2px) rotateX(.35deg);
+  border-color: rgba(99, 229, 220, .34) !important;
+  box-shadow: 0 23px 48px rgba(0, 0, 0, .30), 0 0 26px rgba(99, 229, 220, .055);
 }
-[data-testid="stSidebar"] [data-testid="stRadio"] label:hover {
-  background:rgba(99,229,220,.055); border-color:rgba(99,229,220,.16); transform:translateX(2px);
+[data-testid="stTabs"] { padding: 13px 16px 17px; }
+[data-testid="stTabs"] [role="tablist"] {
+  gap: 8px;
+  border-bottom: 1px solid rgba(143, 190, 220, .13);
 }
-[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) {
-  color:#f4fbff; background:linear-gradient(100deg,rgba(32,140,146,.22),rgba(67,105,183,.14));
-  border-color:rgba(99,229,220,.28); box-shadow:inset 3px 0 var(--cyan),0 6px 20px rgba(0,0,0,.12);
+[data-testid="stTabs"] [role="tab"] {
+  border-radius: 11px 11px 6px 6px;
+  transition: transform .2s ease, background .2s ease, color .2s ease;
 }
-.qg-nav-heading { margin:0 0 8px; color:#6ee3dc; font:750 .68rem "DM Mono",monospace; letter-spacing:.17em; }
-[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-  min-height:43px; border:1px solid rgba(99,229,220,.2); border-radius:12px;
-  background:linear-gradient(115deg,rgba(18,40,59,.96),rgba(14,27,45,.96)); color:#edf7ff;
-  box-shadow:inset 0 1px rgba(255,255,255,.025); transition:border-color .18s ease,box-shadow .18s ease;
+[data-testid="stTabs"] [role="tab"]:hover { transform: translateY(-2px); background: rgba(99, 229, 220, .08); }
+[data-testid="stTabs"] [aria-selected="true"] { color: var(--qg-cyan) !important; }
+
+/* Botões com extrusão 3D */
+.stButton > button, .stFormSubmitButton > button, [data-testid="stDownloadButton"] > button {
+  min-height: 2.65rem;
+  border: 1px solid rgba(99, 229, 220, .30);
+  border-radius: 12px;
+  color: #ecfbff;
+  background: linear-gradient(145deg, #173d52, #10273e 60%, #182444);
+  box-shadow: 0 5px 0 #071522, 0 11px 24px rgba(0, 0, 0, .28), inset 0 1px rgba(255, 255, 255, .12);
+  transform: perspective(700px) translateZ(0);
+  transform-style: preserve-3d;
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease, filter .18s ease;
 }
-[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div:hover {
-  border-color:rgba(99,229,220,.48); box-shadow:0 0 0 3px rgba(99,229,220,.06);
+.stButton > button:hover, .stFormSubmitButton > button:hover, [data-testid="stDownloadButton"] > button:hover {
+  transform: perspective(700px) translateY(-3px) rotateX(3deg);
+  border-color: rgba(99, 229, 220, .68);
+  filter: brightness(1.12);
+  box-shadow: 0 8px 0 #071522, 0 17px 30px rgba(14, 151, 166, .20), 0 0 20px rgba(99, 229, 220, .12);
 }
-.qg-nav-heading + div { margin-top:0; }
-.qg-sidebar-brand { display:flex; align-items:center; gap:12px; margin:3px 0 17px; }
-.qg-sidebar-mark,.qg-brand-symbol {
-  display:grid; place-items:center; color:#efffff; border:1px solid rgba(99,229,220,.4);
-  background:linear-gradient(145deg,rgba(36,161,164,.34),rgba(67,90,170,.3));
-  box-shadow:0 0 26px rgba(99,229,220,.12),inset 0 1px rgba(255,255,255,.1);
-  font-family:Inter,"Segoe UI",sans-serif; font-weight:850; letter-spacing:.08em;
+.stButton > button:active, .stFormSubmitButton > button:active, [data-testid="stDownloadButton"] > button:active {
+  transform: perspective(700px) translateY(3px);
+  box-shadow: 0 1px 0 #071522, 0 4px 10px rgba(0, 0, 0, .30);
 }
-.qg-sidebar-mark { width:42px; height:42px; border-radius:14px; font-size:.86rem; }
-.qg-sidebar-name { color:#f4f8ff; font-size:.94rem; font-weight:850; letter-spacing:.08em; }
-.qg-sidebar-caption { margin-top:3px; color:#8299ae; font:600 .61rem "DM Mono",monospace; letter-spacing:.15em; text-transform:uppercase; }
-.qg-account-card {
-  display:flex; align-items:center; gap:10px; margin:0 0 14px; padding:11px 12px;
-  border:1px solid var(--line); border-radius:14px;
-  background:linear-gradient(135deg,rgba(20,43,63,.88),rgba(11,25,40,.86));
+.stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"] {
+  border-color: rgba(123, 241, 227, .78);
+  background: linear-gradient(115deg, #117e82, #2369a3 58%, #494b9b);
+  box-shadow: 0 5px 0 #084b5b, 0 14px 28px rgba(37, 160, 190, .22), inset 0 1px rgba(255,255,255,.20);
 }
-.qg-account-avatar { display:grid; flex:0 0 34px; place-items:center; width:34px; height:34px; border-radius:11px; color:#08202a; background:linear-gradient(135deg,var(--cyan),#82c7ff); font-weight:850; }
-.qg-account-label { color:#7991a8; font:600 .6rem "DM Mono",monospace; letter-spacing:.12em; text-transform:uppercase; }
-.qg-account-name { overflow:hidden; max-width:180px; color:#edf5ff; font-weight:750; text-overflow:ellipsis; white-space:nowrap; }
-.qg-hero {
-  position:relative; isolation:isolate; overflow:hidden; display:flex; justify-content:space-between; align-items:center;
-  gap:24px; min-height:142px; padding:24px 27px; margin:0 0 25px;
-  border:1px solid rgba(116,195,218,.21); border-radius:22px;
-  background:linear-gradient(112deg,rgba(11,31,48,.98),rgba(20,35,61,.95) 64%,rgba(23,29,52,.95));
-  box-shadow:0 22px 60px rgba(0,0,0,.22),inset 0 1px rgba(255,255,255,.035);
+
+/* Campos elevados, foco luminoso e seletores */
+[data-baseweb="input"] > div, [data-baseweb="select"] > div, [data-baseweb="textarea"] > div,
+textarea, input {
+  border-radius: 12px !important;
+  border-color: rgba(112, 191, 218, .24) !important;
+  background: rgba(5, 16, 27, .82) !important;
+  box-shadow: inset 0 3px 9px rgba(0, 0, 0, .34), 0 2px 7px rgba(0, 0, 0, .12) !important;
+  transition: border-color .2s ease, box-shadow .2s ease, transform .2s ease;
 }
-.qg-hero:before { content:""; position:absolute; z-index:-1; width:350px; height:350px; right:12%; top:-240px; border:1px solid rgba(99,229,220,.13); border-radius:50%; box-shadow:0 0 0 28px rgba(99,229,220,.025),0 0 0 58px rgba(99,229,220,.02); }
-.qg-hero:after { content:""; position:absolute; z-index:-1; inset:auto 0 0; height:2px; background:linear-gradient(90deg,transparent,var(--cyan),var(--blue),var(--violet),transparent); opacity:.75; }
-.qg-hero-brand { display:flex; align-items:center; gap:17px; min-width:0; }
-.qg-brand-symbol { flex:0 0 58px; width:58px; height:58px; border-radius:18px; font-size:1.05rem; }
-.qg-hero-kicker { color:var(--cyan); font:650 .67rem "DM Mono",monospace; text-transform:uppercase; letter-spacing:.17em; }
-.qg-hero-title { margin:7px 0 4px; color:#f4f8ff; font-size:clamp(1.2rem,2vw,1.68rem); font-weight:850; letter-spacing:-.045em; line-height:1.15; }
-.qg-hero-subtitle { color:#9aacc0; font-size:.83rem; }
-.qg-hero-meta { display:flex; flex:0 0 auto; flex-direction:column; align-items:flex-end; gap:10px; }
-.qg-live { display:inline-flex; align-items:center; gap:9px; padding:8px 11px; border:1px solid rgba(99,229,220,.2); border-radius:999px; color:#c5eee9; background:rgba(24,94,97,.19); font:650 .63rem "DM Mono",monospace; letter-spacing:.11em; white-space:nowrap; }
-.qg-live:before { content:""; display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--cyan); box-shadow:0 0 12px var(--cyan); animation:qg-pulse 2.2s ease-in-out infinite; }
-.qg-hero-date { color:#8196ab; font:500 .65rem "DM Mono",monospace; letter-spacing:.11em; text-transform:uppercase; }
-.qg-admin-console-hero {
-  position:relative; isolation:isolate; overflow:hidden; display:flex; align-items:center; gap:18px;
-  margin:3px 0 20px; padding:19px 22px; border:1px solid rgba(99,229,220,.22); border-radius:18px;
-  background:radial-gradient(circle at 82% 0%,rgba(72,127,230,.2),transparent 34%),linear-gradient(112deg,rgba(9,28,44,.98),rgba(17,35,59,.96) 62%,rgba(25,28,54,.96));
-  box-shadow:0 18px 48px rgba(0,0,0,.2),inset 0 1px rgba(255,255,255,.04);
+[data-baseweb="input"] > div:focus-within, [data-baseweb="select"] > div:focus-within,
+textarea:focus, input:focus {
+  border-color: var(--qg-cyan) !important;
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, .30), 0 0 0 2px rgba(99, 229, 220, .12), 0 0 19px rgba(99, 229, 220, .18) !important;
+  transform: translateY(-1px);
 }
-.qg-admin-console-hero:after { content:""; position:absolute; z-index:-1; inset:auto 0 0; height:2px; background:linear-gradient(90deg,transparent,#63e5dc,#78a5ff,#b09aff,transparent); opacity:.85; }
-.qg-admin-console-mark { display:grid; flex:0 0 50px; place-items:center; width:50px; height:50px; border:1px solid rgba(99,229,220,.42); border-radius:15px; color:#edffff; background:linear-gradient(145deg,rgba(39,157,164,.35),rgba(75,91,175,.32)); box-shadow:0 0 24px rgba(99,229,220,.1); font:850 1rem "DM Mono",monospace; }
-.qg-admin-console-copy { min-width:0; }
-.qg-admin-console-kicker { color:#69e1d8; font:700 .64rem "DM Mono",monospace; letter-spacing:.17em; }
-.qg-admin-console-title { margin:5px 0 3px; color:#f3f8ff; font-size:1.13rem; font-weight:850; letter-spacing:-.035em; }
-.qg-admin-console-subtitle { color:#95aabd; font-size:.79rem; line-height:1.5; }
-.qg-admin-console-status { display:flex; flex:0 0 auto; align-items:center; gap:8px; margin-left:auto; padding:8px 10px; border:1px solid rgba(99,229,220,.19); border-radius:999px; color:#bcece7; background:rgba(27,105,102,.14); font:650 .58rem "DM Mono",monospace; letter-spacing:.08em; }
-.qg-admin-console-status span { width:7px; height:7px; border-radius:50%; background:#63e5dc; box-shadow:0 0 12px #63e5dc; }
-.qg-admin-console-hero:before { content:""; position:absolute; z-index:-1; right:18%; top:-128px; width:220px; height:220px; border:1px solid rgba(99,229,220,.13); border-radius:50%; box-shadow:0 0 0 22px rgba(99,229,220,.025),0 0 0 48px rgba(120,165,255,.025); animation:qg-orbit 24s linear infinite; }
-.qg-admin-console-mark { position:relative; overflow:hidden; }
-.qg-admin-console-mark:after { content:""; position:absolute; inset:-55%; background:linear-gradient(115deg,transparent 38%,rgba(255,255,255,.18) 49%,transparent 60%); transform:translateX(-70%); animation:qg-sheen 5.5s ease-in-out infinite; }
-.qg-admin-clock { font-variant-numeric:tabular-nums; }
-[data-testid="stMain"] [data-testid="stRadio"] > label { margin:0 0 7px; color:#8ca9bf; font:750 .66rem "DM Mono",monospace; letter-spacing:.12em; text-transform:uppercase; }
-[data-testid="stMain"] [data-testid="stRadio"] label { font-size:.76rem; font-weight:700; line-height:1.25; }
-[data-testid="stMain"] [data-testid="stRadio"] label:focus-within { outline:2px solid rgba(99,229,220,.62); outline-offset:2px; }
-[data-testid="stMain"] [data-testid="stRadio"] > div > label { box-shadow:0 7px 20px rgba(0,0,0,.1); }
-[data-testid="stSidebar"] [data-testid="stTextInput"] input { min-height:42px; padding-left:12px; border:1px solid rgba(99,229,220,.19)!important; border-radius:12px!important; background:rgba(8,20,33,.92)!important; }
-[data-testid="stSidebar"] [data-testid="stTextInput"] input:focus { border-color:rgba(99,229,220,.7)!important; box-shadow:0 0 0 3px rgba(99,229,220,.09)!important; }
-.stButton>button:focus-visible,.stFormSubmitButton>button:focus-visible,[data-testid="stDownloadButton"] button:focus-visible { outline:2px solid #63e5dc; outline-offset:3px; }
-[data-testid="stTooltipContent"] { border:1px solid rgba(99,229,220,.18); border-radius:10px; background:#0b1928; box-shadow:0 12px 34px rgba(0,0,0,.28); }
-@keyframes qg-orbit { to { transform:rotate(360deg); } }
-@keyframes qg-sheen { 0%,55%,100% { transform:translateX(-70%); } 75% { transform:translateX(70%); } }
-[data-testid="stMain"] [data-testid="stRadio"] > div { flex-wrap:wrap; gap:7px; }
-[data-testid="stMain"] [data-testid="stRadio"] label { min-height:38px; padding:8px 12px; border:1px solid rgba(151,184,214,.15); border-radius:11px; background:rgba(12,27,43,.7); transition:border-color .18s ease,background .18s ease,transform .18s ease; }
-[data-testid="stMain"] [data-testid="stRadio"] label:hover { border-color:rgba(99,229,220,.35); background:rgba(24,70,83,.32); transform:translateY(-1px); }
-[data-testid="stMain"] [data-testid="stRadio"] label:has(input:checked) { border-color:rgba(99,229,220,.48); color:#efffff; background:linear-gradient(110deg,rgba(29,124,132,.32),rgba(59,88,166,.26)); box-shadow:inset 0 0 0 1px rgba(99,229,220,.07),0 7px 20px rgba(0,0,0,.12); }
-@keyframes qg-pulse { 50% { opacity:.48; box-shadow:0 0 4px var(--cyan); } }
-h1,h2,h3,h4 { color:#f3f7ff; letter-spacing:-.04em; }
-h1 { margin:0 0 .3rem!important; font-size:clamp(1.7rem,3vw,2.35rem)!important; font-weight:850!important; }
-h2,h3 { font-weight:800!important; }
-[data-testid="stCaptionContainer"] p { color:#94a9bd; line-height:1.55; }
+
+/* Métricas, alertas, progresso e tabelas */
 [data-testid="stMetric"] {
-  position:relative; overflow:hidden; min-height:112px; padding:17px 18px;
-  border:1px solid rgba(151,184,214,.15); border-radius:17px;
-  background:linear-gradient(145deg,rgba(18,39,59,.96),rgba(9,22,36,.98));
-  box-shadow:0 12px 34px rgba(0,0,0,.17),inset 0 1px rgba(255,255,255,.025);
-  transition:transform .18s ease,border-color .18s ease;
+  position: relative;
+  overflow: hidden;
+  padding: 16px 17px;
+  border: 1px solid rgba(99, 229, 220, .20);
+  border-radius: 17px;
+  background: linear-gradient(145deg, rgba(19, 45, 65, .94), rgba(9, 22, 37, .96));
+  box-shadow: 0 13px 28px rgba(0, 0, 0, .26), inset 0 1px rgba(255, 255, 255, .05);
+  transform-style: preserve-3d;
+  transition: transform .24s ease, box-shadow .24s ease, border-color .24s ease;
 }
-[data-testid="stMetric"]:hover { transform:translateY(-2px); border-color:rgba(99,229,220,.3); }
-[data-testid="stMetric"]:after { content:""; position:absolute; top:0; left:18px; width:42px; height:2px; background:linear-gradient(90deg,var(--cyan),transparent); }
-[data-testid="stMetricLabel"] { color:#95abc0; font-size:.69rem; font-weight:750; text-transform:uppercase; letter-spacing:.105em; }
-[data-testid="stMetricValue"] { color:#f5f9ff; font:750 clamp(1.25rem,2vw,1.75rem) "DM Mono",ui-monospace,monospace; }
-[data-testid="stVerticalBlockBorderWrapper"] { border-radius:19px; border-color:rgba(151,184,214,.14); background:linear-gradient(145deg,rgba(15,32,50,.83),rgba(9,22,37,.84)); box-shadow:0 12px 34px rgba(0,0,0,.1); }
-[data-testid="stExpander"] { border:1px solid rgba(151,184,214,.14); border-radius:15px; background:rgba(11,25,40,.68); }
-[data-testid="stExpander"] summary { font-weight:700; }
-.stButton>button,.stFormSubmitButton>button,[data-testid="stDownloadButton"] button {
-  min-height:42px; border:1px solid rgba(117,163,196,.24); border-radius:11px;
-  color:#dceafb; background:linear-gradient(145deg,rgba(20,43,63,.96),rgba(13,30,48,.96));
-  font-weight:750; transition:all .18s ease;
+[data-testid="stMetric"]::after {
+  content: ""; position: absolute; left: 12%; right: 12%; bottom: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--qg-cyan), var(--qg-blue), transparent); opacity: .72;
 }
-.stButton>button:hover,.stFormSubmitButton>button:hover,[data-testid="stDownloadButton"] button:hover {
-  border-color:rgba(99,229,220,.72); color:#fff; box-shadow:0 8px 26px rgba(36,156,163,.13); transform:translateY(-1px);
-}
-.stButton>button[kind="primary"],.stFormSubmitButton>button[kind="primary"],[data-testid="stDownloadButton"] button[kind="primary"] {
-  border-color:rgba(99,229,220,.62); color:white;
-  background:linear-gradient(105deg,#137d83,#315bb0 72%,#5855a3);
-  box-shadow:0 8px 24px rgba(45,133,168,.18),inset 0 1px rgba(255,255,255,.1);
-}
-[data-baseweb="input"]>div,[data-baseweb="select"]>div,[data-testid="stDateInput"] input,[data-testid="stTimeInput"] input,textarea {
-  border-color:rgba(151,184,214,.19)!important; border-radius:11px!important; background:#091725!important;
-  transition:border-color .15s ease,box-shadow .15s ease;
-}
-[data-baseweb="input"]>div:focus-within,[data-baseweb="select"]>div:focus-within,textarea:focus {
-  border-color:rgba(99,229,220,.75)!important; box-shadow:0 0 0 3px rgba(99,229,220,.09)!important;
-}
-[data-testid="stCheckbox"] label,[data-testid="stRadio"] label { color:#c8d7e6; }
-[data-testid="stProgressBar"] { padding:3px; border:1px solid rgba(151,184,214,.12); border-radius:999px; background:rgba(255,255,255,.035); }
-[data-testid="stProgressBar"]>div>div { border-radius:999px; background:linear-gradient(90deg,#49cfc7,#5d91ff,#a88cff); box-shadow:0 0 14px rgba(89,225,210,.24); }
-[data-testid="stAlert"] { border:1px solid rgba(151,184,214,.14); border-radius:14px; background:rgba(13,28,44,.8); }
-.stTabs [data-baseweb="tab-list"] { gap:5px; padding:5px; border:1px solid rgba(151,184,214,.12); border-radius:13px; background:rgba(8,19,31,.72); }
-.stTabs [data-baseweb="tab"] { min-height:38px; border-radius:9px; color:#9cafc1; font-weight:700; }
-.stTabs [aria-selected="true"] { color:#eaffff!important; background:linear-gradient(100deg,rgba(38,135,142,.28),rgba(67,92,164,.22)); }
-[data-testid="stDataFrame"],[data-testid="stDataEditor"] { overflow:hidden; border:1px solid rgba(151,184,214,.15); border-radius:15px; background:rgba(9,22,36,.76); }
-[data-testid="stPlotlyChart"] { overflow:hidden; border:1px solid rgba(151,184,214,.13); border-radius:17px; background:linear-gradient(145deg,rgba(13,27,43,.62),rgba(9,20,33,.42)); padding:6px; }
-hr { border-color:rgba(151,184,214,.13)!important; }
-code { border:1px solid rgba(151,184,214,.12); border-radius:6px; color:#a9e8e4; background:rgba(13,29,45,.88); }
-::selection { color:#07101b; background:rgba(99,229,220,.75); }
-@media (max-width:900px) {
-  .qg-hero { align-items:flex-start; padding:20px; }
-  [data-testid="stHorizontalBlock"] { flex-wrap:wrap; gap:.8rem; }
-  [data-testid="stHorizontalBlock"]>[data-testid="column"] { min-width:min(100%,220px)!important; flex:1 1 220px!important; }
-}
-@media (max-width:640px) {
-  .block-container { padding:1rem .8rem 2rem; }
-  .qg-hero { flex-direction:column; gap:16px; min-height:0; padding:18px; border-radius:17px; }
-  .qg-hero-meta { align-items:flex-start; }
-  .qg-brand-symbol { flex-basis:46px; width:46px; height:46px; border-radius:14px; }
-  .qg-hero-title { font-size:1.24rem; }
-  [data-testid="stMetric"] { min-height:94px; padding:13px; }
-  .qg-admin-console-hero { align-items:flex-start; flex-wrap:wrap; padding:16px; }
-  .qg-admin-console-status { margin-left:0; }
-}
-@media (prefers-reduced-motion:reduce) {
-  *,*:before,*:after { scroll-behavior:auto!important; animation-duration:.01ms!important; animation-iteration-count:1!important; transition-duration:.01ms!important; }
-}
-</style>
-""", unsafe_allow_html=True)
+[data-testid="stMetric"]:hover { transform: perspective(900px) translateY(-4px) rotateX(2deg) rotateY(-1deg); border-color: rgba(99,229,220,.48); box-shadow: 0 22px 42px rgba(0,0,0,.34), 0 0 24px rgba(99,229,220,.10); }
+[data-testid="stMetricValue"] { color: #f4fbff; font-weight: 800; text-shadow: 0 0 18px rgba(99,229,220,.13); }
+[data-testid="stMetricLabel"] { color: var(--qg-muted); }
+[data-testid="stAlert"] { border-radius: 14px; box-shadow: 0 12px 26px rgba(0,0,0,.17); backdrop-filter: blur(12px); }
+[data-testid="stProgress"] > div > div { border-radius: 999px; background: linear-gradient(90deg, var(--qg-cyan), var(--qg-blue), var(--qg-violet)); box-shadow: 0 0 18px rgba(99,229,220,.25); }
+[data-testid="stDataFrame"], [data-testid="stTable"] { border: 1px solid rgba(143,190,220,.16); border-radius: 14px; overflow: hidden; box-shadow: 0 15px 32px rgba(0,0,0,.22); }
 
-USERS_FILE = "usuarios.json"
+/* Cartões de rotina */
+.routine-card {
+  position: relative; height: 100%; min-height: 178px; overflow: hidden; padding: 21px;
+  border: 1px solid rgba(99,229,220,.23); border-radius: 17px;
+  background: linear-gradient(145deg, rgba(18,43,65,.94), rgba(7,19,33,.98));
+  box-shadow: 9px 12px 25px rgba(0,0,0,.34), inset 1px 1px rgba(255,255,255,.07), inset -1px -1px rgba(0,0,0,.24);
+  transform: perspective(900px) rotateX(1deg); transform-style: preserve-3d;
+  transition: transform .3s ease, box-shadow .3s ease, border-color .3s ease;
+}
+.routine-card::after { content:""; position:absolute; width:180px; height:180px; right:-85px; top:-105px; border-radius:50%; background:rgba(99,229,220,.12); filter:blur(4px); }
+.routine-card:hover { transform: perspective(900px) translateY(-6px) rotateX(3deg) rotateY(-2deg); border-color:rgba(99,229,220,.52); box-shadow:14px 22px 38px rgba(0,0,0,.38),0 0 25px rgba(99,229,220,.11); }
+.routine-card h4 { position:relative; color:var(--qg-cyan); margin-top:0; font-weight:800; text-shadow:0 0 15px rgba(99,229,220,.25); }
+.routine-card b { position:relative; color:#f1f7ff; }
 
-# Listagem oficial de disciplinas da EFA (Escola Família Agrícola)
+/* Cabeçalhos 3D e cubo */
+.qg-hero {
+  position:relative; display:flex; align-items:center; gap:24px; overflow:hidden;
+  margin:0 0 25px; padding:25px 30px; min-height:150px;
+  border:1px solid rgba(99,229,220,.28); border-radius:23px;
+  background:radial-gradient(circle at 86% 12%,rgba(94,113,241,.24),transparent 34%),linear-gradient(115deg,rgba(10,31,49,.98),rgba(19,39,69,.94) 60%,rgba(31,30,61,.95));
+  box-shadow:0 23px 54px rgba(0,0,0,.39),inset 0 1px rgba(255,255,255,.10);
+  transform:perspective(1200px) rotateX(.7deg); transform-style:preserve-3d;
+}
+.qg-hero::after { content:""; position:absolute; left:7%; right:7%; bottom:0; height:2px; background:linear-gradient(90deg,transparent,var(--qg-cyan),var(--qg-blue),var(--qg-violet),transparent); animation:qgGlow 2.8s ease-in-out infinite alternate; }
+@keyframes qgGlow { from { opacity:.48; filter:drop-shadow(0 0 2px var(--qg-cyan)); } to { opacity:1; filter:drop-shadow(0 0 10px var(--qg-cyan)); } }
+.qg-hero-copy { min-width:0; flex:1; }
+.qg-hero-kicker { color:var(--qg-cyan); font:700 .7rem ui-monospace,monospace; letter-spacing:.17em; text-transform:uppercase; }
+.qg-hero-title { margin:.35rem 0; color:#f5f9ff; font-size:clamp(1.35rem,3vw,2rem); font-weight:850; letter-spacing:-.04em; text-shadow:0 8px 25px rgba(0,0,0,.45); }
+.qg-hero-subtitle { color:#a9bdd0; font-size:.9rem; line-height:1.5; }
+.qg-cube-wrap { width:66px; height:66px; flex:none; perspective:600px; }
+.qg-cube { position:relative; width:100%; height:100%; transform-style:preserve-3d; animation:qgCube 14s linear infinite; }
+.qg-cube-face { position:absolute; inset:0; display:grid; place-items:center; border:1px solid rgba(99,229,220,.78); border-radius:11px; color:var(--qg-cyan); background:rgba(10,35,52,.74); box-shadow:inset 0 0 18px rgba(99,229,220,.13),0 0 18px rgba(99,229,220,.15); font-size:1.2rem; font-weight:850; backface-visibility:hidden; }
+.qg-cube-front { transform:translateZ(33px); }
+.qg-cube-back { transform:rotateY(180deg) translateZ(33px); }
+.qg-cube-right { transform:rotateY(90deg) translateZ(33px); }
+.qg-cube-left { transform:rotateY(-90deg) translateZ(33px); }
+.qg-cube-top { transform:rotateX(90deg) translateZ(33px); }
+.qg-cube-bottom { transform:rotateX(-90deg) translateZ(33px); }
+@keyframes qgCube { to { transform:rotateX(360deg) rotateY(360deg); } }
+.qg-live { flex:none; padding:8px 11px; border:1px solid rgba(99,229,220,.23); border-radius:999px; color:#c9f5ee; background:rgba(23,93,89,.20); font:700 .62rem ui-monospace,monospace; letter-spacing:.12em; }
+.qg-live::before { content:""; display:inline-block; width:7px; height:7px; margin-right:7px; border-radius:50%; background:var(--qg-cyan); box-shadow:0 0 11px var(--qg-cyan); animation:qgPulse 1.7s ease-in-out infinite; }
+@keyframes qgPulse { 50% { opacity:.48; transform:scale(.75); } }
+
+/* Acesso: palco holográfico e cubo 3D com mais presença */
+.qg-hero-auth {
+  isolation:isolate; min-height:238px; padding:34px 38px; gap:30px;
+  border-color:rgba(106,246,231,.58);
+  background:radial-gradient(ellipse at 17% 8%,rgba(67,230,218,.22),transparent 42%),radial-gradient(ellipse at 90% 50%,rgba(126,101,255,.27),transparent 41%),linear-gradient(118deg,rgba(6,23,39,.99),rgba(12,42,67,.98) 50%,rgba(27,23,59,.99));
+  box-shadow:0 32px 82px rgba(0,0,0,.56),inset 0 2px rgba(255,255,255,.16),inset 0 -3px rgba(0,0,0,.33),0 0 48px rgba(73,221,223,.13);
+  animation:qgAuthHover 6.5s ease-in-out infinite;
+}
+.qg-hero-auth::before {
+  opacity:.48;
+  background-image:radial-gradient(circle at var(--qg-light-x,82%) var(--qg-light-y,48%),rgba(100,245,230,.22),transparent 34%),linear-gradient(rgba(132,202,229,.10) 1px,transparent 1px),linear-gradient(90deg,rgba(132,202,229,.10) 1px,transparent 1px);
+  background-size:auto,30px 30px,30px 30px;
+  mask-image:linear-gradient(112deg,black 4%,rgba(0,0,0,.75) 50%,transparent 92%);
+}
+.qg-hero-auth::after { height:3px; left:4%; right:4%; box-shadow:0 0 18px rgba(99,229,220,.7); }
+.qg-hero-auth .qg-cube-wrap { position:relative; z-index:2; width:94px; height:94px; perspective:1000px; filter:drop-shadow(0 0 22px rgba(67,238,226,.48)); }
+.qg-hero-auth .qg-cube { animation:qgAuthCube 8s linear infinite; }
+.qg-hero-auth .qg-cube-face {
+  border:1.5px solid rgba(129,255,240,.92); border-radius:14px;
+  color:#c6fff8; background:linear-gradient(145deg,rgba(20,102,117,.84),rgba(22,35,75,.91));
+  box-shadow:inset 0 0 28px rgba(87,242,229,.28),0 0 26px rgba(68,226,231,.30),0 0 54px rgba(76,153,255,.12);
+  font-size:1.5rem; text-shadow:0 0 14px rgba(99,229,220,.7);
+}
+.qg-hero-auth .qg-cube-front { transform:translateZ(47px); }
+.qg-hero-auth .qg-cube-back { transform:rotateY(180deg) translateZ(47px); }
+.qg-hero-auth .qg-cube-right { transform:rotateY(90deg) translateZ(47px); }
+.qg-hero-auth .qg-cube-left { transform:rotateY(-90deg) translateZ(47px); }
+.qg-hero-auth .qg-cube-top { transform:rotateX(90deg) translateZ(47px); }
+.qg-hero-auth .qg-cube-bottom { transform:rotateX(-90deg) translateZ(47px); }
+.qg-hero-auth .qg-hero-copy { position:relative; z-index:2; transform:translateZ(28px); }
+.qg-hero-auth .qg-hero-kicker { text-shadow:0 0 16px rgba(99,229,220,.35); }
+.qg-hero-auth .qg-hero-title {
+  font-size:clamp(1.8rem,4vw,2.8rem); letter-spacing:-.045em;
+  text-shadow:0 1px 0 #4b8990,0 3px 0 #23516a,0 6px 0 #132c49,0 12px 28px rgba(0,0,0,.62),0 0 34px rgba(99,229,220,.30);
+}
+.qg-hero-auth .qg-hero-subtitle { max-width:520px; font-size:1rem; color:#c1d2e3; text-shadow:0 3px 12px rgba(0,0,0,.5); }
+.qg-hero-auth .qg-live { position:relative; z-index:2; padding:10px 15px; box-shadow:0 8px 24px rgba(0,0,0,.25),inset 0 1px rgba(255,255,255,.13),0 0 20px rgba(99,229,220,.10); }
+.qg-auth-orbits {
+  position:absolute; z-index:1; top:50%; right:8%; width:250px; height:250px; pointer-events:none;
+  border:1px solid rgba(99,229,220,.23); border-radius:50%;
+  box-shadow:0 0 0 18px rgba(99,229,220,.025),0 0 0 39px rgba(120,165,255,.035),inset 0 0 35px rgba(99,229,220,.06);
+  transform:translate3d(var(--qg-orbit-x,0px),calc(-50% + var(--qg-orbit-y,0px)),0) rotateX(66deg) rotateZ(-24deg);
+  animation:qgOrbitSpin 24s linear infinite;
+}
+.qg-auth-orbits::before,.qg-auth-orbits::after,.qg-auth-orbits i {
+  content:""; position:absolute; inset:17px; border:1px solid rgba(120,165,255,.30); border-radius:50%;
+}
+.qg-auth-orbits::before { transform:rotateY(55deg) rotateZ(30deg); border-color:rgba(99,229,220,.32); }
+.qg-auth-orbits::after { inset:37px; transform:rotateY(-58deg) rotateZ(-31deg); border-color:rgba(176,154,255,.33); }
+.qg-auth-orbits i:nth-child(1) { inset:0; transform:rotateY(74deg); border-style:dashed; border-color:rgba(99,229,220,.28); }
+.qg-auth-orbits i:nth-child(2) { inset:27px; transform:rotateX(56deg) rotateZ(40deg); border-color:rgba(120,165,255,.30); }
+.qg-auth-orbits i:nth-child(3) { inset:58px; transform:rotateY(52deg) rotateX(-28deg); border-color:rgba(176,154,255,.34); }
+.qg-auth-orbits span { position:absolute; top:13%; left:22%; width:8px; height:8px; border-radius:50%; background:#8bfff0; box-shadow:0 0 15px 4px rgba(99,229,220,.58); }
+@keyframes qgAuthCube { 0% { transform:rotateX(-18deg) rotateY(0) rotateZ(0); } 100% { transform:rotateX(342deg) rotateY(360deg) rotateZ(360deg); } }
+@keyframes qgOrbitSpin { from { rotate:0deg; } to { rotate:360deg; } }
+@keyframes qgAuthHover { 0%,100% { translate:0 0; } 50% { translate:0 -4px; } }
+.qg-hero-auth + div { position:relative; z-index:1; }
+
+/* Cartões da tela de inicialização: apresentam áreas do QG sem depender de login ou dados do usuário. */
+.qg-start-overview { position:relative; margin:0 0 19px; padding:20px; overflow:hidden; border:1px solid rgba(105,220,225,.24); border-radius:20px; background:radial-gradient(ellipse at 8% 0%,rgba(72,205,202,.11),transparent 42%),linear-gradient(145deg,rgba(11,27,44,.95),rgba(9,17,34,.97) 58%,rgba(22,19,47,.94)); box-shadow:0 20px 46px rgba(0,0,0,.30),inset 0 1px rgba(255,255,255,.08); }
+.qg-start-overview::before { content:""; position:absolute; inset:0; pointer-events:none; opacity:.26; background-image:linear-gradient(rgba(132,202,229,.10) 1px,transparent 1px),linear-gradient(90deg,rgba(132,202,229,.10) 1px,transparent 1px); background-size:28px 28px; mask-image:linear-gradient(110deg,black,transparent 78%); }
+.qg-start-heading { position:relative; z-index:1; margin:0 0 14px; }
+.qg-start-kicker { color:#75e5df; font:700 .65rem ui-monospace,monospace; letter-spacing:.17em; text-transform:uppercase; }
+.qg-start-heading h2 { margin:5px 0 4px; color:#f2f7ff; font-size:1.08rem; font-weight:850; letter-spacing:-.025em; }
+.qg-start-heading p { margin:0; color:#9fb4c9; font-size:.79rem; line-height:1.55; }
+.qg-start-grid { position:relative; z-index:1; display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; perspective:1100px; }
+.qg-start-card { position:relative; min-height:142px; overflow:hidden; padding:15px; border:1px solid rgba(118,191,214,.21); border-radius:15px; background:linear-gradient(145deg,rgba(21,49,70,.92),rgba(9,22,39,.97)); box-shadow:7px 10px 18px rgba(0,0,0,.28),inset 1px 1px rgba(255,255,255,.08),inset -1px -1px rgba(0,0,0,.25); transform:perspective(900px) rotateX(2deg) translateZ(0); transform-style:preserve-3d; transition:transform .24s ease,border-color .24s ease,box-shadow .24s ease; }
+.qg-start-card::before { content:""; position:absolute; inset:0; pointer-events:none; background:linear-gradient(118deg,transparent 18%,rgba(255,255,255,.09) 39%,transparent 59%); transform:translateX(-125%); transition:transform .75s ease; }
+.qg-start-card:hover { border-color:rgba(99,229,220,.53); box-shadow:12px 17px 27px rgba(0,0,0,.38),0 0 23px rgba(99,229,220,.11),inset 1px 1px rgba(255,255,255,.11); }
+.qg-start-card:hover::before { transform:translateX(125%); }
+.qg-start-card-top { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; }
+.qg-start-icon { display:grid; place-items:center; width:34px; height:34px; border:1px solid rgba(99,229,220,.32); border-radius:11px; color:#b8fff4; background:linear-gradient(145deg,rgba(31,137,145,.54),rgba(43,53,117,.72)); box-shadow:0 5px 0 rgba(3,12,24,.72),0 0 18px rgba(99,229,220,.12),inset 0 1px rgba(255,255,255,.24); font-size:1rem; transform:translateZ(17px) rotate(-4deg); }
+.qg-start-index { color:#66849c; font:700 .58rem ui-monospace,monospace; letter-spacing:.12em; }
+.qg-start-card h3 { position:relative; margin:0 0 5px; color:#edf7ff; font-size:.79rem; font-weight:800; transform:translateZ(10px); }
+.qg-start-card p { position:relative; margin:0; color:#9db1c5; font-size:.68rem; line-height:1.5; transform:translateZ(6px); }
+.qg-start-foot { position:relative; z-index:1; display:flex; align-items:flex-start; gap:9px; margin-top:13px; padding:10px 12px; border:1px solid rgba(99,229,220,.15); border-radius:12px; color:#aec4d6; background:rgba(7,19,32,.62); font-size:.69rem; line-height:1.5; }
+.qg-start-foot strong { flex:none; color:#a7f7ee; }
+
+/* Em telas estreitas, os cartões passam para duas e depois uma coluna; todos permanecem visíveis. */
+@media (max-width:900px) { .qg-start-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:700px) {
+  .qg-hero-auth { flex-wrap:wrap; align-items:center; }
+  .qg-hero-auth .qg-hero-copy { flex:1 1 58%; min-width:190px; }
+  .qg-hero-auth .qg-live { display:inline-flex; margin-left:auto; padding:8px 10px; font-size:.55rem; }
+  .qg-start-overview { padding:15px; }
+  .qg-start-grid { gap:9px; }
+  .qg-start-card { min-height:132px; padding:12px; }
+}
+@media (max-width:460px) {
+  .qg-hero-auth .qg-hero-copy { flex-basis:100%; min-width:0; }
+  .qg-hero-auth .qg-live { margin-left:75px; }
+  .qg-start-grid { grid-template-columns:minmax(0,1fr); }
+  .qg-start-card { min-height:unset; }
+}
+@media (prefers-reduced-motion:reduce) { .qg-start-card,.qg-start-card::before { transition:none !important; } }
+
+@media (max-width:700px) {
+  .qg-hero-auth { min-height:178px; padding:22px 18px; gap:17px; }
+  .qg-hero-auth .qg-cube-wrap { width:58px; height:58px; }
+  .qg-hero-auth .qg-cube-front { transform:translateZ(29px); }
+  .qg-hero-auth .qg-cube-back { transform:rotateY(180deg) translateZ(29px); }
+  .qg-hero-auth .qg-cube-right { transform:rotateY(90deg) translateZ(29px); }
+  .qg-hero-auth .qg-cube-left { transform:rotateY(-90deg) translateZ(29px); }
+  .qg-hero-auth .qg-cube-top { transform:rotateX(90deg) translateZ(29px); }
+  .qg-hero-auth .qg-cube-bottom { transform:rotateX(-90deg) translateZ(29px); }
+  .qg-auth-orbits { right:-26px; width:170px; height:170px; opacity:.72; }
+}
+@media (prefers-reduced-motion:reduce) { .qg-hero-auth,.qg-auth-orbits { animation:none !important; } }
+
+hr { border-color:rgba(143,190,220,.15) !important; }
+.stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 { color:#eef7ff; text-shadow:0 5px 18px rgba(0,0,0,.28); }
+.stCaption, [data-testid="stCaptionContainer"] { color:#9db2c7; }
+[data-testid="stRadio"] label, [data-testid="stCheckbox"] label { transition:transform .18s ease, color .18s ease; }
+[data-testid="stRadio"] label:hover, [data-testid="stCheckbox"] label:hover { color:#dcfffb; transform:translateX(2px); }
+[data-testid="stSidebar"] [data-testid="stRadio"] label:hover { background:rgba(99,229,220,.08); border-radius:10px; }
+.qg-sidebar-brand { display:flex; align-items:center; gap:10px; margin:2px 0 12px; padding:2px 1px 13px; border-bottom:1px solid rgba(126,185,211,.13); }
+.qg-sidebar-brand-mark { position:relative; display:grid; place-items:center; width:43px; height:43px; flex:none; border:1px solid rgba(99,229,220,.72); border-radius:13px; color:#d8fffb; background:linear-gradient(145deg,#177c85,#193f62 58%,#403b81); box-shadow:5px 6px 0 rgba(2,9,17,.76),0 0 23px rgba(99,229,220,.24),inset 0 1px rgba(255,255,255,.35); transform:perspective(400px) rotateY(-12deg) rotateX(6deg); font-weight:900; letter-spacing:.04em; }
+.qg-sidebar-brand-copy { min-width:0; }
+.qg-sidebar-brand-copy strong { display:block; color:#f2f8ff; font-size:.82rem; letter-spacing:.09em; }
+.qg-sidebar-brand-copy span { display:block; margin-top:3px; color:#7f9ab0; font:600 .56rem ui-monospace,monospace; letter-spacing:.14em; text-transform:uppercase; }
+.qg-sidebar-profile { position:relative; display:flex; align-items:center; gap:10px; margin:0 0 9px; padding:10px; overflow:hidden; border:1px solid rgba(99,229,220,.26); border-radius:15px; background:radial-gradient(ellipse at 100% 0,rgba(120,165,255,.17),transparent 48%),linear-gradient(145deg,rgba(18,49,69,.94),rgba(8,22,37,.97)); box-shadow:0 10px 22px rgba(0,0,0,.28),inset 0 1px rgba(255,255,255,.09),inset 0 -2px rgba(0,0,0,.26); transform:perspective(800px) rotateY(-2deg); transform-style:preserve-3d; transition:transform .24s ease,box-shadow .24s ease,border-color .24s ease; }
+.qg-sidebar-profile:hover { border-color:rgba(99,229,220,.58); box-shadow:0 15px 29px rgba(0,0,0,.36),0 0 20px rgba(99,229,220,.11),inset 0 1px rgba(255,255,255,.12); }
+.qg-sidebar-avatar { display:grid; place-items:center; width:38px; height:38px; flex:none; border:1px solid rgba(197,255,248,.75); border-radius:12px; color:#edfffc; background:linear-gradient(145deg,#45d8c8,#4d84cd 58%,#8c70d4); box-shadow:0 5px 0 #0a2434,0 8px 17px rgba(54,180,203,.28),inset 0 1px rgba(255,255,255,.42); transform:translateZ(14px); font-size:1.15rem; font-weight:850; }
+.qg-sidebar-profile-copy { min-width:0; flex:1; }
+.qg-sidebar-profile-copy small { display:block; color:#77ded7; font:700 .55rem ui-monospace,monospace; letter-spacing:.12em; text-transform:uppercase; }
+.qg-sidebar-profile-copy strong { display:block; overflow:hidden; margin-top:3px; color:#f2f7ff; font-size:.78rem; text-overflow:ellipsis; white-space:nowrap; }
+.qg-sidebar-profile-copy span { display:block; overflow:hidden; margin-top:2px; color:#8da5ba; font-size:.63rem; text-overflow:ellipsis; white-space:nowrap; }
+.qg-sidebar-online { width:7px; height:7px; flex:none; border-radius:50%; background:#62e5bd; box-shadow:0 0 12px #62e5bd; }
+.qg-sidebar-action-note { margin:-3px 0 5px; color:#91a9be; font-size:.64rem; line-height:1.45; }
+[data-testid="stSidebar"] [data-testid="stRadio"] { max-height:min(54vh,510px); overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:rgba(99,229,220,.52) rgba(12,26,40,.5); padding:3px 5px 8px 2px; border:1px solid rgba(99,229,220,.16); border-radius:14px; background:linear-gradient(145deg,rgba(9,25,40,.68),rgba(6,16,28,.75)); box-shadow:inset 0 1px rgba(255,255,255,.035),0 9px 18px rgba(0,0,0,.14); }
+[data-testid="stSidebar"] [data-testid="stRadio"]::-webkit-scrollbar { width:8px; }
+[data-testid="stSidebar"] [data-testid="stRadio"]::-webkit-scrollbar-track { border-radius:8px; background:rgba(11,25,38,.62); }
+[data-testid="stSidebar"] [data-testid="stRadio"]::-webkit-scrollbar-thumb { border:2px solid rgba(11,25,38,.8); border-radius:8px; background:linear-gradient(180deg,#59e1d2,#5d91ff); }
+.st-key-qg_open_profile > button { min-height:2.25rem !important; padding:.35rem .6rem !important; font-size:.76rem !important; }
+.qg-profile-hero { min-height:172px; }
+.qg-profile-orb { display:grid; place-items:center; width:88px; height:88px; flex:none; border:1px solid rgba(194,255,247,.72); border-radius:28px; color:#fff; background:linear-gradient(145deg,#37cdbd,#4e7bc4 57%,#7864cb); box-shadow:0 12px 0 rgba(4,17,29,.78),0 23px 38px rgba(0,0,0,.34),0 0 36px rgba(99,229,220,.26),inset 0 2px rgba(255,255,255,.44); transform:perspective(800px) rotateY(-14deg) rotateX(9deg) translateZ(22px); font-size:2.1rem; }
+.qg-profile-hero .qg-hero-copy { transform:translateZ(30px); }
+.insight-box {
+  padding:16px 18px; border:1px solid rgba(99,229,220,.24); border-left:3px solid var(--qg-cyan);
+  border-radius:14px; background:linear-gradient(135deg,rgba(13,45,59,.86),rgba(14,25,47,.91));
+  box-shadow:0 15px 32px rgba(0,0,0,.25), inset 0 1px rgba(255,255,255,.05);
+}
+[data-testid="stToast"] { border:1px solid rgba(99,229,220,.26); border-radius:13px; box-shadow:0 18px 40px rgba(0,0,0,.32); backdrop-filter:blur(15px); }
+
+/* Camada visual 3D reforçada: perspectiva, neon, profundidade e reflexos */
+.main .block-container { perspective:1700px; perspective-origin:50% 0; }
+[data-testid="stAppViewContainer"] { position:relative; z-index:1; }
+.stApp::before {
+  background:
+    radial-gradient(ellipse at 18% 24%, rgba(34, 218, 204, .16), transparent 36%),
+    radial-gradient(ellipse at 82% 22%, rgba(93, 117, 255, .18), transparent 38%),
+    radial-gradient(ellipse at 55% 78%, rgba(160, 105, 255, .10), transparent 42%);
+  animation:qgAurora 22s ease-in-out infinite alternate;
+}
+.stApp::after { height:82vh; filter:blur(10px); animation:qgDrift 12s ease-in-out infinite alternate; }
+[data-testid="stVerticalBlockBorderWrapper"] > div,
+[data-testid="stExpander"], [data-testid="stForm"], [data-testid="stTabs"],
+[data-testid="stPlotlyChart"], [data-testid="stDataFrame"] {
+  transform-style:preserve-3d;
+  transition:transform .32s cubic-bezier(.2,.75,.25,1), box-shadow .32s ease, border-color .32s ease, filter .32s ease;
+}
+[data-testid="stVerticalBlockBorderWrapper"] > div:hover,
+[data-testid="stExpander"]:hover, [data-testid="stForm"]:hover,
+[data-testid="stPlotlyChart"]:hover, [data-testid="stDataFrame"]:hover {
+  transform:perspective(1100px) translateY(-4px) rotateX(1.25deg);
+  border-color:rgba(99,229,220,.45) !important;
+  box-shadow:0 25px 52px rgba(0,0,0,.35),0 0 28px rgba(99,229,220,.10),inset 0 1px rgba(255,255,255,.08);
+}
+[data-testid="stMetric"] {
+  background:radial-gradient(ellipse at 18% 0%,rgba(99,229,220,.15),transparent 55%),linear-gradient(145deg,rgba(21,52,76,.97),rgba(8,20,36,.99));
+  box-shadow:0 17px 32px rgba(0,0,0,.34),inset 0 2px rgba(255,255,255,.09),inset 0 -2px rgba(0,0,0,.24);
+}
+[data-testid="stMetricValue"] { background:linear-gradient(100deg,#f5ffff 8%,#7cf5e6 47%,#a8c3ff 90%); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; filter:drop-shadow(0 0 12px rgba(99,229,220,.18)); }
+.routine-card {
+  background:radial-gradient(ellipse at 90% 0%,rgba(120,165,255,.15),transparent 47%),linear-gradient(145deg,rgba(20,53,77,.98),rgba(6,17,31,.99));
+  box-shadow:12px 16px 30px rgba(0,0,0,.43),inset 2px 2px rgba(255,255,255,.09),inset -2px -2px rgba(0,0,0,.30),0 0 22px rgba(99,229,220,.06);
+}
+.routine-card::before {
+  content:""; position:absolute; inset:0; pointer-events:none; border-radius:inherit;
+  background:linear-gradient(118deg,transparent 18%,rgba(255,255,255,.075) 37%,transparent 55%);
+  transform:translateX(-115%); transition:transform .8s ease;
+}
+.routine-card:hover::before { transform:translateX(115%); }
+.qg-hero {
+  min-height:166px; border-color:rgba(99,229,220,.46);
+  background:radial-gradient(ellipse at 8% 0%,rgba(99,229,220,.20),transparent 42%),radial-gradient(ellipse at 96% 12%,rgba(127,108,255,.24),transparent 40%),linear-gradient(118deg,rgba(8,29,48,.99),rgba(15,42,72,.97) 55%,rgba(27,25,59,.98));
+  box-shadow:0 28px 66px rgba(0,0,0,.48),inset 0 2px rgba(255,255,255,.14),inset 0 -3px rgba(0,0,0,.25),0 0 38px rgba(66,202,220,.09);
+  animation:qgHeroFloat 7s ease-in-out infinite;
+}
+.qg-hero::before {
+  content:""; position:absolute; inset:0; pointer-events:none; opacity:.32;
+  background-image:linear-gradient(rgba(132,202,229,.10) 1px,transparent 1px),linear-gradient(90deg,rgba(132,202,229,.10) 1px,transparent 1px);
+  background-size:34px 34px; mask-image:linear-gradient(115deg,black,transparent 74%);
+}
+.qg-hero-title { text-shadow:0 0 24px rgba(99,229,220,.23),0 10px 28px rgba(0,0,0,.55); }
+.qg-cube-wrap { filter:drop-shadow(0 0 16px rgba(99,229,220,.30)); }
+.qg-cube { animation:qgCube 9s linear infinite; }
+.qg-cube-face { border-width:1.5px; background:linear-gradient(145deg,rgba(23,87,104,.82),rgba(18,28,62,.88)); box-shadow:inset 0 0 24px rgba(99,229,220,.24),0 0 24px rgba(99,229,220,.22); }
+@keyframes qgHeroFloat { 0%,100% { transform:perspective(1200px) rotateX(.7deg) translateY(0); } 50% { transform:perspective(1200px) rotateX(.7deg) translateY(-3px); } }
+.stButton > button, .stFormSubmitButton > button, [data-testid="stDownloadButton"] > button {
+  position:relative; overflow:hidden; text-shadow:0 1px 8px rgba(255,255,255,.18);
+  box-shadow:0 6px 0 #061321,0 14px 28px rgba(0,0,0,.38),inset 0 1px rgba(255,255,255,.20),inset 0 -2px rgba(0,0,0,.18);
+}
+.stButton > button::before, .stFormSubmitButton > button::before, [data-testid="stDownloadButton"] > button::before {
+  content:""; position:absolute; inset:0; pointer-events:none; border-radius:inherit;
+  background:linear-gradient(112deg,transparent 20%,rgba(255,255,255,.21) 48%,transparent 68%);
+  transform:translateX(-125%); transition:transform .65s ease;
+}
+.stButton > button:hover::before, .stFormSubmitButton > button:hover::before, [data-testid="stDownloadButton"] > button:hover::before { transform:translateX(125%); }
+.stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"] {
+  background:linear-gradient(112deg,#0fa99e,#2476c2 56%,#704ec4);
+  box-shadow:0 6px 0 #07515e,0 17px 34px rgba(50,166,208,.30),inset 0 1px rgba(255,255,255,.28),inset 0 -2px rgba(0,0,0,.16);
+}
+[data-testid="stSidebar"] { background:radial-gradient(ellipse at 0% 0%,rgba(26,129,143,.16),transparent 42%),linear-gradient(180deg,rgba(7,19,32,.98),rgba(4,8,17,.99)); box-shadow:22px 0 70px rgba(0,0,0,.46),inset -1px 0 rgba(99,229,220,.13); }
+[data-testid="stSidebar"] [data-testid="stRadio"] label { padding:5px 8px; border:1px solid transparent; border-radius:11px; transition:all .24s ease; }
+[data-testid="stSidebar"] [data-testid="stRadio"] label:hover { transform:translateX(5px) perspective(500px) rotateY(-3deg); border-color:rgba(99,229,220,.22); box-shadow:5px 7px 16px rgba(0,0,0,.22),inset 0 0 15px rgba(99,229,220,.07); }
+[data-testid="stPlotlyChart"] { border-radius:17px; filter:drop-shadow(0 12px 20px rgba(0,0,0,.18)); }
+@media (max-width:700px) { .qg-hero { min-height:135px; } .main .block-container { perspective:none; } }
+@media (prefers-reduced-motion:reduce) { .qg-hero { animation:none; } }
+@media (max-width:700px) {
+  .main .block-container { padding:1.1rem .85rem 2.5rem; }
+  [data-testid="stTabs"] { padding:8px; }
+  /* Reorganiza os cabeçalhos em telas estreitas e mantém seus selos de status visíveis. */
+  .qg-hero { flex-wrap:wrap; gap:13px; padding:18px 16px; min-height:125px; }
+  .qg-hero-copy { flex:1 1 58%; min-width:0; }
+  .qg-cube-wrap { width:48px; height:48px; }
+  .qg-cube-front { transform:translateZ(24px); }
+  .qg-cube-back { transform:rotateY(180deg) translateZ(24px); }
+  .qg-cube-right { transform:rotateY(90deg) translateZ(24px); }
+  .qg-cube-left { transform:rotateY(-90deg) translateZ(24px); }
+  .qg-cube-top { transform:rotateX(90deg) translateZ(24px); }
+  .qg-cube-bottom { transform:rotateX(-90deg) translateZ(24px); }
+  .qg-live { display:inline-flex; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration:.01ms !important; animation-iteration-count:1 !important; scroll-behavior:auto !important; transition-duration:.01ms !important; }
+}
+</style>""", unsafe_allow_html=True)
+components.html("""<script>
+(() => {
+  try {
+    const doc = window.parent.document;
+    const root = doc.documentElement;
+    if (root.dataset.qgTiltInstalled === "1") return;
+    root.dataset.qgTiltInstalled = "1";
+
+    // Partículas leves no fundo da aplicação; o canvas nunca captura cliques.
+    const installParticles = () => {
+      const app = doc.querySelector(".stApp");
+      if (!app || app.querySelector(".qg-particle-field")) return;
+      const canvas = doc.createElement("canvas");
+      canvas.className = "qg-particle-field";
+      canvas.setAttribute("aria-hidden", "true");
+      canvas.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;z-index:0;pointer-events:none;opacity:.72";
+      app.prepend(canvas);
+      const context = canvas.getContext("2d", { alpha: true });
+      if (!context) return;
+      const motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
+      const colors = ["99,229,220", "120,165,255", "176,154,255"];
+      let width = 0, height = 0, points = [], frame = 0, previousFrame = 0;
+      const resize = () => {
+        const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = Math.round(width * ratio);
+        canvas.height = Math.round(height * ratio);
+        context.setTransform(ratio, 0, 0, ratio, 0, 0);
+        const count = Math.min(64, Math.max(22, Math.round(width / 25)));
+        points = Array.from({ length: count }, () => ({
+          x: Math.random() * width, y: Math.random() * height,
+          vx: (Math.random() - .5) * .22, vy: (Math.random() - .5) * .22,
+          radius: .7 + Math.random() * 1.5, color: colors[Math.floor(Math.random() * colors.length)],
+        }));
+        paint(0, false);
+      };
+      const paint = (time, animate) => {
+        context.clearRect(0, 0, width, height);
+        for (let i = 0; i < points.length; i++) {
+          const point = points[i];
+          if (animate) {
+            point.x += point.vx; point.y += point.vy;
+            if (point.x < -8 || point.x > width + 8) point.vx *= -1;
+            if (point.y < -8 || point.y > height + 8) point.vy *= -1;
+          }
+          const pulse = animate ? .46 + (Math.sin(time / 1000 + i) + 1) * .19 : .66;
+          context.beginPath();
+          context.arc(point.x, point.y, point.radius, 0, Math.PI * 2);
+          context.fillStyle = `rgba(${point.color},${pulse})`;
+          context.shadowBlur = 10;
+          context.shadowColor = `rgba(${point.color},.55)`;
+          context.fill();
+          context.shadowBlur = 0;
+          for (let j = i + 1; j < points.length; j++) {
+            const other = points[j];
+            const dx = point.x - other.x, dy = point.y - other.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            if (distance < 112) {
+              context.beginPath();
+              context.moveTo(point.x, point.y); context.lineTo(other.x, other.y);
+              context.strokeStyle = `rgba(111,190,218,${(1 - distance / 112) * .095})`;
+              context.lineWidth = .7; context.stroke();
+            }
+          }
+        }
+      };
+      const tick = (time) => {
+        if (doc.hidden || motionPreference.matches) return;
+        if (time - previousFrame >= 33) { paint(time, true); previousFrame = time; }
+        frame = window.requestAnimationFrame(tick);
+      };
+      resize();
+      window.addEventListener("resize", resize, { passive: true });
+      doc.addEventListener("visibilitychange", () => {
+        if (doc.hidden) window.cancelAnimationFrame(frame);
+        else if (!motionPreference.matches) frame = window.requestAnimationFrame(tick);
+      });
+      if (!motionPreference.matches) frame = window.requestAnimationFrame(tick);
+    };
+    installParticles();
+
+    const attachTilt = () => {
+      doc.querySelectorAll('.qg-hero-auth').forEach((hero) => {
+        if (hero.dataset.qgParallax === "1") return;
+        hero.dataset.qgParallax = "1";
+        hero.addEventListener("pointermove", (event) => {
+          const box = hero.getBoundingClientRect();
+          const x = (event.clientX - box.left) / Math.max(box.width, 1);
+          const y = (event.clientY - box.top) / Math.max(box.height, 1);
+          hero.style.setProperty("--qg-light-x", `${Math.round(x * 100)}%`);
+          hero.style.setProperty("--qg-light-y", `${Math.round(y * 100)}%`);
+          hero.style.setProperty("--qg-orbit-x", `${((x - .5) * 18).toFixed(1)}px`);
+          hero.style.setProperty("--qg-orbit-y", `${((y - .5) * 14).toFixed(1)}px`);
+        }, { passive: true });
+        hero.addEventListener("pointerleave", () => {
+          ["--qg-light-x", "--qg-light-y", "--qg-orbit-x", "--qg-orbit-y"].forEach((name) => hero.style.removeProperty(name));
+        }, { passive: true });
+      });
+
+      // Dá inclinação 3D discreta aos cartões ao acompanhar o ponteiro, sem alterar seu conteúdo ou funcionamento.
+      doc.querySelectorAll('[data-testid="stMetric"], .routine-card, .qg-sidebar-profile, .qg-sidebar-brand-mark, .qg-start-card').forEach((card) => {
+        if (card.dataset.qgTilt === "1") return;
+        card.dataset.qgTilt = "1";
+        let scheduled = false;
+        let lastEvent = null;
+        card.addEventListener("pointermove", (event) => {
+          lastEvent = event;
+          if (scheduled) return;
+          scheduled = true;
+          requestAnimationFrame(() => {
+            scheduled = false;
+            if (!lastEvent) return;
+            const box = card.getBoundingClientRect();
+            const x = (lastEvent.clientX - box.left) / Math.max(box.width, 1) - .5;
+            const y = (lastEvent.clientY - box.top) / Math.max(box.height, 1) - .5;
+            // Reduz o ângulo do cartão: mantém o relevo visual sem inclinar demais as letras.
+            card.style.transform = `perspective(1200px) rotateX(${(-y * 1.4).toFixed(2)}deg) rotateY(${(x * 1.6).toFixed(2)}deg) translateY(-2px)`;
+          });
+        }, { passive: true });
+        card.addEventListener("pointerleave", () => { card.style.transform = ""; }, { passive: true });
+      });
+    };
+    attachTilt();
+    let scanPending = false;
+    new MutationObserver(() => {
+      if (scanPending) return;
+      scanPending = true;
+      requestAnimationFrame(() => {
+        scanPending = false;
+        attachTilt();
+      });
+    }).observe(doc.body, { childList: true, subtree: true });
+  } catch (_error) {
+    // As animações CSS continuam ativas caso o navegador isole o iframe.
+  }
+})();
+</script>""", height=0, scrolling=False)
+
+# =============================================================================
+# CONSTANTES E LISTAS
+# =============================================================================
 MATERIAS_TECNICAS_EFA = [
-    # Instrumentos da Alternância e AMSP
     "Plano de Estudo (PEF) / Caderno da Realidade",
     "Projeto Profissional do Jovem (PPJ)",
-    
-    # Formação Técnica em Agropecuária
     "Agricultura (Cafeicultura, Olericultura e Culturas)",
     "Zootecnia (Manejo e Produção Animal)",
     "Agroecologia, SAFs e Meio Ambiente",
@@ -659,8 +1372,6 @@ MATERIAS_TECNICAS_EFA = [
     "Administração Rural e Cooperativismo",
     "Mecanização e Construções Rurais",
     "Extensão Rural e Desenvolvimento Sustentável",
-    
-    # Base Comum (BNCC)
     "Língua Portuguesa e Redação",
     "Matemática",
     "Biologia",
@@ -672,36 +1383,8 @@ MATERIAS_TECNICAS_EFA = [
     "Inglês"
 ]
 
-# -----------------------------------------------------------------------------
-# Função para Tocar Alarme Sonoro no Navegador (Web Audio API)
-# -----------------------------------------------------------------------------
-def tocar_alarme_sonoro():
-    components.html("""
-        <script>
-        var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        function playBeep(freq, duration) {
-            var osc = audioCtx.createOscillator();
-            var gain = audioCtx.createGain();
-            osc.type = 'sine';
-            osc.frequency.value = freq;
-            gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
-            osc.connect(gain);
-            gain.connect(audioCtx.destination);
-            osc.start();
-            osc.stop(audioCtx.currentTime + duration);
-        }
-        playBeep(880, 0.3);
-        setTimeout(function(){ playBeep(880, 0.3); }, 400);
-        setTimeout(function(){ playBeep(1046.50, 0.6); }, 800);
-        </script>
-    """, height=0)
-
-# -----------------------------------------------------------------------------
-# Edital Oficial EsPCEx
-# -----------------------------------------------------------------------------
 def get_edital_espcex():
     return [
-        # --- 1º DIA DE PROVA ---
         {"Dia": "1º Dia", "Matéria": "Português", "Tópico": "Compreensão e Interpretação de Texto", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Português", "Dia": "1º Dia", "Tópico": "Morfologia e Classes Gramaticais", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Português", "Dia": "1º Dia", "Tópico": "Sintaxe da Oração e do Período", "Status": "Não Iniciado", "Prioridade": "Alta"},
@@ -709,27 +1392,22 @@ def get_edital_espcex():
         {"Matéria": "Português", "Dia": "1º Dia", "Tópico": "Pontuação e Ortografia Oficial", "Status": "Não Iniciado", "Prioridade": "Média"},
         {"Matéria": "Português", "Dia": "1º Dia", "Tópico": "Literatura Brasileira (Barroco ao Modernismo)", "Status": "Não Iniciado", "Prioridade": "Alta"},
         
-        # Redação
         {"Matéria": "Redação", "Dia": "1º Dia", "Tópico": "Estrutura Dissertativo-Argumentativa Modelo EsPCEx", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Redação", "Dia": "1º Dia", "Tópico": "Elaboração de Tese e Projeto de Texto", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Redação", "Dia": "1º Dia", "Tópico": "Desenvolvimento e Argumentação Lógica", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Redação", "Dia": "1º Dia", "Tópico": "Conclusão e Fechamento das Ideias", "Status": "Não Iniciado", "Prioridade": "Alta"},
 
-        # Física
         {"Matéria": "Física", "Dia": "1º Dia", "Tópico": "Cinemática Escalar e Vetorial", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Física", "Dia": "1º Dia", "Tópico": "Leis de Newton e Dinâmica", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Física", "Dia": "1º Dia", "Tópico": "Trabalho, Energia e Potência", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Física", "Dia": "1º Dia", "Tópico": "Termologia, Calorimetria e Gases", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Física", "Dia": "1º Dia", "Tópico": "Eletrostática e Eletrodinâmica", "Status": "Não Iniciado", "Prioridade": "Alta"},
 
-        # Química
         {"Matéria": "Química", "Dia": "1º Dia", "Tópico": "Estrutura Atômica e Tabela Periódica", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Química", "Dia": "1º Dia", "Tópico": "Ligações Químicas e Funções Inorgânicas", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Química", "Dia": "1º Dia", "Tópico": "Reações Químicas e Estequiometria", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Química", "Dia": "1º Dia", "Tópico": "Química Orgânica", "Status": "Não Iniciado", "Prioridade": "Alta"},
 
-        # --- 2º DIA DE PROVA ---
-        # Matemática
         {"Matéria": "Matemática", "Dia": "2º Dia", "Tópico": "Conjuntos, Relações e Funções", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Matemática", "Dia": "2º Dia", "Tópico": "Função Exponencial e Logarítmica", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Matemática", "Dia": "2º Dia", "Tópico": "Trigonometria", "Status": "Não Iniciado", "Prioridade": "Alta"},
@@ -737,41 +1415,109 @@ def get_edital_espcex():
         {"Matéria": "Matemática", "Dia": "2º Dia", "Tópico": "Geometria Espacial", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Matemática", "Dia": "2º Dia", "Tópico": "Geometria Analítica", "Status": "Não Iniciado", "Prioridade": "Alta"},
 
-        # Geografia
         {"Matéria": "Geografia", "Dia": "2º Dia", "Tópico": "Geografia Física do Brasil", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Geografia", "Dia": "2º Dia", "Tópico": "Demografia e População", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Geografia", "Dia": "2º Dia", "Tópico": "Espaço Agropecuário e Questão Agrária", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Geografia", "Dia": "2º Dia", "Tópico": "Geopolítica Global", "Status": "Não Iniciado", "Prioridade": "Alta"},
 
-        # História
         {"Matéria": "História", "Dia": "2º Dia", "Tópico": "Brasil Colônia e Império", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "História", "Dia": "2º Dia", "Tópico": "República e Era Vargas", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "História", "Dia": "2º Dia", "Tópico": "História Geral: Guerras Mundiais e Guerra Fria", "Status": "Não Iniciado", "Prioridade": "Alta"},
 
-        # Inglês
         {"Matéria": "Inglês", "Dia": "2º Dia", "Tópico": "Compreensão de Textos Táticos", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Inglês", "Dia": "2º Dia", "Tópico": "Gramática Aplicada", "Status": "Não Iniciado", "Prioridade": "Alta"}
     ]
 
-# -----------------------------------------------------------------------------
-# Autenticação de Utilizador
-# -----------------------------------------------------------------------------
+# =============================================================================
+# TELA DE AUTENTICAÇÃO E LOGIN
+# =============================================================================
 if "usuario_logado" not in st.session_state:
     st.session_state.usuario_logado = None
+
 if st.session_state.usuario_logado is not None:
     agora_sessao = time.time()
     ultima_atividade = st.session_state.get("auth_ultima_atividade", agora_sessao)
-    if agora_sessao - ultima_atividade > 8 * 60 * 60:
+    token_sessao_atual = st.session_state.get("auth_session_token", "")
+    sessao_valida = agora_sessao - ultima_atividade <= 8 * 60 * 60
+    if sessao_valida:
+        try:
+            sessao_valida = _qg_renovar_sessao(token_sessao_atual, st.session_state.usuario_logado)
+        except Exception:
+            sessao_valida = False
+    if not sessao_valida:
+        try:
+            _qg_revogar_sessao(token_sessao_atual)
+        except Exception:
+            pass
         st.session_state.usuario_logado = None
         st.session_state.pop("nome_exibicao", None)
         st.session_state.pop("auth_ultima_atividade", None)
+        st.session_state.pop("auth_session_token", None)
         st.session_state.login_tentativas = 0
     else:
         st.session_state.auth_ultima_atividade = agora_sessao
 
 if st.session_state.usuario_logado is None:
-    st.markdown("""<div class="qg-hero"><div><div class="qg-hero-kicker">QG EsPCEx · Acesso seguro</div><div class="qg-hero-title">Preparação de alto desempenho</div></div><div class="qg-live">PORTAL DE CADETES</div></div>""", unsafe_allow_html=True)
-    st.caption("Sistema de estudos, treino físico e planejamento tático.")
+    # Tela de inicialização pública: apresenta identidade, visão dos módulos e dicas de acesso antes dos formulários.
+    st.markdown("""
+    <section class="qg-hero qg-hero-auth">
+      <div class="qg-auth-orbits" aria-hidden="true"><i></i><i></i><i></i><span></span></div>
+      <div class="qg-cube-wrap"><div class="qg-cube">
+        <div class="qg-cube-face qg-cube-front">QG</div><div class="qg-cube-face qg-cube-back">🛡️</div>
+        <div class="qg-cube-face qg-cube-right">⚔️</div><div class="qg-cube-face qg-cube-left">🎯</div>
+        <div class="qg-cube-face qg-cube-top">✦</div><div class="qg-cube-face qg-cube-bottom">✦</div>
+      </div></div>
+      <div class="qg-hero-copy"><div class="qg-hero-kicker">QG EsPCEx · acesso seguro</div>
+        <div class="qg-hero-title">Central de preparação</div>
+        <div class="qg-hero-subtitle">Entre na sua conta ou crie seu perfil para continuar.</div>
+      </div><div class="qg-live">SISTEMA ATIVO</div>
+    </section>
+    """, unsafe_allow_html=True)
+
+    # Cartões informativos fixos: resumem os recursos principais sem consultar ou expor dados pessoais.
+    # Para editar a apresentação, ajuste os títulos e descrições abaixo; o CSS qg-start-* controla cores, relevo e resposta móvel.
+    st.markdown("""
+    <section class="qg-start-overview" aria-label="Apresentação dos recursos do QG EsPCEx">
+      <header class="qg-start-heading">
+        <div class="qg-start-kicker">Central de preparação · visão geral</div>
+        <h2>Seu próximo passo começa aqui</h2>
+        <p>Entre para abrir sua área pessoal. Estes são alguns dos recursos disponíveis no QG.</p>
+      </header>
+      <div class="qg-start-grid">
+        <article class="qg-start-card">
+          <div class="qg-start-card-top"><span class="qg-start-icon" aria-hidden="true">📚</span><span class="qg-start-index">01 / ESTUDO</span></div>
+          <h3>Estudo organizado</h3>
+          <p>Plano semanal, edital verticalizado, questões e simulados em um só lugar.</p>
+        </article>
+        <article class="qg-start-card">
+          <div class="qg-start-card-top"><span class="qg-start-icon" aria-hidden="true">🎯</span><span class="qg-start-index">02 / ROTINA</span></div>
+          <h3>Rotina e foco</h3>
+          <p>Missões diárias, cronômetro de foco e acompanhamento da preparação física.</p>
+        </article>
+        <article class="qg-start-card">
+          <div class="qg-start-card-top"><span class="qg-start-icon" aria-hidden="true">🧠</span><span class="qg-start-index">03 / MEMÓRIA</span></div>
+          <h3>Revisão contínua</h3>
+          <p>Guarde anotações, registre erros e programe revisões espaçadas.</p>
+        </article>
+        <article class="qg-start-card">
+          <div class="qg-start-card-top"><span class="qg-start-icon" aria-hidden="true">🛡️</span><span class="qg-start-index">04 / PERFIL</span></div>
+          <h3>Seu espaço pessoal</h3>
+          <p>Personalize o painel e acompanhe seus registros depois de entrar na conta.</p>
+        </article>
+      </div>
+      <div class="qg-start-foot"><strong>COMO COMEÇAR</strong><span>Use <b>Entrar na Conta</b> se já tem cadastro. No primeiro acesso, abra <b>Criar Nova Conta</b> e escolha uma senha forte.</span></div>
+    </section>
+    """, unsafe_allow_html=True)
+
+    st.info(
+        "Primeiro acesso? Abra **Criar Nova Conta**. O usuário deve ter de 3 a 32 caracteres; "
+        "a senha precisa ter ao menos 12 caracteres, com letras e números. "
+        "As credenciais não são salvas no navegador; a sessão termina após oito horas sem atividade."
+    )
+    if _qg_cloud_enabled():
+        st.success("Armazenamento PostgreSQL conectado: contas, progresso, tentativas e sessões são persistidos na nuvem.")
+    else:
+        st.warning("Persistência em nuvem ainda não configurada. Defina QG_DATABASE_URL em Secrets; no modo local, os dados podem sumir após uma reinicialização do servidor.")
 
     tab_entrar, tab_cadastrar = st.tabs(["🔐 Entrar na Conta", "📝 Criar Nova Conta"])
 
@@ -787,14 +1533,16 @@ if st.session_state.usuario_logado is None:
             if espera:
                 st.error(f"Muitas tentativas. Aguarde {espera}s antes de tentar novamente.")
             else:
-                usuarios = carregar_usuarios()
-                if u_clean in usuarios and verificar_senha(login_pass, usuarios[u_clean]["senha"]):
+                conta_login = carregar_usuario(u_clean)
+                if conta_login and verificar_senha(login_pass, conta_login.get("senha", "")):
                     registrar_tentativa(chave_login, True)
-                    if not usuarios[u_clean]["senha"].startswith("pbkdf2_sha256$"):
-                        usuarios[u_clean]["senha"] = hash_senha(login_pass)
-                        salvar_usuarios(usuarios)
+                    if not str(conta_login.get("senha", "")).startswith("pbkdf2_sha256$"):
+                        conta_login["senha"] = hash_senha(login_pass)
+                        salvar_usuarios({u_clean: conta_login})
+                    
                     st.session_state.usuario_logado = u_clean
-                    st.session_state.nome_exibicao = usuarios[u_clean].get("nome", login_user)
+                    st.session_state.nome_exibicao = conta_login.get("nome", login_user)
+                    st.session_state.auth_session_token = _qg_criar_sessao(u_clean)
                     st.session_state.auth_ultima_atividade = time.time()
                     st.success(f"Bem-vindo, Cadete {st.session_state.nome_exibicao}!")
                     st.rerun()
@@ -813,7 +1561,7 @@ if st.session_state.usuario_logado is None:
     
             recuperacao_ativa = len(chave_recuperacao_configurada) >= 32
             if not recuperacao_ativa:
-                st.info("A recuperação ainda não foi ativada. Configure QG_PASSWORD_RESET_KEY em Secrets no Streamlit Cloud ou como variável de ambiente, usando uma chave aleatória com pelo menos 32 caracteres.")
+                st.info("A recuperação ainda não foi ativada. Configure QG_PASSWORD_RESET_KEY em Secrets.")
     
             with st.form("form_recuperacao_senha", clear_on_submit=True):
                 usuario_recuperacao = st.text_input("Utilizador / Nome de Guerra", key="recuperacao_usuario")
@@ -836,16 +1584,15 @@ if st.session_state.usuario_logado is None:
                 elif nova_senha_recuperacao != confirmar_senha_recuperacao:
                     st.error("As senhas não coincidem.")
                 else:
-                    usuarios_recuperacao = carregar_usuarios()
-                    conta_recuperacao = usuarios_recuperacao.get(usuario_recuperacao_limpo)
+                    conta_recuperacao = carregar_usuario(usuario_recuperacao_limpo)
                     chave_informada_ok = hmac.compare_digest(
                         str(chave_recuperacao).encode("utf-8"),
                         chave_recuperacao_configurada.encode("utf-8"),
                     )
                     if isinstance(conta_recuperacao, dict) and chave_informada_ok:
                         conta_recuperacao["senha"] = hash_senha(nova_senha_recuperacao)
-                        usuarios_recuperacao[usuario_recuperacao_limpo] = conta_recuperacao
-                        salvar_usuarios(usuarios_recuperacao)
+                        salvar_usuarios({usuario_recuperacao_limpo: conta_recuperacao})
+                        _qg_revogar_sessoes_usuario(usuario_recuperacao_limpo)
                         registrar_tentativa(chave_tentativa_recuperacao, True)
                         st.success("Senha redefinida. Agora você já pode entrar com a nova senha.")
                     else:
@@ -860,39 +1607,40 @@ if st.session_state.usuario_logado is None:
         cad_conf = st.text_input("Confirmar Senha", type="password", key="input_cad_conf")
 
         if st.button("📝 Criar Minha Conta"):
-            usuarios = carregar_usuarios()
             u_clean = normalizar_usuario(cad_user)
             if not u_clean or not cad_pass:
                 st.warning("Preencha todos os campos.")
             elif len(u_clean) < 3:
                 st.error("O nome de usuário precisa ter ao menos 3 caracteres.")
-            elif u_clean in usuarios:
+            elif carregar_usuario(u_clean):
                 st.error("Nome de utilizador já existe.")
             elif not senha_forte(cad_pass):
                 st.error("Use uma senha com pelo menos 12 caracteres, incluindo letras e números.")
             elif cad_pass != cad_conf:
                 st.error("Senhas não coincidem.")
             else:
-                usuarios[u_clean] = {
+                nova_conta = {
                     "nome": cad_nome if cad_nome else cad_user,
                     "senha": hash_senha(cad_pass),
                     "criado_em": str(datetime.date.today())
                 }
-                salvar_usuarios(usuarios)
+                salvar_usuarios({u_clean: nova_conta})
                 st.success("Conta criada! Acesse a aba 'Entrar na Conta'.")
 
     st.stop()
 
-# -----------------------------------------------------------------------------
-# Carregamento do Utilizador Logado
-# -----------------------------------------------------------------------------
+# =============================================================================
+# ÁREA LOGADA
+# =============================================================================
 user_atual = st.session_state.usuario_logado
 db = carregar_dados_usuario(user_atual, get_edital_espcex)
 nome_cadete = st.session_state.get("nome_exibicao", user_atual)
 
+if "acesso_plataforma_notificado" not in st.session_state:
+    st.session_state["acesso_plataforma_notificado"] = True
+    registrar_acesso_usuario(user_atual)
 
 def _eventos_proximos(dias=7):
-    """Carrega eventos pendentes da agenda, se o calendário já foi inicializado."""
     try:
         conn = sqlite3.connect("dados_qg.db")
         exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='calendario_qg'").fetchone()
@@ -913,166 +1661,50 @@ def _eventos_proximos(dias=7):
                 saida.append({"data": str(row[0]), "hora": str(row[1] or ""), "titulo": str(row[2] or "Evento"), "categoria": str(row[3] or "Geral"), "prioridade": str(row[4] or "Média"), "status": str(row[5] or "Pendente"), "atrasado": data_evt < hoje_local})
         return saida[:20]
     except sqlite3.Error:
-        try:
-            conn.close()
-        except Exception:
-            pass
         return []
-
 
 eventos_proximos = _eventos_proximos()
 
-
-def _navegar_qg(destino):
-    """Seleciona uma tela do app a partir do guia inicial."""
-    st.session_state["qg_nav_menu"] = destino
-
-
 QG_MODULOS_NAVEGACAO = [
-    "📊 Painel & Rotina Diária",
-    "🧩 Quiz Diário Adaptativo",
-    "🎯 Missões Diárias",
-    "🎮 Mini Jogo de Pontos",
-    "🎛️ Personalizar Painel",
-    "👋 Guia Inicial",
-    "📲 Instalar como App",
-    "🆕 Novidades do QG",
-    "🦉 Portal Estratégia Militares",
-    "🏋️ Treino TAF + Spotify",
-    "🌾 Alternância EFA & AMSP (15/15)",
-    "⏱️ Pomodoro Tático (com Alarme)",
-    "✍️ Módulo de Redação",
-    "📋 Edital Verticalizado EsPCEx",
-    "📝 Registro de Questões",
-    "📕 Caderno de Bizus & Erros",
-    "🎯 Simulados (1º e 2º Dia)",
-    "📊 Visualizador de Planilhas",
-    "🎲 Sorteador de Temas & Textos Base",
-    "🏃 Módulo 13: Pacer TAF",
-    "🥗 Nutrição & Calorias",
-    "🌾 Calc. Agropecuária",
-    "📌 Kanban EFA",
-    "📌 Módulo 10 - Quadro Tático (Kanban)",
-    "🔥 Habit Tracker",
-    "📅 Cronograma Dinâmico",
-    "🔗 Hub de Links",
-    "📖 Diário de Bordo",
-    "🎧 Player de Áudio",
-    "⚙️ Configurações do QG",
-    "📅 Calendário Tático",
-    "💰 Controlo Financeiro",
-    "🧠 Memória Avançada",
-    "🗓️ Plano Semanal Automático",
-    "💾 Backup e Restauração",
-    "🎯 Modo Foco",
+    "📊 Painel & Rotina Diária", "🧩 Quiz Diário Adaptativo", "🎯 Missões Diárias",
+    "🎮 Mini Jogo de Pontos", "🎛️ Personalizar Painel", "👋 Guia Inicial",
+    "📲 Instalar como App", "🆕 Novidades do QG", "🦉 Portal Estratégia Militares", "👤 Meu Perfil",
+    "🏋️ Treino TAF + Spotify", "🌾 Alternância EFA & AMSP (15/15)", "⏱️ Pomodoro Tático (com Alarme)",
+    "✍️ Módulo de Redação", "📋 Edital Verticalizado EsPCEx", "📝 Registro de Questões",
+    "📕 Caderno de Bizus & Erros", "🎯 Simulados (1º e 2º Dia)", "📊 Visualizador de Planilhas",
+    "🎲 Sorteador de Temas & Textos Base", "🏃 Módulo 13: Pacer TAF", "🥗 Nutrição & Calorias",
+    "🌾 Calc. Agropecuária", "📌 Kanban EFA", "📌 Módulo 10 - Quadro Tático (Kanban)",
+    "🔥 Habit Tracker", "📅 Cronograma Dinâmico", "🔗 Hub de Links",
+    "📖 Diário de Bordo", "🎧 Player de Áudio", "⚙️ Configurações do QG",
+    "📅 Calendário Tático", "💰 Controlo Financeiro", "🧠 Memória Avançada",
+    "🗓️ Plano Semanal Automático", "💾 Backup e Restauração", "🎯 Modo Foco",
     "🛡️ Módulo 24 · Central Administrativa",
 ]
+
 QG_ADMIN_MODULOS_INTERNOS = [
-    "🛡️ Módulo 24 · Ajustes Privados",
-    "🎮 Admin · Discord Bot",
-    "📈 Admin · Relatórios",
-    "📥 Admin · Importação",
-    "💻 Admin · Console SQL",
-    "📜 Admin · Logs",
-    "📡 Admin · Telemetria",
-    "🛠️ Admin · Manutenção",
-    "🗄️ Admin · Banco de Dados",
-    "🐞 Admin · Diagnóstico & Bugs",
-    "🔐 Admin · Segurança",
-    "🧠 Admin · Inteligência do Efetivo",
+    "🛡️ Módulo 24 · Ajustes Privados", "🎮 Admin · Discord Bot", "📈 Admin · Relatórios",
+    "📥 Admin · Importação", "💻 Admin · Console SQL", "📜 Admin · Logs",
+    "📡 Admin · Telemetria", "🛠️ Admin · Manutenção", "🗄️ Admin · Banco de Dados",
+    "🐞 Admin · Diagnóstico & Bugs", "🔐 Admin · Segurança", "🧠 Admin · Inteligência do Efetivo",
     "🎯 Admin · Campanhas QG",
 ]
-QG_ROTAS_ADMIN_LEGADAS = set(
-    ["🛡️ Módulo 24 - Painel do Administrador", "🛡️ Módulo 24 · Ajustes Privados"]
-    + QG_ADMIN_MODULOS_INTERNOS
-)
+QG_ROTAS_ADMIN_LEGADAS = set(["🛡️ Módulo 24 - Painel do Administrador", "🛡️ Módulo 24 · Ajustes Privados"] + QG_ADMIN_MODULOS_INTERNOS)
 
 
 def _salvar_check_missao(username, data_iso, tarefa_id, widget_key):
     estado = carregar_dados_usuario(username, get_edital_espcex)
     missoes = estado.get("missoes_diarias", {})
-    if not isinstance(missoes, dict):
-        missoes = {}
-        estado["missoes_diarias"] = missoes
+    if not isinstance(missoes, dict): missoes = {}
+    estado["missoes_diarias"] = missoes
     dia = missoes.get(data_iso, {})
-    if not isinstance(dia, dict):
-        dia = {}
-        missoes[data_iso] = dia
+    if not isinstance(dia, dict): dia = {}
+    missoes[data_iso] = dia
     dia[tarefa_id] = bool(st.session_state.get(widget_key, False))
     dia["atualizado_em"] = datetime.datetime.now().isoformat(timespec="seconds")
     for chave_antiga in sorted(missoes)[:-90]:
         missoes.pop(chave_antiga, None)
     salvar_dados_usuario(username, estado)
 
-
-def _render_missao_diaria():
-    hoje = datetime.date.today().isoformat()
-    missao_config = db.get("config_missoes_diarias", {})
-    if not isinstance(missao_config, dict):
-        missao_config = {}
-    tarefas_padrao = {
-        "taf": "Cumprir o treino de TAF que você planejou",
-        "estudo": "Concluir o bloco principal de estudo",
-        "revisao": "Fazer a revisão programada",
-        "diario": "Registrar a evolução no Diário de Bordo",
-    }
-    ativas = missao_config.get("ativas", list(tarefas_padrao))
-    if not isinstance(ativas, list):
-        ativas = list(tarefas_padrao)
-    tarefas = [(chave, titulo) for chave, titulo in tarefas_padrao.items() if chave in ativas]
-    extras = missao_config.get("extras", [])
-    if isinstance(extras, list):
-        tarefas.extend((f"extra_{hashlib.sha256(str(titulo).strip().casefold().encode('utf-8')).hexdigest()[:8]}", str(titulo)[:100]) for titulo in extras if str(titulo).strip())
-
-    planos_catalogo = db.get("missoes_catalogo_por_dia", {})
-    ids_catalogo_hoje = planos_catalogo.get(hoje, []) if isinstance(planos_catalogo, dict) else []
-    if isinstance(ids_catalogo_hoje, list):
-        for missao_id in ids_catalogo_hoje:
-            missao = QG_MISSOES_POR_ID.get(str(missao_id))
-            if missao:
-                tarefas.append((f"catalogo_{missao['id']}", missao["titulo"]))
-
-    missoes_salvas = db.get("missoes_diarias", {})
-    estado_dia = missoes_salvas.get(hoje, {}) if isinstance(missoes_salvas, dict) else {}
-    if not isinstance(estado_dia, dict):
-        estado_dia = {}
-
-    with st.container(border=True):
-        st.markdown("#### 🏅 Missão diária · TAF e rotina")
-        st.caption("Marque as atividades que você planejou para hoje. O progresso é salvo na sua conta.")
-        descanso_key = f"missao_{user_atual}_{hoje}_descanso_taf"
-        if descanso_key not in st.session_state:
-            st.session_state[descanso_key] = bool(estado_dia.get("descanso_taf", False))
-        st.checkbox(
-            "Hoje é um dia sem treino de TAF planejado",
-            key=descanso_key, on_change=_salvar_check_missao,
-            args=(user_atual, hoje, "descanso_taf", descanso_key),
-        )
-
-        total = 0
-        concluidas = 0
-        colunas = st.columns(2)
-        for indice, (tarefa_id, titulo) in enumerate(tarefas):
-            if tarefa_id == "taf" and st.session_state[descanso_key]:
-                continue
-            total += 1
-            widget_key = f"missao_{user_atual}_{hoje}_{tarefa_id}"
-            if widget_key not in st.session_state:
-                st.session_state[widget_key] = bool(estado_dia.get(tarefa_id, False))
-            col = colunas[indice % 2]
-            col.checkbox(
-                titulo, key=widget_key, on_change=_salvar_check_missao,
-                args=(user_atual, hoje, tarefa_id, widget_key),
-            )
-            concluidas += int(bool(st.session_state[widget_key]))
-        if total:
-            st.progress(concluidas / total, text=f"Progresso de hoje: {concluidas} de {total} missões")
-        else:
-            st.info("Escolha as missões diárias em Personalizar Painel.")
-
-
-# Catálogo de desafios do Quiz. Os identificadores são estáveis para manter
-# seleção, conclusão e pontuação do usuário entre sessões.
 _QG_MISSOES_SEMENTES = [
     ("Manhã", "Rotina matinal", 5, 5, [
         "Começar no horário planejado", "Beber água ao iniciar o dia", "Organizar a mesa de estudos",
@@ -1145,6 +1777,7 @@ _QG_MISSOES_SEMENTES = [
         "Verificar se há revisão programada para amanhã", "Encerrar o planejamento e respeitar o horário de descanso",
     ]),
 ]
+
 QG_MISSOES = []
 _qg_indice_missao = 0
 for _periodo, _categoria, _minutos, _pontos, _titulos in _QG_MISSOES_SEMENTES:
@@ -1157,55 +1790,117 @@ for _periodo, _categoria, _minutos, _pontos, _titulos in _QG_MISSOES_SEMENTES:
         })
 QG_MISSOES_POR_ID = {missao["id"]: missao for missao in QG_MISSOES}
 
+def _render_missao_diaria():
+    hoje = datetime.date.today().isoformat()
+    missao_config = db.get("config_missoes_diarias", {})
+    if not isinstance(missao_config, dict): missao_config = {}
+    tarefas_padrao = {
+        "taf": "Cumprir o treino de TAF que você planejou",
+        "estudo": "Concluir o bloco principal de estudo",
+        "revisao": "Fazer a revisão programada",
+        "diario": "Registrar a evolução no Diário de Bordo",
+    }
+    ativas = missao_config.get("ativas", list(tarefas_padrao))
+    if not isinstance(ativas, list): ativas = list(tarefas_padrao)
+    tarefas = [(chave, titulo) for chave, titulo in tarefas_padrao.items() if chave in ativas]
+    extras = missao_config.get("extras", [])
+    if isinstance(extras, list):
+        tarefas.extend((f"extra_{hashlib.sha256(str(titulo).strip().casefold().encode('utf-8')).hexdigest()[:8]}", str(titulo)[:100]) for titulo in extras if str(titulo).strip())
 
-def _carregar_campanha_missoes_qg():
-    """Lê o comunicado e missão em destaque publicados pelo proprietário."""
-    try:
-        with sqlite3.connect("dados_qg.db", timeout=5) as conn:
-            conn.execute("CREATE TABLE IF NOT EXISTS config_qg (chave TEXT PRIMARY KEY, valor TEXT)")
-            row = conn.execute("SELECT valor FROM config_qg WHERE chave = ?", ("campanha_missoes_qg",)).fetchone()
-        dados = json.loads(row[0]) if row and row[0] else {}
-        return dados if isinstance(dados, dict) else {}
-    except (sqlite3.Error, OSError, json.JSONDecodeError, TypeError):
-        return {}
+    planos_catalogo = db.get("missoes_catalogo_por_dia", {})
+    ids_catalogo_hoje = planos_catalogo.get(hoje, []) if isinstance(planos_catalogo, dict) else []
+    if isinstance(ids_catalogo_hoje, list):
+        for missao_id in ids_catalogo_hoje:
+            missao = QG_MISSOES_POR_ID.get(str(missao_id))
+            if missao:
+                tarefas.append((f"catalogo_{missao['id']}", missao["titulo"]))
+
+    missoes_salvas = db.get("missoes_diarias", {})
+    estado_dia = missoes_salvas.get(hoje, {}) if isinstance(missoes_salvas, dict) else {}
+    if not isinstance(estado_dia, dict): estado_dia = {}
+
+    with st.container(border=True):
+        st.markdown("#### 🏅 Missão diária · TAF e rotina")
+        st.caption("Marque as atividades que você planejou para hoje. O progresso é salvo na sua conta.")
+        descanso_key = f"missao_{user_atual}_{hoje}_descanso_taf"
+        if descanso_key not in st.session_state:
+            st.session_state[descanso_key] = bool(estado_dia.get("descanso_taf", False))
+        st.checkbox(
+            "Hoje é um dia sem treino de TAF planejado",
+            key=descanso_key, on_change=_salvar_check_missao,
+            args=(user_atual, hoje, "descanso_taf", descanso_key),
+        )
+
+        total = concluidas = 0
+        colunas = st.columns(2)
+        for indice, (tarefa_id, titulo) in enumerate(tarefas):
+            if tarefa_id == "taf" and st.session_state[descanso_key]:
+                continue
+            total += 1
+            widget_key = f"missao_{user_atual}_{hoje}_{tarefa_id}"
+            if widget_key not in st.session_state:
+                st.session_state[widget_key] = bool(estado_dia.get(tarefa_id, False))
+            col = colunas[indice % 2]
+            col.checkbox(titulo, key=widget_key, on_change=_salvar_check_missao, args=(user_atual, hoje, tarefa_id, widget_key))
+            concluidas += int(bool(st.session_state[widget_key]))
+        if total:
+            st.progress(concluidas / total, text=f"Progresso de hoje: {concluidas} de {total} missões")
+        else:
+            st.info("Escolha as missões diárias em Personalizar Painel.")
 
 st.markdown(f"""
-<section class="qg-hero" aria-label="Central de preparação">
-  <div class="qg-hero-brand">
-    <div class="qg-brand-symbol">QG</div>
-    <div>
-      <div class="qg-hero-kicker">QG EsPCEx · Centro de performance</div>
-      <div class="qg-hero-title">Central de preparação e inteligência</div>
-      <div class="qg-hero-subtitle">Estudos, rotina e evolução em uma única plataforma.</div>
-    </div>
-  </div>
-  <div class="qg-hero-meta">
-    <div class="qg-live">OPERAÇÕES ONLINE</div>
-    <div class="qg-hero-date">{datetime.date.today().strftime('%d/%m/%Y')} · AMBIENTE PESSOAL</div>
-  </div>
+<section class="qg-hero">
+  <div class="qg-cube-wrap"><div class="qg-cube">
+    <div class="qg-cube-face qg-cube-front">QG</div><div class="qg-cube-face qg-cube-back">🛡️</div>
+    <div class="qg-cube-face qg-cube-right">⚔️</div><div class="qg-cube-face qg-cube-left">🎯</div>
+    <div class="qg-cube-face qg-cube-top">✦</div><div class="qg-cube-face qg-cube-bottom">✦</div>
+  </div></div>
+  <div class="qg-hero-copy"><div class="qg-hero-kicker">QG EsPCEx · centro de performance</div>
+    <div class="qg-hero-title">Olá, {html.escape(str(nome_cadete))}</div>
+    <div class="qg-hero-subtitle">Estudos, rotina e evolução em uma única plataforma · {datetime.date.today().strftime('%d/%m/%Y')}</div>
+  </div><div class="qg-live">OPERAÇÕES ONLINE</div>
 </section>
 """, unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# Barra Lateral
-# -----------------------------------------------------------------------------
-nome_sidebar_html = html.escape(str(nome_cadete))
-avatar_sidebar_html = html.escape((str(nome_cadete).strip()[:1] or "U").upper())
+# =============================================================================
+# BARRA LATERAL (SIDEBAR)
+# =============================================================================
+def _navegar_sidebar_qg(modulo: str) -> None:
+    if modulo in QG_MODULOS_NAVEGACAO:
+        st.session_state["qg_nav_menu"] = modulo
+
+perfil_sidebar = carregar_usuario(user_atual)
+if not isinstance(perfil_sidebar, dict):
+    perfil_sidebar = {}
+avatar_sidebar = str(perfil_sidebar.get("avatar", "⚔️"))
+if avatar_sidebar not in {"⚔️", "🛡️", "🎖️", "🦅", "🔰", "✦"}:
+    avatar_sidebar = (str(nome_cadete).strip()[:1] or "U").upper()
+nome_sidebar_seguro = html.escape(str(nome_cadete))
+usuario_sidebar_seguro = html.escape(str(user_atual))
 st.sidebar.markdown(f"""
 <div class="qg-sidebar-brand">
-  <div class="qg-sidebar-mark">QG</div>
-  <div><div class="qg-sidebar-name">QG ESPCEX</div><div class="qg-sidebar-caption">Performance center</div></div>
+  <div class="qg-sidebar-brand-mark">QG</div>
+  <div class="qg-sidebar-brand-copy"><strong>QG EsPCEx</strong><span>Central de preparação</span></div>
 </div>
-<div class="qg-account-card">
-  <div class="qg-account-avatar">{avatar_sidebar_html}</div>
-  <div><div class="qg-account-label">Conta ativa</div><div class="qg-account-name">{nome_sidebar_html}</div></div>
+<div class="qg-sidebar-profile">
+  <div class="qg-sidebar-avatar">{html.escape(avatar_sidebar)}</div>
+  <div class="qg-sidebar-profile-copy"><small>Perfil do cadete</small><strong>{nome_sidebar_seguro}</strong><span>@{usuario_sidebar_seguro}</span></div>
+  <i class="qg-sidebar-online" aria-label="sessão ativa"></i>
 </div>
 """, unsafe_allow_html=True)
+if st.sidebar.button("👤 Abrir meu perfil", key="qg_open_profile", use_container_width=True):
+    st.session_state["qg_nav_menu"] = "👤 Meu Perfil"
+    st.rerun()
 
 if st.sidebar.button("🚪 Encerrar sessão", use_container_width=True):
+    try:
+        _qg_revogar_sessao(st.session_state.get("auth_session_token", ""))
+    except Exception:
+        pass
     st.session_state.usuario_logado = None
     st.session_state.pop("nome_exibicao", None)
     st.session_state.pop("auth_ultima_atividade", None)
+    st.session_state.pop("auth_session_token", None)
     st.session_state["admin_autenticado"] = False
     st.session_state.pop("admin_ultima_atividade", None)
     st.rerun()
@@ -1217,30 +1912,85 @@ if st.session_state.get("qg_nav_menu") in QG_ROTAS_ADMIN_LEGADAS:
 modulos_qg = QG_MODULOS_NAVEGACAO
 if st.session_state.get("qg_nav_menu") not in modulos_qg:
     st.session_state["qg_nav_menu"] = "📊 Painel & Rotina Diária"
-st.sidebar.markdown("<div class='qg-nav-heading'>MÓDULOS DO QG</div>", unsafe_allow_html=True)
-busca_modulo_qg = st.sidebar.text_input(
-    "Buscar módulo",
-    placeholder="Digite para localizar...",
-    key="qg_nav_search",
-    label_visibility="collapsed",
-)
+
+st.sidebar.subheader("Módulos do QG")
+busca_modulo_qg = st.sidebar.text_input("Buscar módulo", placeholder="Digite para localizar...", key="qg_nav_search", label_visibility="collapsed")
 menu_atual_qg = st.session_state.get("qg_nav_menu", "📊 Painel & Rotina Diária")
-modulos_filtrados_qg = [
-    modulo for modulo in modulos_qg
-    if busca_modulo_qg.strip().casefold() in modulo.casefold()
-]
+modulos_filtrados_qg = [m for m in modulos_qg if busca_modulo_qg.strip().casefold() in m.casefold()]
+
 if busca_modulo_qg.strip() and not modulos_filtrados_qg:
     st.sidebar.caption("Nenhum módulo encontrado. A tela atual continua aberta.")
     modulos_filtrados_qg = [menu_atual_qg]
 elif menu_atual_qg not in modulos_filtrados_qg:
     modulos_filtrados_qg = [menu_atual_qg] + modulos_filtrados_qg
-menu = st.sidebar.radio(
-    "Central de Operações",
-    modulos_filtrados_qg,
-    key="qg_nav_menu",
-    help="Todos os módulos ficam listados aqui. Use a busca para filtrar a lista.",
-    label_visibility="collapsed",
+
+menu = st.sidebar.radio("Central de Operações", modulos_filtrados_qg, key="qg_nav_menu", label_visibility="collapsed")
+
+# Cabeçalho compartilhado inspirado no Módulo 14: painel animado, identificação da plataforma e relógio do navegador.
+# Ele dá às telas autenticadas a mesma abertura visual sem trocar os controles ou os dados próprios de cada módulo.
+components.html("""
+<div class="qg-enterprise-header" role="banner" aria-label="QG EsPCEx Enterprise">
+  <div class="qg-enterprise-grid" aria-hidden="true"></div>
+  <div class="qg-enterprise-orbit qg-enterprise-orbit-a" aria-hidden="true"></div>
+  <div class="qg-enterprise-orbit qg-enterprise-orbit-b" aria-hidden="true"></div>
+  <div class="qg-enterprise-content">
+    <div class="qg-enterprise-brand"><span class="qg-enterprise-mark">QG</span><span>QG ESPCEX ENTERPRISE</span></div>
+    <div class="qg-enterprise-subtitle">Núcleo de preparação · estudos e performance</div>
+    <div class="qg-enterprise-clock" id="qg-enterprise-clock" aria-label="Horário local">⏱️ --:--:-- · SISTEMA ATIVO</div>
+  </div>
+</div>
+<style>
+/* Painel comum do Módulo 14: fundo em gradiente animado, relevo nas bordas e leitura centralizada. */
+*{box-sizing:border-box}
+html,body{width:100%;height:100%;margin:0;padding:0;overflow:hidden;background:transparent;color:#fff;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+.qg-enterprise-header{position:relative;isolation:isolate;display:grid;place-items:center;width:100%;height:150px;overflow:hidden;border:1px solid rgba(0,201,255,.38);border-radius:17px;background:linear-gradient(115deg,#0b1b29,#17323d 38%,#21423b 70%,#0e202d);box-shadow:0 18px 42px rgba(0,0,0,.34),inset 0 1px rgba(255,255,255,.15),inset 0 -2px rgba(0,0,0,.25);}
+.qg-enterprise-header:before{content:"";position:absolute;inset:-45%;z-index:-2;background:linear-gradient(270deg,rgba(0,201,255,.12),rgba(146,254,157,.12),rgba(0,201,255,.12));background-size:200% 200%;animation:qgEnterpriseGradient 10s ease-in-out infinite;}
+.qg-enterprise-header:after{content:"";position:absolute;left:7%;right:7%;bottom:0;height:2px;background:linear-gradient(90deg,transparent,#00c9ff,#92fe9d,#00c9ff,transparent);box-shadow:0 0 15px rgba(0,201,255,.65);animation:qgEnterpriseGlow 3s ease-in-out infinite alternate;}
+.qg-enterprise-grid{position:absolute;inset:0;z-index:-1;opacity:.22;background-image:linear-gradient(rgba(178,234,239,.12) 1px,transparent 1px),linear-gradient(90deg,rgba(178,234,239,.12) 1px,transparent 1px);background-size:30px 30px;mask-image:linear-gradient(105deg,black,transparent 90%)}
+.qg-enterprise-orbit{position:absolute;z-index:-1;top:50%;width:190px;height:190px;border:1px solid rgba(0,201,255,.20);border-radius:50%;box-shadow:0 0 0 15px rgba(0,201,255,.025),inset 0 0 25px rgba(0,201,255,.06);transform:translateY(-50%) rotateX(66deg);pointer-events:none}
+.qg-enterprise-orbit-a{left:-58px;animation:qgEnterpriseOrbit 22s linear infinite}
+.qg-enterprise-orbit-b{right:-58px;border-color:rgba(146,254,157,.23);transform:translateY(-50%) rotateY(62deg) rotateX(55deg);animation:qgEnterpriseOrbit 28s linear infinite reverse}
+.qg-enterprise-content{position:relative;z-index:1;padding:10px 18px;text-align:center}
+.qg-enterprise-brand{display:flex;align-items:center;justify-content:center;gap:10px;color:#f7fdff;font-size:clamp(1.05rem,2.8vw,1.55rem);font-weight:850;letter-spacing:.10em}
+.qg-enterprise-mark{display:grid;place-items:center;width:36px;height:36px;border:1px solid rgba(146,254,157,.72);border-radius:11px;color:#e8fff0;background:linear-gradient(145deg,rgba(0,201,255,.32),rgba(146,254,157,.23));box-shadow:0 5px 0 rgba(0,0,0,.35),0 0 18px rgba(0,201,255,.22),inset 0 1px rgba(255,255,255,.32);font-size:.78rem;letter-spacing:.02em}
+.qg-enterprise-subtitle{margin-top:7px;color:#aaf4be;font-size:.72rem;font-weight:700;letter-spacing:.17em;text-transform:uppercase}
+.qg-enterprise-clock{display:inline-block;margin-top:11px;padding:6px 13px;border:1px solid rgba(146,254,157,.29);border-radius:999px;color:#e8f7ff;background:rgba(2,11,18,.46);box-shadow:inset 0 0 12px rgba(0,0,0,.38);font:700 .68rem ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;font-variant-numeric:tabular-nums}
+@keyframes qgEnterpriseGradient{0%,100%{transform:translateX(-5%) rotate(-3deg);opacity:.5}50%{transform:translateX(5%) rotate(3deg);opacity:1}}
+@keyframes qgEnterpriseGlow{0%{opacity:.55}100%{opacity:1;filter:drop-shadow(0 0 8px #00c9ff)}}
+@keyframes qgEnterpriseOrbit{to{rotate:360deg}}
+@media(max-width:560px){.qg-enterprise-header{height:146px;border-radius:14px}.qg-enterprise-content{padding:8px}.qg-enterprise-brand{gap:7px;letter-spacing:.055em}.qg-enterprise-mark{width:31px;height:31px}.qg-enterprise-subtitle{font-size:.61rem;letter-spacing:.11em}.qg-enterprise-clock{font-size:.62rem}}
+@media(prefers-reduced-motion:reduce){.qg-enterprise-header:before,.qg-enterprise-header:after,.qg-enterprise-orbit{animation:none!important}}
+</style>
+<script>
+// Atualiza o relógio dentro do cabeçalho sem provocar reruns do Streamlit.
+(()=>{const clock=document.getElementById("qg-enterprise-clock");if(!clock)return;const render=()=>{clock.textContent="⏱️ "+new Date().toLocaleTimeString("pt-BR")+" · SISTEMA ATIVO"};render();window.setInterval(render,1000)})();
+</script>
+""", height=160, scrolling=False)
+
+# Navegação rápida para celular: replica a seleção atual do menu lateral em um seletor compacto.
+def _navegar_mobile_qg() -> None:
+    modulo = st.session_state.get("qg_mobile_nav_selection")
+    if modulo in QG_MODULOS_NAVEGACAO:
+        st.session_state["qg_nav_menu"] = modulo
+
+if st.session_state.get("qg_mobile_nav_selection") != menu:
+    st.session_state["qg_mobile_nav_selection"] = menu
+with st.container(key="qg_mobile_navigation"):
+    st.selectbox(
+        "Acessar módulo",
+        options=QG_MODULOS_NAVEGACAO,
+        index=QG_MODULOS_NAVEGACAO.index(menu),
+        key="qg_mobile_nav_selection",
+        on_change=_navegar_mobile_qg,
+        label_visibility="visible",
+    )
+
+st.sidebar.button(
+    "🔐 Acessar área administrativa", key="qg_admin_access", use_container_width=True,
+    help="A senha master será solicitada antes de abrir a central.",
+    on_click=_navegar_sidebar_qg, args=("🛡️ Módulo 24 · Central Administrativa",),
 )
+st.sidebar.markdown('<div class="qg-sidebar-action-note">🔐 A Central Administrativa, no fim da lista, solicita a senha master antes de abrir.</div>', unsafe_allow_html=True)
 
 st.sidebar.markdown("---")
 with st.sidebar.expander(f"🔔 Agenda · {len(eventos_proximos)} lembretes", expanded=any(e["atrasado"] for e in eventos_proximos)):
@@ -1255,11 +2005,11 @@ with st.sidebar.expander(f"🔔 Agenda · {len(eventos_proximos)} lembretes", ex
 
 with st.sidebar.expander("🧠 Memória de estudo", expanded=False):
     with st.form("form_memoria_estudo", clear_on_submit=True):
-        nota_memoria = st.text_area("Anotação que deseja guardar", max_chars=1000, placeholder="Ex.: revisar cinemática na próxima sessão")
+        nota_memoria = st.text_area("Anotação que deseja guardar", max_chars=1000, placeholder="Ex.: revisar cinemática...")
         if st.form_submit_button("Guardar anotação", use_container_width=True):
             if nota_memoria.strip():
                 adicionar_memoria(user_atual, nota_memoria.strip())
-                st.toast("Anotação guardada na sua memória de estudo.", icon="🧠")
+                st.toast("Anotação guardada.", icon="🧠")
                 st.rerun()
     memorias = listar_memorias(user_atual, limite=5)
     if memorias:
@@ -1270,13 +2020,10 @@ with st.sidebar.expander("🧠 Memória de estudo", expanded=False):
     else:
         st.caption("Suas anotações persistentes aparecerão aqui.")
 
-# Cálculo do ciclo EFA (15 dias)
+# Ciclo EFA
 efa_info = db.get("efa_ciclo", {"modo": "Em Casa", "inicio_ciclo": str(datetime.date.today())})
-try:
-    dt_inicio = datetime.datetime.strptime(efa_info["inicio_ciclo"], "%Y-%m-%d").date()
-except Exception:
-    dt_inicio = datetime.date.today()
-
+try: dt_inicio = datetime.datetime.strptime(efa_info["inicio_ciclo"], "%Y-%m-%d").date()
+except Exception: dt_inicio = datetime.date.today()
 dias_decorridos = (datetime.date.today() - dt_inicio).days + 1
 dia_no_ciclo = min(max(dias_decorridos, 1), 15)
 
@@ -1285,12 +2032,9 @@ st.sidebar.markdown(f"**Progresso EFA:** `Dia {dia_no_ciclo} de 15`")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("⏳ Contagem Regressiva EsPCEx")
-
 data_prova_str = db.get("data_prova", str(datetime.date.today()))
-try:
-    data_prova = datetime.datetime.strptime(data_prova_str, "%Y-%m-%d").date()
-except ValueError:
-    data_prova = datetime.date.today()
+try: data_prova = datetime.datetime.strptime(data_prova_str, "%Y-%m-%d").date()
+except ValueError: data_prova = datetime.date.today()
 
 nova_data = st.sidebar.date_input("Data da Prova", data_prova)
 if nova_data != data_prova:
@@ -1303,92 +2047,104 @@ st.sidebar.metric("Dias até a Prova", f"{dias_restantes} dias")
 st.sidebar.markdown(f"**Ciclos Pomodoro:** `{db.get('pomodoro_ciclos_totais', 0)}`")
 
 # -----------------------------------------------------------------------------
+# UTILITÁRIOS DAS TELAS
+# -----------------------------------------------------------------------------
+def _navegar_qg(modulo: str) -> None:
+    """Seleciona uma tela já existente no menu lateral."""
+    if modulo in QG_MODULOS_NAVEGACAO:
+        st.session_state["qg_nav_menu"] = modulo
+
+
+def _carregar_campanha_missoes_qg() -> dict:
+    """Lê a campanha do SQLite e devolve um objeto vazio se ainda não existir."""
+    conn = None
+    try:
+        conn = sqlite3.connect("dados_qg.db", timeout=5)
+        row = conn.execute(
+            "SELECT valor FROM config_qg WHERE chave = ?",
+            ("campanha_missoes_qg",),
+        ).fetchone()
+        campanha = json.loads(row[0]) if row and row[0] else {}
+        return campanha if isinstance(campanha, dict) else {}
+    except (sqlite3.Error, json.JSONDecodeError, TypeError):
+        return {}
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+# -----------------------------------------------------------------------------
 # MÓDULO 1: Painel & Cronograma da Rotina Diária
 # -----------------------------------------------------------------------------
-import streamlit as st
-import pandas as pd
-import datetime
-import plotly.express as px
-import plotly.graph_objects as go
-import streamlit.components.v1 as components
-import json
-
-# -----------------------------------------------------------------------------
-# INJEÇÃO DE CSS E ANIMAÇÕES (FRONTEND MELHORADO)
-# -----------------------------------------------------------------------------
-st.markdown("""
-<style>
-    /* Tema Base e Fundo */
-    .stApp {
-        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-        color: #e2e8f0;
-    }
-    
-    /* Efeito Glassmorphism para Containers */
-    [data-testid="stVerticalBlock"] > [style*="flex-direction: column;"] > [data-testid="stVerticalBlock"] {
-        background: rgba(30, 41, 59, 0.5);
-        backdrop-filter: blur(10px);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 15px;
-        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-        padding: 20px;
-    }
-
-    /* Cartões de Rotina (3D Hover Effect) */
-    .routine-card {
-        background: linear-gradient(145deg, #1e293b, #0f172a);
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        border-radius: 12px;
-        padding: 20px;
-        box-shadow: 5px 5px 15px #0a0f1d, -5px -5px 15px #22334d;
-        transition: all 0.3s ease-in-out;
-        height: 100%;
-    }
-    .routine-card:hover {
-        transform: translateY(-8px) scale(1.02);
-        box-shadow: 0 15px 25px rgba(46, 125, 50, 0.4);
-        border-color: rgba(46, 125, 50, 0.5);
-    }
-    .routine-card h4 {
-        color: #4ade80;
-        margin-top: 0;
-        font-weight: 700;
-        text-shadow: 0 0 10px rgba(74, 222, 128, 0.3);
-    }
-
-    /* Estilo das Métricas (Efeito Neon/Glow) */
-    [data-testid="stMetricValue"] {
-        font-size: 2.2rem !important;
-        font-weight: 800 !important;
-        background: -webkit-linear-gradient(45deg, #4ade80, #3b82f6);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        text-shadow: 2px 2px 4px rgba(0,0,0,0.4);
-    }
-    [data-testid="stMetricLabel"] {
-        font-size: 1rem !important;
-        color: #94a3b8 !important;
-        font-weight: 600 !important;
-    }
-
-    /* Botões Modernos */
-    .stButton>button {
-        background: linear-gradient(90deg, #16a34a 0%, #15803d 100%);
-        border: none;
-        box-shadow: 0 4px 15px rgba(22, 163, 74, 0.4);
-        transition: all 0.2s;
-    }
-    .stButton>button:hover {
-        transform: scale(1.05);
-        box-shadow: 0 6px 20px rgba(22, 163, 74, 0.6);
-    }
-</style>
-""", unsafe_allow_html=True)
+# O tema 3D compartilhado foi aplicado na inicialização do aplicativo.
 
 # -----------------------------------------------------------------------------
 # LÓGICA DA INTERFACE - PAINEL PRINCIPAL
 # -----------------------------------------------------------------------------
-if menu == "📊 Painel & Rotina Diária":
+if menu == "👤 Meu Perfil":
+    conta_perfil = carregar_usuario(user_atual)
+    if not isinstance(conta_perfil, dict):
+        conta_perfil = {}
+    opcoes_avatar_perfil = ["⚔️", "🛡️", "🎖️", "🦅", "🔰", "✦"]
+    avatar_salvo_perfil = str(conta_perfil.get("avatar", "⚔️"))
+    if avatar_salvo_perfil not in opcoes_avatar_perfil:
+        avatar_salvo_perfil = "⚔️"
+    nome_perfil = str(conta_perfil.get("nome", nome_cadete))
+
+    st.markdown(f"""
+    <section class="qg-hero qg-profile-hero">
+      <div class="qg-profile-orb">{html.escape(avatar_salvo_perfil)}</div>
+      <div class="qg-hero-copy"><div class="qg-hero-kicker">QG EsPCEx · identidade do cadete</div>
+        <div class="qg-hero-title">Meu perfil</div>
+        <div class="qg-hero-subtitle">Personalize sua identificação e acompanhe seu progresso em um só lugar.</div>
+      </div><div class="qg-live">CONTA ATIVA</div>
+    </section>
+    """, unsafe_allow_html=True)
+
+    sessoes_perfil = db.get("sessoes", [])
+    sessoes_perfil = [item for item in sessoes_perfil if isinstance(item, dict)] if isinstance(sessoes_perfil, list) else []
+    try:
+        horas_perfil = sum(float(item.get("Horas", 0) or 0) for item in sessoes_perfil)
+    except (TypeError, ValueError):
+        horas_perfil = 0.0
+    cards_perfil = db.get("quiz_cards", [])
+    taf_perfil = db.get("taf", [])
+    p1, p2, p3, p4 = st.columns(4)
+    p1.metric("Horas registradas", f"{horas_perfil:.1f} h")
+    p2.metric("Sessões de estudo", len(sessoes_perfil))
+    p3.metric("Questões próprias", len(cards_perfil) if isinstance(cards_perfil, list) else 0)
+    p4.metric("Registros de TAF", len(taf_perfil) if isinstance(taf_perfil, list) else 0)
+
+    st.markdown("#### Identificação")
+    with st.container(border=True):
+        with st.form("qg_editar_perfil"):
+            nome_perfil_novo = st.text_input("Nome exibido no QG", value=nome_perfil, max_chars=60)
+            avatar_perfil_novo = st.selectbox(
+                "Emblema do perfil", opcoes_avatar_perfil,
+                index=opcoes_avatar_perfil.index(avatar_salvo_perfil),
+                help="O emblema aparece no cartão de perfil da barra lateral.",
+            )
+            salvar_perfil = st.form_submit_button("Salvar meu perfil", type="primary", use_container_width=True)
+        if salvar_perfil:
+            if not nome_perfil_novo.strip():
+                st.error("Digite um nome para exibir no perfil.")
+            else:
+                conta_perfil["nome"] = nome_perfil_novo.strip()
+                conta_perfil["avatar"] = avatar_perfil_novo
+                salvar_usuarios({user_atual: conta_perfil})
+                st.session_state["nome_exibicao"] = nome_perfil_novo.strip()
+                st.toast("Perfil atualizado.", icon="✅")
+                st.rerun()
+
+    with st.container(border=True):
+        st.markdown("#### 🔐 Área administrativa")
+        st.caption("O acesso à Central Administrativa continua protegido pela senha master da conta proprietária.")
+        st.button(
+            "Abrir a área protegida", type="primary", use_container_width=True,
+            on_click=_navegar_qg, args=("🛡️ Módulo 24 · Central Administrativa",),
+        )
+
+elif menu == "📊 Painel & Rotina Diária":
     st.title(f"📊 QG EsPCEx - Painel de Prontidão de {nome_cadete}")
     st.caption("Visão integrada dos estudos noturnos, treino físico da madrugada, trabalho no campo e realização da AMSP.")
     
@@ -1807,7 +2563,119 @@ elif menu == "🦉 Portal Estratégia Militares":
 # -----------------------------------------------------------------------------
 # MÓDULO 3: Treino TAF + Player de Música Spotify
 # -----------------------------------------------------------------------------
-#
+elif menu == "🏋️ Treino TAF + Spotify":
+    st.title("🏋️ Treino TAF + Spotify")
+    st.caption("Registre seus resultados, acompanhe a evolução e abra o player de áudio na mesma tela.")
+
+    registros_taf = db.get("taf", [])
+    if not isinstance(registros_taf, list):
+        registros_taf = []
+    registros_taf = [item for item in registros_taf if isinstance(item, dict)]
+    db["taf"] = registros_taf
+
+    aba_registro_taf, aba_evolucao_taf, aba_spotify_taf = st.tabs(
+        ["📝 Registrar resultado", "📈 Minha evolução", "🎧 Spotify"]
+    )
+
+    with aba_registro_taf:
+        st.markdown("#### Bateria TAF")
+        with st.form("form_treino_taf_usuario", clear_on_submit=True):
+            data_treino_taf = st.date_input("Data do registro", datetime.date.today())
+            taf_col1, taf_col2, taf_col3, taf_col4 = st.columns(4)
+            corrida_12min = taf_col1.number_input(
+                "Corrida em 12 min (metros)", min_value=0, max_value=6000, value=0, step=50
+            )
+            barra_reps = taf_col2.number_input(
+                "Barra fixa (repetições)", min_value=0, max_value=100, value=0, step=1
+            )
+            abdominal_reps = taf_col3.number_input(
+                "Abdominal em 1 min", min_value=0, max_value=200, value=0, step=1
+            )
+            flexao_reps = taf_col4.number_input(
+                "Flexões (repetições)", min_value=0, max_value=200, value=0, step=1
+            )
+            taf_col5, taf_col6 = st.columns([1, 2])
+            natacao_segundos = taf_col5.number_input(
+                "Natação 50 m (segundos; 0 se não registrou)", min_value=0, max_value=900, value=0, step=1
+            )
+            observacao_taf = taf_col6.text_input("Observação (opcional)", max_chars=240)
+            salvar_taf = st.form_submit_button("💾 Salvar resultado", type="primary", use_container_width=True)
+
+        if salvar_taf:
+            if not any((corrida_12min, barra_reps, abdominal_reps, flexao_reps, natacao_segundos)):
+                st.warning("Informe pelo menos um resultado antes de salvar.")
+            else:
+                registros_taf.append({
+                    "id": uuid.uuid4().hex[:12],
+                    "Data": data_treino_taf.isoformat(),
+                    "Corrida 12 min (m)": int(corrida_12min),
+                    "Barra fixa (reps)": int(barra_reps),
+                    "Abdominal (reps/min)": int(abdominal_reps),
+                    "Flexões (reps)": int(flexao_reps),
+                    "Natação 50 m (s)": int(natacao_segundos) if natacao_segundos else "",
+                    "Observação": observacao_taf.strip(),
+                })
+                db["taf"] = registros_taf
+                salvar_dados_usuario(user_atual, db)
+                st.toast("Resultado do TAF salvo no seu perfil.", icon="🏋️")
+                st.rerun()
+
+        st.button(
+            "Abrir Pacer TAF avançado →",
+            on_click=_navegar_qg,
+            args=("🏃 Módulo 13: Pacer TAF",),
+        )
+
+    with aba_evolucao_taf:
+        if not registros_taf:
+            st.info("Ainda não há resultados registrados. Use a primeira aba para salvar sua bateria.")
+        else:
+            registros_ordenados_taf = sorted(
+                registros_taf,
+                key=lambda item: str(item.get("Data", item.get("data", ""))),
+                reverse=True,
+            )
+            df_historico_taf = pd.DataFrame(registros_ordenados_taf)
+            ultima_taf = registros_ordenados_taf[0]
+            corrida_valores_taf = [
+                int(item.get("Corrida 12 min (m)", item.get("corrida_12min_m", 0)) or 0)
+                for item in registros_taf
+            ]
+            barra_valores_taf = [
+                int(item.get("Barra fixa (reps)", item.get("barra_reps", 0)) or 0)
+                for item in registros_taf
+            ]
+            taf_m1, taf_m2, taf_m3 = st.columns(3)
+            taf_m1.metric("Registros", len(registros_taf))
+            taf_m2.metric("Melhor corrida · 12 min", f"{max(corrida_valores_taf, default=0)} m")
+            taf_m3.metric("Melhor barra fixa", f"{max(barra_valores_taf, default=0)} reps")
+
+            datas_corrida_taf = []
+            for item in registros_taf:
+                distancia = int(item.get("Corrida 12 min (m)", item.get("corrida_12min_m", 0)) or 0)
+                data_item = str(item.get("Data", item.get("data", "")))
+                if distancia > 0 and data_item:
+                    datas_corrida_taf.append({"Data": data_item, "Distância (m)": distancia})
+            if datas_corrida_taf:
+                st.markdown("#### Evolução da corrida")
+                fig_corrida_taf = px.line(
+                    pd.DataFrame(datas_corrida_taf).sort_values("Data"),
+                    x="Data", y="Distância (m)", markers=True,
+                    template="qg_enterprise",
+                )
+                st.plotly_chart(fig_corrida_taf, use_container_width=True)
+            st.markdown("#### Histórico salvo")
+            st.dataframe(df_historico_taf, use_container_width=True, hide_index=True)
+
+    with aba_spotify_taf:
+        st.markdown("#### 🎵 Player de treino")
+        st.caption("O player é fornecido pelo Spotify e pode solicitar autenticação ou abrir o aplicativo Spotify.")
+        components.iframe(
+            "https://open.spotify.com/embed/playlist/37i9dQZF1DX76Wlfdnj7bg?utm_source=generator&theme=0",
+            height=430,
+            scrolling=True,
+        )
+
 # -----------------------------------------------------------------------------
 # MÓDULO 4: Alternância EFA & AMSP (15/15) - Disciplinas da EFA
 # -----------------------------------------------------------------------------
@@ -2017,6 +2885,26 @@ elif menu == "🌾 Alternância EFA & AMSP (15/15)":
 # MÓDULO 5: Pomodoro Tático (Com Alarme Sonoro)
 # -----------------------------------------------------------------------------
 elif menu == "⏱️ Pomodoro Tático (com Alarme)":
+    def tocar_alarme_sonoro():
+        components.html("""
+            <script>
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            function playBeep(freq, duration) {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = "sine";
+                osc.frequency.value = freq;
+                gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + duration);
+            }
+            playBeep(880, 0.25);
+            setTimeout(() => playBeep(1046.5, 0.4), 300);
+            </script>
+        """, height=0)
+
     st.title("⏱️ Pomodoro Noturno com Alarme Sonoro")
     st.caption("Temporizador para os blocos de estudo da noite. Ao chegar ao zero, um alarme sonoro soará automaticamente.")
 
@@ -3237,7 +4125,7 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
         with col_t1:
             t_cor = st.slider("Corrida 12min (m)", 1500, 3200, 2200, 50, key="t1")
             t_bar = st.slider("Barra (reps)", 0, 15, 2, key="t2")
-            t_nat = st.slider("Natação 50m (s)", 100, 20, 60, key="t3") 
+            t_nat = st.slider("Natação 50m (s)", 20, 120, 60, key="t3")
             t_abd = st.slider("Abdominal (reps)", 0, 60, 25, key="t4")
             t_flx = st.slider("Flexões (reps)", 0, 40, 15, key="t5")
 
@@ -3413,30 +4301,7 @@ elif menu == "🥗 Nutrição & Calorias":
         </style>
     """, unsafe_allow_html=True)
 
-    # =====================================================================
-    # 🖥️ 2. CABEÇALHO HTML ANIMADO (DASHBOARD)
-    # =====================================================================
-    # Este componente renderiza HTML puro, CSS local e um script JavaScript 
-    # para criar um relógio que roda em tempo real independentemente do Python.
-    components.html("""
-        <div style="background: linear-gradient(270deg, #0f2027, #203a43, #2c5364, #0f2027); background-size: 400% 400%; animation: gradientShift 8s ease infinite, neonPulse 3s infinite; padding: 25px; border-radius: 16px; text-align: center; color: white; font-family: 'Segoe UI', sans-serif; border: 1px solid rgba(0,201,255,0.3);">
-            <h1 style="margin:0; font-size: 28px; letter-spacing: 2px; text-shadow: 0 0 10px #00C9FF;">⚡ AGROLAR ENTERPRISE</h1>
-            <p style="color: #92FE9D; font-size: 14px; margin-top: 5px; font-weight: bold; text-transform: uppercase; letter-spacing: 3px;">Núcleo de Inteligência Corporal</p>
-            <div id="live-clock" style="margin-top: 15px; font-size: 18px; font-family: monospace; color: #FFF; background: rgba(0,0,0,0.5); display: inline-block; padding: 8px 20px; border-radius: 20px; border: 1px solid rgba(146,254,157,0.3); box-shadow: inset 0 0 10px rgba(0,0,0,0.8);"></div>
-            <style>
-                @keyframes gradientShift { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
-                @keyframes neonPulse { 0% { box-shadow: 0 0 10px rgba(0,201,255,0.2); } 50% { box-shadow: 0 0 20px rgba(0,201,255,0.5); } 100% { box-shadow: 0 0 10px rgba(0,201,255,0.2); } }
-            </style>
-            <!-- Script JS para o relógio em tempo real -->
-            <script>
-                setInterval(() => {
-                    const now = new Date();
-                    document.getElementById('live-clock').innerText = "⏱️ " + now.toLocaleTimeString('pt-BR') + " | ONLINE";
-                }, 1000);
-            </script>
-        </div>
-    """, height=160)
-
+    # O cabeçalho animado e o relógio são compartilhados por todas as páginas acima do conteúdo do módulo.
     st.markdown("<h2 class='premium-title'>🥗 Painel Nutricional</h2>", unsafe_allow_html=True)
 
     # =====================================================================
@@ -4840,20 +5705,20 @@ elif "módulo 22" in menu.lower() or "configurações" in menu.lower():
                     st.error("As senhas informadas não coincidem ou estão vazias.")
 
         st.markdown("---")
-        st.markdown("##### 📱 Gestão de Conexões Salvas (Cookies de 30 Dias)")
-        st.caption("Caso deseje encerrar a sessão em todos os dispositivos onde o login foi salvo:")
+        st.markdown("##### 📱 Gestão de sessões ativas")
+        st.caption("Revoga sessões em nuvem e limpa registros de autenticação legados:")
 
         if st.button("🧹 Revogar Todas as Sessões Ativas", key="btn_clear_sessions_master", use_container_width=True):
-            conn = sqlite3.connect("dados_qg.db")
-            c = conn.cursor()
             try:
-                c.execute("DELETE FROM sessoes_usuario")
-                conn.commit()
-                st.success("✅ Todas as conexões salvas foram apagadas. Será necessário efetuar login novamente.")
+                _qg_revogar_todas_sessoes()
+                try:
+                    with sqlite3.connect("dados_qg.db") as conn:
+                        conn.execute("DELETE FROM sessoes_usuario")
+                except sqlite3.Error:
+                    pass
+                st.success("✅ As sessões remotas foram revogadas. Cada cadete precisará autenticar novamente.")
             except Exception as e:
                 st.error(f"Erro ao limpar sessões: {e}")
-            finally:
-                conn.close()
             st.rerun()
 
     # -----------------------------------------------------------------------------
@@ -5238,16 +6103,12 @@ elif "módulo 24" in menu.lower():
         pin_admin_salvo = ""
     pin_admin_salvo = pin_admin_salvo or os.environ.get("QG_ADMIN_PIN", "").strip()
     pin_temporario = get_config_adm("admin_pin_temporario", "0") == "1"
-
-    # First-use temporary credential requested by the owner. It is forcibly changed
-    # to a strong private credential before any admin tools become visible.
-    if not pin_admin_salvo and admin_owner and admin_owner == primeiro_usuario_admin:
-        pin_admin_salvo = hash_senha("16/11")
-        pin_temporario = True
-        set_config_adm("senha_admin", pin_admin_salvo)
-        set_config_adm("admin_pin_temporario", "1")
-        set_config_adm("data_criacao_senha_admin", datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
-        registrar_log("CONFIG_ADMIN", "Credencial temporária inicial criada para a conta proprietária.")
+    if pin_temporario:
+        # Migra a antiga credencial pública de primeiro acesso e exige uma nova senha privada.
+        pin_admin_salvo = os.environ.get("QG_ADMIN_PIN", "").strip()
+        set_config_adm("senha_admin", "")
+        set_config_adm("admin_pin_temporario", "0")
+        pin_temporario = False
 
     if "admin_autenticado" not in st.session_state: st.session_state["admin_autenticado"] = False
     if st.session_state["admin_autenticado"] and user_atual != admin_owner:
@@ -5272,29 +6133,25 @@ elif "módulo 24" in menu.lower():
             st.warning("🛡️ ZONA RESTRITA · Acesso exclusivo à conta proprietária")
             if not admin_owner or user_atual != admin_owner:
                 st.error("Somente a conta que criou o primeiro cadastro do QG pode acessar o painel administrativo.")
-            elif pin_temporario:
-                st.info("A senha temporária é 16/11. Troque-a agora por uma senha privada forte para liberar o painel.")
-                with st.form("form_trocar_pin_temporario"):
-                    pin_atual_temp = st.text_input("Senha temporária", type="password")
-                    pin_nova_temp = st.text_input("Nova senha privada", type="password", help="Mínimo de 12 caracteres, com letras e números.")
-                    pin_nova_confirma = st.text_input("Confirme a nova senha", type="password")
-                    if st.form_submit_button("Definir minha senha e abrir o painel", type="primary", use_container_width=True):
-                        if not verificar_credencial(pin_atual_temp, pin_admin_salvo):
-                            st.error("A senha temporária está incorreta.")
-                        elif not senha_forte(pin_nova_temp):
+            elif not pin_admin_salvo:
+                st.info("Primeiro acesso: crie uma senha master privada para proteger esta área.")
+                with st.form("form_configurar_pin_admin"):
+                    pin_nova_master = st.text_input("Criar senha master", type="password", help="Use pelo menos 12 caracteres, incluindo letras e números.")
+                    pin_confirma_master = st.text_input("Confirmar senha master", type="password")
+                    if st.form_submit_button("Criar senha e abrir a área", type="primary", use_container_width=True):
+                        if not senha_forte(pin_nova_master):
                             st.error("Use pelo menos 12 caracteres, incluindo letras e números.")
-                        elif pin_nova_temp != pin_nova_confirma:
-                            st.error("As novas senhas não coincidem.")
+                        elif pin_nova_master != pin_confirma_master:
+                            st.error("As senhas não coincidem.")
                         else:
-                            set_config_adm("senha_admin", hash_senha(pin_nova_temp))
+                            set_config_adm("senha_admin", hash_senha(pin_nova_master))
                             set_config_adm("admin_pin_temporario", "0")
+                            set_config_adm("admin_owner", user_atual)
                             set_config_adm("data_criacao_senha_admin", datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
-                            registrar_log("ALTERACAO_PIN", "Senha temporária substituída pela senha privada do proprietário.")
+                            registrar_log("CONFIG_ADMIN", "Senha master privada criada pela conta proprietária.")
                             st.session_state["admin_autenticado"] = True
                             st.session_state["admin_ultima_atividade"] = time.time()
                             st.rerun()
-            elif not pin_admin_salvo:
-                st.error("A credencial administrativa não está configurada. Defina QG_ADMIN_PIN no ambiente.")
             else:
                 with st.form("form_login_admin_master"):
                     pin_digitado = st.text_input("🔑 Sua senha administrativa", type="password")
@@ -5773,6 +6630,7 @@ elif "módulo 24" in menu.lower():
                                 sidecar.unlink()
                         os.replace(tmp_restore, caminho_db)
                         tmp_restore = None
+                        _qg_persistir_sqlite_restaurado()
                         registrar_log("DB_RESTAURADO", f"Banco restaurado pelo proprietário; cópia anterior: {nome_backup_anterior.name}")
                         st.success(f"Banco restaurado. Cópia anterior salva em {nome_backup_anterior}.")
                         st.rerun()
@@ -5841,12 +6699,16 @@ elif "módulo 24" in menu.lower():
                 confirmar_revogacao_sessoes = st.checkbox("Confirmo revogar todas as sessões persistentes", key="confirmar_revogacao_sessoes_admin")
                 if st.button("🧹 Revogar sessões persistentes", key="revogar_sessoes_admin", disabled=not confirmar_revogacao_sessoes):
                     try:
-                        with sqlite3.connect("dados_qg.db", timeout=5) as conn:
-                            conn.execute("DELETE FROM sessoes_usuario")
+                        _qg_revogar_todas_sessoes()
+                        try:
+                            with sqlite3.connect("dados_qg.db", timeout=5) as conn:
+                                conn.execute("DELETE FROM sessoes_usuario")
+                        except sqlite3.Error:
+                            pass
                         registrar_log("SESSOES_REVOGADAS", "O proprietário revogou as sessões persistentes.")
                         st.success("Sessões persistentes revogadas.")
                         st.rerun()
-                    except sqlite3.Error as erro_sessoes:
+                    except Exception as erro_sessoes:
                         st.error(f"Não foi possível revogar as sessões: {erro_sessoes}")
 
         # =========================================================================
@@ -6505,14 +7367,14 @@ elif menu == "🧠 Memória Avançada":
 
 elif menu == "🗓️ Plano Semanal Automático":
     st.title("🗓️ Plano Semanal Automático")
-    st.caption("Monta uma semana de estudo priorizando matérias com menor aproveitamento e tópicos ainda não dominados.")
+    st.caption("Distribui blocos conforme seu desempenho, tópicos prioritários do edital e revisões vencidas. Ao recalcular, preserva as tarefas concluídas que ainda coincidirem.")
     dias_semana = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
     plano_salvo = db.get("plano_semanal", {})
     with st.form("form_gerar_plano_semanal"):
         p1, p2 = st.columns([1, 2])
         horas_dia = p1.slider("Horas de estudo por dia", 1, 8, int(plano_salvo.get("horas_dia", 3)))
         dias_disponiveis = p2.multiselect("Dias disponíveis", dias_semana, default=plano_salvo.get("dias", dias_semana[:6]))
-        gerar_plano = st.form_submit_button("Gerar plano da próxima semana", type="primary", use_container_width=True)
+        gerar_plano = st.form_submit_button("Recalcular meu plano semanal", type="primary", use_container_width=True, disabled=not dias_disponiveis)
 
     if gerar_plano:
         edital = [x for x in db.get("edital", []) if isinstance(x, dict) and x.get("Matéria")]
@@ -6526,6 +7388,20 @@ elif menu == "🗓️ Plano Semanal Automático":
                 stats = desempenho.setdefault(materia, [0.0, 0.0])
                 stats[0] += float(sessao.get("Questões", 0) or 0)
                 stats[1] += float(sessao.get("Acertos", 0) or 0)
+        revisoes_vencidas = listar_memorias(user_atual, limite=500, apenas_revisar=True)
+        revisoes_por_materia = {}
+        for nota_revisao in revisoes_vencidas:
+            materia_revisao = str(nota_revisao.get("materia", "Geral")).strip() or "Geral"
+            revisoes_por_materia[materia_revisao] = revisoes_por_materia.get(materia_revisao, 0) + 1
+        erros_por_materia = {}
+        erros_usuario = db.get("erros", [])
+        if isinstance(erros_usuario, list):
+            for erro_usuario in erros_usuario:
+                if isinstance(erro_usuario, dict):
+                    materia_erro = str(erro_usuario.get("Matéria", erro_usuario.get("materia", ""))).strip()
+                    if materia_erro:
+                        erros_por_materia[materia_erro] = erros_por_materia.get(materia_erro, 0) + 1
+
         ranking = []
         for materia in materias:
             temas = [x for x in edital if str(x.get("Matéria")) == materia]
@@ -6534,38 +7410,67 @@ elif menu == "🗓️ Plano Semanal Automático":
             altas = sum(x.get("Prioridade") == "Alta" for x in pendentes)
             questoes, acertos = desempenho.get(materia, (0.0, 0.0))
             aproveitamento = acertos / questoes if questoes else 0.5
-            score = 1 + (1 - aproveitamento) * 4 + (len(pendentes) / total) * 2 + altas / total
-            ranking.append((score, materia, pendentes or temas))
+            pendencias_revisao = revisoes_por_materia.get(materia, 0)
+            pendencias_erros = erros_por_materia.get(materia, 0)
+            score = (
+                1 + (1 - aproveitamento) * 4
+                + (len(pendentes) / total) * 2
+                + altas / total
+                + min(1.5, pendencias_revisao * 0.35)
+                + min(1.2, pendencias_erros * 0.3)
+            )
+            temas_priorizados = sorted(
+                pendentes or temas,
+                key=lambda tema: (tema.get("Prioridade") != "Alta", tema.get("Status") == "Revisado / Dominado"),
+            )
+            ranking.append((score, materia, temas_priorizados))
         ranking.sort(key=lambda x: x[0], reverse=True)
         if not ranking:
             ranking = [(1.0, "Estudo geral", [])]
 
         today = datetime.date.today()
         tarefas_plano = []
-        due_notes = listar_memorias(user_atual, limite=100, apenas_revisar=True)
+        due_notes = revisoes_vencidas
         slots_por_dia = max(1, min(6, int(horas_dia)))
         topic_cursors = {materia: 0 for _, materia, _ in ranking}
+        blocos_por_materia = {materia: 0 for _, materia, _ in ranking}
+        revisao_cursor = 0
+        concluidas_antes = {
+            (str(t.get("data", "")), str(t.get("materia", "")), str(t.get("atividade", "")))
+            for t in plano_salvo.get("tarefas", [])
+            if isinstance(t, dict) and t.get("concluida")
+        }
         for dia_nome in dias_disponiveis:
             weekday_index = dias_semana.index(dia_nome)
             offset = (weekday_index - today.weekday()) % 7
             data_plano = today + datetime.timedelta(days=offset)
             for bloco in range(slots_por_dia):
-                if bloco == 0 and due_notes:
-                    atividade = f"Revisar {due_notes[0].get('materia', 'anotações')} pela memória espaçada"
+                if bloco == 0 and revisao_cursor < len(due_notes):
+                    nota_revisao = due_notes[revisao_cursor]
+                    revisao_cursor += 1
+                    atividade = f"Revisão espaçada · {str(nota_revisao.get('texto', 'anotação'))[:90]}"
                     materia = "Revisão"
                 else:
-                    _, materia, temas = ranking[(weekday_index + bloco) % len(ranking)]
+                    # Seleção ponderada: matérias prioritárias recebem mais blocos, sem excluir as demais.
+                    _, materia, temas = max(
+                        ranking,
+                        key=lambda item: item[0] / (1 + blocos_por_materia[item[1]] * 0.65),
+                    )
+                    blocos_por_materia[materia] += 1
                     cursor = topic_cursors[materia]
                     if temas:
                         tema = temas[cursor % len(temas)].get("Tópico", materia)
-                        atividade = ("Teoria e resumo" if bloco % 2 == 0 else "Questões e análise de erros") + f" · {tema}"
+                        atividade = ("Teoria e resumo" if cursor % 2 == 0 else "Questões e análise de erros") + f" · {tema}"
                         topic_cursors[materia] += 1
                     else:
                         atividade = "Revisão de conteúdo e resolução de questões"
-                tarefas_plano.append({
+                tarefa_nova = {
                     "data": str(data_plano), "dia": dia_nome, "bloco": bloco + 1,
                     "materia": materia, "atividade": atividade, "minutos": 50, "concluida": False,
-                })
+                }
+                assinatura_tarefa = (tarefa_nova["data"], tarefa_nova["materia"], tarefa_nova["atividade"])
+                tarefa_nova["concluida"] = assinatura_tarefa in concluidas_antes
+                tarefas_plano.append(tarefa_nova)
         db["plano_semanal"] = {
             "id_plano": uuid.uuid4().hex[:10],
             "gerado_em": datetime.datetime.now().isoformat(timespec="minutes"),
@@ -6855,7 +7760,10 @@ elif menu == "📲 Instalar como App":
 
     st.info("Esse atalho abre o QG pelo navegador e facilita o acesso. No Community Cloud, o app Streamlit não controla o manifesto nem o service worker na raiz do site; por isso, a instalação como PWA nativa pode não aparecer. Uma PWA completa exige uma camada web externa configurada para servir esses arquivos no escopo correto.")
     with st.expander("🔐 Persistência do login e da memória no Community Cloud"):
-        st.warning("O QG grava contas e progresso em arquivos locais (como usuarios.json, dados_usuarios/ e dados_qg.db). No Community Cloud, arquivos criados durante a execução não têm persistência garantida entre reinicializações ou novas instâncias. Para garantir que login, memória, quiz e progresso não se percam, conecte o app a um banco de dados persistente externo e guarde as credenciais em Secrets.")
+        if _qg_cloud_enabled():
+            st.success("PostgreSQL conectado. Cadastros, progresso, sessões e o banco administrativo são sincronizados com a base persistente configurada em Secrets.")
+        else:
+            st.warning("A persistência PostgreSQL ainda não está configurada. Sem QG_DATABASE_URL em Secrets, os arquivos locais podem não sobreviver a reinicializações ou novas instâncias do Community Cloud.")
         st.caption("Não coloque senha de banco, token ou chave privada no código nem em um repositório público.")
     st.button("Voltar ao painel", on_click=_navegar_qg, args=("📊 Painel & Rotina Diária",))
 
@@ -7412,3 +8320,145 @@ elif menu == "🎯 Missões Diárias":
             file_name=f"ranking_missoes_qg_{hoje_missoes}.csv",
             mime="text/csv",
         )
+
+
+
+else:
+    st.info(
+        f"A tela **{menu}** ainda não tem uma implementação correspondente no código fornecido. "
+        "As demais telas disponíveis continuam acessíveis pelo menu lateral."
+    )
+
+# Acabamento final: garante que o tema 3D também prevaleça sobre estilos de módulos.
+st.markdown("""<style>
+.stApp {
+  background:radial-gradient(ellipse at 12% 0%,rgba(27,112,139,.22),transparent 36%),radial-gradient(ellipse at 88% 13%,rgba(73,80,163,.23),transparent 35%),linear-gradient(145deg,#050b14 0%,#081523 46%,#0c1022 100%) !important;
+}
+/* Entrada suave compartilhada: mantém a mesma abertura visual do Módulo 14 em cada tela. */
+@keyframes qgM14PageEntrance { from { opacity:0; transform:translateY(10px) scale(.995); } to { opacity:1; transform:translateY(0) scale(1); } }
+/* O container padrão conserva o layout largo do Módulo 14 e anima apenas ao carregar a tela. */
+.block-container { animation:qgM14PageEntrance .55s ease-out both; }
+[data-testid="stVerticalBlockBorderWrapper"] > div,
+[data-testid="stExpander"], [data-testid="stForm"], [data-testid="stTabs"] {
+  border-color:rgba(123,196,222,.23) !important;
+  border-radius:19px !important;
+  background:linear-gradient(145deg,rgba(17,39,59,.79),rgba(7,18,32,.91)) !important;
+  box-shadow:0 17px 40px rgba(0,0,0,.33),inset 0 1px rgba(255,255,255,.07),inset 0 -1px rgba(0,0,0,.22) !important;
+  backdrop-filter:blur(15px); -webkit-backdrop-filter:blur(15px);
+  transform-style:preserve-3d;
+}
+[data-testid="stMetric"] {
+  border:1px solid rgba(99,229,220,.32) !important; border-radius:18px !important;
+  background:radial-gradient(ellipse at 18% 0%,rgba(99,229,220,.17),transparent 55%),linear-gradient(145deg,rgba(21,52,76,.98),rgba(7,18,32,.99)) !important;
+  box-shadow:0 17px 34px rgba(0,0,0,.39),inset 0 2px rgba(255,255,255,.10),inset 0 -2px rgba(0,0,0,.27) !important;
+  padding:15px !important; transform-style:preserve-3d;
+  animation:qgM14MetricFloat 4s ease-in-out infinite;
+  transition:transform .3s ease,border-color .3s ease,box-shadow .3s ease !important;
+}
+/* Elevação leve e contínua das métricas, inspirada nos cartões flutuantes do Módulo 14. */
+@keyframes qgM14MetricFloat { 0%,100% { translate:0 0; } 50% { translate:0 -5px; } }
+[data-testid="stMetric"]:hover {
+  transform:perspective(800px) scale(1.035) rotateX(2deg) !important;
+  border-color:#92fe9d !important;
+  box-shadow:0 12px 30px rgba(0,201,255,.22),0 0 17px rgba(146,254,157,.13),inset 0 2px rgba(255,255,255,.12) !important;
+}
+[data-testid="stMetricValue"] { color:#7cf5e6 !important; text-shadow:0 0 20px rgba(99,229,220,.31) !important; }
+[data-testid="stMetricLabel"] { color:#a9bdd0 !important; }
+.stButton > button, .stFormSubmitButton > button, [data-testid="stDownloadButton"] > button {
+  border:1px solid rgba(99,229,220,.48) !important; border-radius:12px !important;
+  color:#f1ffff !important; background:linear-gradient(45deg,rgba(0,0,0,.38),rgba(0,201,255,.17),rgba(146,254,157,.12)) !important;
+  box-shadow:0 5px 0 #074b5a,0 14px 27px rgba(24,143,177,.25),inset 0 1px rgba(255,255,255,.24) !important;
+  transition:transform .2s ease,filter .2s ease,box-shadow .2s ease !important;
+}
+.stButton > button:hover, .stFormSubmitButton > button:hover, [data-testid="stDownloadButton"] > button:hover {
+  transform:perspective(700px) translateY(-4px) rotateX(4deg) scale(1.02) !important; filter:brightness(1.16) !important;
+  border-color:#92fe9d !important;
+  box-shadow:0 8px 0 #074b5a,0 22px 38px rgba(24,143,177,.35),0 0 24px rgba(99,229,220,.20) !important;
+}
+[data-baseweb="input"] > div, [data-baseweb="select"] > div, [data-baseweb="textarea"] > div, textarea, input {
+  border-color:rgba(99,229,220,.29) !important; border-radius:12px !important;
+  background:rgba(5,16,27,.88) !important; box-shadow:inset 0 3px 9px rgba(0,0,0,.38),0 3px 9px rgba(0,0,0,.12) !important;
+}
+[data-baseweb="input"] > div:focus-within, [data-baseweb="select"] > div:focus-within, textarea:focus, input:focus {
+  border-color:#63e5dc !important; box-shadow:0 0 0 2px rgba(99,229,220,.14),0 0 22px rgba(99,229,220,.23) !important;
+}
+[data-testid="stPlotlyChart"], [data-testid="stGraph"], [data-testid="stDataFrame"], [data-testid="stTable"] {
+  border-radius:17px !important; filter:drop-shadow(0 15px 25px rgba(0,0,0,.20));
+  transition:transform .3s ease,filter .3s ease !important;
+}
+[data-testid="stPlotlyChart"]:hover, [data-testid="stGraph"]:hover, [data-testid="stDataFrame"]:hover {
+  transform:perspective(1100px) translateY(-4px) rotateX(1.5deg) !important;
+  filter:drop-shadow(0 22px 30px rgba(39,177,199,.20)) !important;
+}
+[data-testid="stSidebar"] {
+  background:radial-gradient(ellipse at 0 0,rgba(26,129,143,.19),transparent 42%),linear-gradient(180deg,#071320,#040811) !important;
+  border-right:1px solid rgba(99,229,220,.23) !important; box-shadow:22px 0 70px rgba(0,0,0,.48) !important;
+}
+/* O seletor móvel fica oculto em telas grandes e aparece como acesso rápido em celulares/tablets. */
+.st-key-qg_mobile_navigation { display:none; }
+@media(max-width:768px) {
+  .st-key-qg_mobile_navigation { display:block !important; margin:.35rem 0 1rem; padding:10px 13px 2px; border:1px solid rgba(99,229,220,.25); border-radius:15px; background:linear-gradient(145deg,rgba(17,39,59,.88),rgba(7,18,32,.96)); box-shadow:0 12px 28px rgba(0,0,0,.28),inset 0 1px rgba(255,255,255,.08); }
+  .st-key-qg_mobile_navigation [data-testid="stWidgetLabel"] { color:#91eee2 !important; font-size:.78rem; font-weight:750; letter-spacing:.04em; }
+  .st-key-qg_mobile_navigation [data-baseweb="select"] { min-height:46px; }
+}
+[data-testid="stAlert"], [data-testid="stToast"] { border-radius:15px !important; box-shadow:0 15px 34px rgba(0,0,0,.27) !important; backdrop-filter:blur(14px); }
+[data-testid="stProgress"] > div > div { background:linear-gradient(90deg,#63e5dc,#78a5ff,#b09aff) !important; box-shadow:0 0 20px rgba(99,229,220,.31) !important; }
+.routine-card { border-color:rgba(99,229,220,.35) !important; background:radial-gradient(ellipse at 90% 0%,rgba(120,165,255,.16),transparent 47%),linear-gradient(145deg,#14354d,#06111f) !important; box-shadow:12px 17px 32px rgba(0,0,0,.43),inset 2px 2px rgba(255,255,255,.09) !important; }
+.qg-hero { border-color:rgba(99,229,220,.47) !important; box-shadow:0 28px 66px rgba(0,0,0,.48),inset 0 2px rgba(255,255,255,.14),0 0 38px rgba(66,202,220,.10) !important; }
+hr { border-color:rgba(99,229,220,.18) !important; }
+@media (prefers-reduced-motion:reduce) { *,*::before,*::after { transition-duration:.01ms !important; animation-duration:.01ms !important; animation-iteration-count:1 !important; } }
+</style>""", unsafe_allow_html=True)
+
+# Nitidez tipográfica: usa fontes presentes no dispositivo, remove brilhos sobre os glifos
+# e deixa o relevo nos cartões e fundos, onde ele não interfere na leitura.
+st.markdown("""<style>
+.stApp {
+  font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif !important;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+  text-rendering:optimizeLegibility;
+}
+.stApp [data-testid="stMarkdownContainer"] *,
+.stApp [data-testid="stCaptionContainer"],
+.stApp [data-testid="stWidgetLabel"] *,
+.stApp [data-testid="stMetric"] *,
+.stApp [data-testid="stDataFrame"] *,
+.stApp [data-testid="stTable"] *,
+.stApp button, .stApp input, .stApp textarea, .stApp select {
+  text-shadow:none !important;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+/* Títulos ficam planos e definidos; o cubo, a luz e as sombras das superfícies continuam em 3D. */
+.stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4,
+.qg-hero-title, .qg-hero-auth .qg-hero-title,
+.qg-hero-auth .qg-hero-kicker, .qg-hero-auth .qg-hero-subtitle,
+.routine-card h4, [data-testid="stMetricValue"] {
+  text-shadow:none !important;
+}
+/* O texto dos cartões permanece no plano de leitura, mesmo quando a superfície ganha perspectiva. */
+.qg-hero-auth .qg-hero-copy,
+.qg-start-card h3, .qg-start-card p {
+  transform:none !important;
+}
+/* Faz os títulos de todos os módulos seguirem o título premium do Módulo 14. */
+@keyframes qgM14TitleGradient { 0%,100% { background-position:0% 50%; } 50% { background-position:100% 50%; } }
+[data-testid="stMain"] [data-testid="stHeading"] h1,
+[data-testid="stMain"] [data-testid="stHeading"] h2,
+[data-testid="stMain"] .premium-title {
+  color:#8df2dc !important;
+  background:linear-gradient(100deg,#00c9ff 0%,#92fe9d 48%,#00c9ff 100%);
+  background-size:200% 200%;
+  background-clip:text;
+  -webkit-background-clip:text;
+  -webkit-text-fill-color:transparent;
+  font-weight:800 !important;
+  letter-spacing:.035em;
+  text-transform:uppercase;
+  text-shadow:none !important;
+  animation:qgM14TitleGradient 7s ease-in-out infinite;
+}
+/* Alinha o espaço dos títulos para que cada página comece com a mesma hierarquia visual. */
+[data-testid="stMain"] [data-testid="stHeading"] { margin-top:.35rem; margin-bottom:.75rem; }
+@media(prefers-reduced-motion:reduce) { [data-testid="stMain"] [data-testid="stHeading"] h1, [data-testid="stMain"] [data-testid="stHeading"] h2, [data-testid="stMain"] .premium-title { animation:none !important; } }
+</style>""", unsafe_allow_html=True)
