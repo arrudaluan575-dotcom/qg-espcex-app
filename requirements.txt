@@ -4,4 +4,3 @@ plotly
 openpyxl
 supabase
 numpy
-psycopg
