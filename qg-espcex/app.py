@@ -11,7 +11,6 @@ import uuid
 import html
 import datetime
 import sqlite3
-import threading
 import secrets as py_secrets
 import urllib.request
 from pathlib import Path
@@ -31,210 +30,6 @@ _USERS_STORE_PATH = Path("usuarios.json")
 _ITERATIONS = 600_000
 _ATTEMPT_FILE = Path(".qg_login_attempts.json")
 _USER_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
-_SQLITE_CONNECT_LOCAL = sqlite3.connect
-
-
-def _qg_database_url() -> str:
-    """Lê a conexão PostgreSQL apenas de Secrets ou de uma variável de ambiente."""
-    try:
-        valor = st.secrets.get("QG_DATABASE_URL", "")
-    except Exception:
-        valor = ""
-    return str(valor or os.environ.get("QG_DATABASE_URL", "")).strip()
-
-
-def _qg_cloud_enabled() -> bool:
-    return bool(_qg_database_url())
-
-
-@st.cache_resource(show_spinner=False)
-def _qg_initialize_cloud_storage(database_url: str) -> bool:
-    """Cria as tabelas de contas, progresso, tentativas, sessões e snapshot SQLite."""
-    import psycopg
-
-    with psycopg.connect(database_url, connect_timeout=8) as conn:
-        conn.execute("""CREATE TABLE IF NOT EXISTS qg_users (
-            username TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS qg_user_data (
-            username TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS qg_login_attempts (
-            attempt_key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS qg_auth_sessions (
-            session_hash TEXT PRIMARY KEY, username TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL,
-            revoked_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )""")
-        conn.execute("CREATE INDEX IF NOT EXISTS qg_auth_sessions_username_idx ON qg_auth_sessions (username)")
-        conn.execute("""CREATE TABLE IF NOT EXISTS qg_sqlite_snapshot (
-            snapshot_id SMALLINT PRIMARY KEY CHECK (snapshot_id = 1),
-            payload BYTEA NOT NULL, version BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )""")
-    return True
-
-
-def _qg_pg_connection():
-    """Abre a base configurada e garante que o esquema do QG existe."""
-    database_url = _qg_database_url()
-    if not database_url:
-        raise RuntimeError("QG_DATABASE_URL não foi configurada.")
-    _qg_initialize_cloud_storage(database_url)
-    import psycopg
-    return psycopg.connect(database_url, connect_timeout=8)
-
-
-def _qg_json_or_default(texto, padrao):
-    try:
-        valor = json.loads(texto)
-        return valor
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return padrao
-
-
-def _qg_proteger_senha_legada(conta: dict) -> dict:
-    """Converte senhas em texto puro de cadastros antigos para PBKDF2 antes da migração."""
-    protegida = dict(conta)
-    senha = str(protegida.get("senha", ""))
-    e_hash_sha256 = len(senha) == 64 and all(c in "0123456789abcdef" for c in senha.casefold())
-    if senha and not senha.startswith("pbkdf2_sha256$") and not e_hash_sha256:
-        protegida["senha"] = hash_senha(senha)
-    return protegida
-
-
-@st.cache_resource(show_spinner=False)
-def _qg_sqlite_runtime_state():
-    """Mantém um único arquivo SQLite local sincronizado e serializado por processo."""
-    return {"lock": threading.RLock(), "ready": False, "database_url": "", "version": 0, "force_upload": False}
-
-
-def _qg_digest_file(path: Path) -> str | None:
-    try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError:
-        return None
-
-
-def _qg_write_local_sqlite_snapshot(path: Path, payload: bytes) -> None:
-    """Restaura atomicamente o snapshot cloud antes de abrir conexões SQLite."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(prefix=".qg-cloud-db-", suffix=".tmp", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "wb") as arquivo:
-            arquivo.write(payload)
-            arquivo.flush()
-            os.fsync(arquivo.fileno())
-        for sufixo in ("-wal", "-shm"):
-            Path(str(path) + sufixo).unlink(missing_ok=True)
-        os.replace(temp_name, path)
-    finally:
-        if os.path.exists(temp_name):
-            os.unlink(temp_name)
-
-
-def _qg_load_sqlite_snapshot(path: Path, database_url: str) -> int:
-    """Carrega o banco compartilhado completo do PostgreSQL na primeira conexão."""
-    with _qg_pg_connection() as conn:
-        row = conn.execute("SELECT version, payload FROM qg_sqlite_snapshot WHERE snapshot_id = 1").fetchone()
-    if row:
-        _qg_write_local_sqlite_snapshot(path, bytes(row[1]))
-        return int(row[0])
-    return 0
-
-
-def _qg_upload_sqlite_snapshot(path: Path, state: dict) -> None:
-    """Persiste as tabelas SQLite existentes sem reescrever os módulos que as usam."""
-    if not path.is_file():
-        return
-    payload = path.read_bytes()
-    with _qg_pg_connection() as conn:
-        # Um bloqueio transacional evita que dois processos sobrescrevam o mesmo snapshot ao mesmo tempo.
-        conn.execute("SELECT pg_advisory_xact_lock(%s)", (894784853,))
-        row = conn.execute("SELECT version FROM qg_sqlite_snapshot WHERE snapshot_id = 1 FOR UPDATE").fetchone()
-        versao_remota = int(row[0]) if row else 0
-        if versao_remota != int(state.get("version", 0)):
-            # Protege dados de outra instância: sinaliza para buscar a versão atual antes da próxima operação.
-            state["ready"] = False
-            state["force_upload"] = False
-            raise RuntimeError("O banco foi alterado por outra instância. Atualize a página e repita a operação.")
-        nova_versao = versao_remota + 1
-        conn.execute("""INSERT INTO qg_sqlite_snapshot (snapshot_id, payload, version, updated_at)
-            VALUES (1, %s, %s, NOW())
-            ON CONFLICT (snapshot_id) DO UPDATE
-            SET payload = EXCLUDED.payload, version = EXCLUDED.version, updated_at = NOW()""",
-            (payload, nova_versao))
-    state["version"] = nova_versao
-    state["force_upload"] = False
-
-
-class _QGCloudSQLiteConnection(sqlite3.Connection):
-    """Conexão SQLite compatível com pandas que sincroniza o arquivo ao fechar."""
-    def _qg_attach(self, state: dict, path: Path) -> None:
-        self._qg_state = state
-        self._qg_path = path
-        self._qg_changes_before = self.total_changes
-        self._qg_schema_before = self.execute("PRAGMA schema_version").fetchone()[0]
-        self._qg_cloud_closed = False
-
-    def close(self) -> None:
-        if getattr(self, "_qg_cloud_closed", True):
-            return
-        state = self._qg_state
-        try:
-            schema_after = self.execute("PRAGMA schema_version").fetchone()[0]
-            database_alterado = (
-                self.total_changes != self._qg_changes_before
-                or schema_after != self._qg_schema_before
-                or state.get("force_upload")
-            )
-            super().close()
-            if database_alterado:
-                _qg_upload_sqlite_snapshot(self._qg_path, state)
-        finally:
-            self._qg_cloud_closed = True
-            state["lock"].release()
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        try:
-            return super().__exit__(exc_type, exc_value, traceback)
-        finally:
-            self.close()
-
-    def __del__(self):
-        try:
-            self.close()
-        except Exception:
-            pass
-
-
-def _qg_sqlite_connect(database=":memory:", *args, **kwargs):
-    """Usa PostgreSQL como armazenamento durável do SQLite compartilhado quando configurado."""
-    if not _qg_cloud_enabled() or str(database) == ":memory:" or Path(str(database)).name != "dados_qg.db":
-        return _SQLITE_CONNECT_LOCAL(database, *args, **kwargs)
-
-    state = _qg_sqlite_runtime_state()
-    state["lock"].acquire()
-    try:
-        database_url = _qg_database_url()
-        path = Path(str(database)).resolve()
-        if not state["ready"] or state["database_url"] != database_url:
-            state["version"] = _qg_load_sqlite_snapshot(path, database_url)
-            state["database_url"] = database_url
-            state["ready"] = True
-            state["force_upload"] = state["version"] == 0
-        kwargs.pop("factory", None)
-        connection = _SQLITE_CONNECT_LOCAL(
-            database, *args, factory=_QGCloudSQLiteConnection, **kwargs
-        )
-        connection._qg_attach(state, path)
-        return connection
-    except Exception:
-        state["lock"].release()
-        raise
-
-
-# Redireciona apenas conexões para dados_qg.db; arquivos temporários e bancos :memory: seguem SQLite local.
-sqlite3.connect = _qg_sqlite_connect
 
 
 def normalizar_usuario(valor: str) -> str:
@@ -262,29 +57,6 @@ def verificar_senha(senha: str, armazenada: str) -> bool:
         return False
 
 def carregar_usuarios() -> dict:
-    if _qg_cloud_enabled():
-        with _qg_pg_connection() as conn:
-            rows = conn.execute("SELECT username, payload FROM qg_users ORDER BY username").fetchall()
-        if not rows:
-            # Migra automaticamente cadastros legados locais na primeira inicialização da base remota.
-            try:
-                legado = json.loads(_USERS_STORE_PATH.read_text(encoding="utf-8"))
-                if isinstance(legado, dict) and legado:
-                    migrados = {
-                        normalizar_usuario(username): _qg_proteger_senha_legada(conta)
-                        for username, conta in legado.items()
-                        if normalizar_usuario(username) and isinstance(conta, dict)
-                    }
-                    salvar_usuarios(migrados)
-                    return migrados
-            except (OSError, json.JSONDecodeError):
-                pass
-        usuarios = {}
-        for username, payload in rows:
-            usuario = _qg_json_or_default(payload, {})
-            if isinstance(usuario, dict):
-                usuarios[str(username)] = usuario
-        return usuarios
     try:
         data = json.loads(_USERS_STORE_PATH.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
@@ -293,44 +65,15 @@ def carregar_usuarios() -> dict:
 
 
 def carregar_usuario(username: str) -> dict:
-    """Busca apenas o cadastro necessário para login/perfil, sem carregar hashes de todas as contas."""
+    """Busca o cadastro local necessário para login ou perfil."""
     username = normalizar_usuario(username)
     if not username:
-        return {}
-    if _qg_cloud_enabled():
-        with _qg_pg_connection() as conn:
-            row = conn.execute("SELECT payload FROM qg_users WHERE username = %s", (username,)).fetchone()
-        if row:
-            valor = _qg_json_or_default(row[0], {})
-            return valor if isinstance(valor, dict) else {}
-        # Migração sob demanda do usuário correspondente, caso a instalação ainda tenha usuarios.json.
-        try:
-            legados = json.loads(_USERS_STORE_PATH.read_text(encoding="utf-8"))
-            conta = legados.get(username, {}) if isinstance(legados, dict) else {}
-            if isinstance(conta, dict) and conta:
-                conta = _qg_proteger_senha_legada(conta)
-                salvar_usuarios({username: conta})
-                return conta
-        except (OSError, json.JSONDecodeError):
-            pass
         return {}
     usuarios = carregar_usuarios()
     conta = usuarios.get(username, {})
     return conta if isinstance(conta, dict) else {}
 
 def salvar_usuarios(usuarios: dict) -> None:
-    if _qg_cloud_enabled():
-        with _qg_pg_connection() as conn:
-            for username, payload in usuarios.items():
-                username_limpo = normalizar_usuario(username)
-                if not username_limpo or not isinstance(payload, dict):
-                    continue
-                conn.execute("""INSERT INTO qg_users (username, payload, updated_at)
-                    VALUES (%s, %s, NOW())
-                    ON CONFLICT (username) DO UPDATE
-                    SET payload = EXCLUDED.payload, updated_at = NOW()""",
-                    (username_limpo, json.dumps(payload, ensure_ascii=False)))
-        return
     _USERS_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix="usuarios-", suffix=".tmp", dir=str(_USERS_STORE_PATH.parent))
     try:
@@ -351,15 +94,6 @@ def verificar_credencial(valor: str, armazenada: str) -> bool:
     return hmac.compare_digest(str(valor).encode("utf-8"), str(armazenada).encode("utf-8"))
 
 def tempo_bloqueio(chave: str) -> int:
-    if _qg_cloud_enabled():
-        with _qg_pg_connection() as conn:
-            row = conn.execute("SELECT payload FROM qg_login_attempts WHERE attempt_key = %s", (str(chave),)).fetchone()
-        estado_item = _qg_json_or_default(row[0], {}) if row else {}
-        try:
-            ate = float(estado_item.get("bloqueado_ate", 0))
-            return max(0, int(ate - time.time() + 0.999))
-        except (TypeError, ValueError, AttributeError):
-            return 0
     try:
         estado = json.loads(_ATTEMPT_FILE.read_text(encoding="utf-8"))
         item = estado.get(str(chave), {})
@@ -369,30 +103,6 @@ def tempo_bloqueio(chave: str) -> int:
         return 0
 
 def registrar_tentativa(chave: str, sucesso: bool) -> None:
-    if _qg_cloud_enabled():
-        chave = str(chave)
-        with _qg_pg_connection() as conn:
-            # Serializa tentativas da mesma conta, inclusive se mais de uma sessão tentar ao mesmo tempo.
-            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (chave,))
-            row = conn.execute(
-                "SELECT payload FROM qg_login_attempts WHERE attempt_key = %s FOR UPDATE", (chave,)
-            ).fetchone()
-            item = _qg_json_or_default(row[0], {}) if row else {}
-            agora = time.time()
-            if sucesso:
-                conn.execute("DELETE FROM qg_login_attempts WHERE attempt_key = %s", (chave,))
-                return
-            tentativas = [float(t) for t in item.get("tentativas", []) if agora - float(t) < 600]
-            tentativas.append(agora)
-            proximo = {"tentativas": tentativas, "bloqueado_ate": agora + 90 if len(tentativas) >= 5 else 0}
-            if proximo["bloqueado_ate"]:
-                proximo["tentativas"] = []
-            conn.execute("""INSERT INTO qg_login_attempts (attempt_key, payload, updated_at)
-                VALUES (%s, %s, NOW())
-                ON CONFLICT (attempt_key) DO UPDATE
-                SET payload = EXCLUDED.payload, updated_at = NOW()""",
-                (chave, json.dumps(proximo)))
-        return
     try:
         estado = json.loads(_ATTEMPT_FILE.read_text(encoding="utf-8"))
         if not isinstance(estado, dict):
@@ -453,33 +163,14 @@ def carregar_dados_usuario(username: str, edital_factory) -> dict:
     dados = _padrao(edital_factory)
     fonte = path
     legado = Path(f"dados_espcex_{normalizar_usuario(username)}.json")
-    migrar_para_nuvem = False
-    if _qg_cloud_enabled():
-        with _qg_pg_connection() as conn:
-            row = conn.execute("SELECT payload FROM qg_user_data WHERE username = %s", (normalizar_usuario(username),)).fetchone()
-        if row:
-            carregados = _qg_json_or_default(row[0], {})
-            if isinstance(carregados, dict):
-                dados.update(carregados)
-        else:
-            if not path.exists() and legado.is_file() and legado.resolve().parent == Path.cwd().resolve():
-                fonte = legado
-            try:
-                carregados = json.loads(fonte.read_text(encoding="utf-8"))
-                if isinstance(carregados, dict):
-                    dados.update(carregados)
-                    migrar_para_nuvem = fonte.is_file()
-            except (OSError, json.JSONDecodeError):
-                pass
-    else:
-        if not path.exists() and legado.is_file() and legado.resolve().parent == Path.cwd().resolve():
-            fonte = legado
-        try:
-            carregados = json.loads(fonte.read_text(encoding="utf-8"))
-            if isinstance(carregados, dict):
-                dados.update(carregados)
-        except (OSError, json.JSONDecodeError):
-            pass
+    if not path.exists() and legado.is_file() and legado.resolve().parent == Path.cwd().resolve():
+        fonte = legado
+    try:
+        carregados = json.loads(fonte.read_text(encoding="utf-8"))
+        if isinstance(carregados, dict):
+            dados.update(carregados)
+    except (OSError, json.JSONDecodeError):
+        pass
     for chave, valor in _padrao(edital_factory).items():
         dados.setdefault(chave, valor)
     dados["schema_version"] = SCHEMA_VERSION
@@ -497,8 +188,6 @@ def carregar_dados_usuario(username: str, edital_factory) -> dict:
             item.setdefault("falhas", 0)
             item.setdefault("revisao_em", str(datetime.date.today()))
             item.setdefault("fixada", False)
-    if migrar_para_nuvem:
-        salvar_dados_usuario(username, dados)
     return dados
 
 def salvar_dados_usuario(username: str, dados: dict) -> None:
@@ -506,14 +195,6 @@ def salvar_dados_usuario(username: str, dados: dict) -> None:
     payload = dict(dados)
     payload["schema_version"] = SCHEMA_VERSION
     payload["atualizado_em"] = datetime.datetime.now().isoformat(timespec="seconds")
-    if _qg_cloud_enabled():
-        with _qg_pg_connection() as conn:
-            conn.execute("""INSERT INTO qg_user_data (username, payload, updated_at)
-                VALUES (%s, %s, NOW())
-                ON CONFLICT (username) DO UPDATE
-                SET payload = EXCLUDED.payload, updated_at = NOW()""",
-                (normalizar_usuario(username), json.dumps(payload, ensure_ascii=False)))
-        return
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f"{path.stem}-", suffix=".tmp", dir=str(path.parent))
     try:
@@ -527,72 +208,25 @@ def salvar_dados_usuario(username: str, dados: dict) -> None:
             os.unlink(temp_name)
 
 
-def _qg_hash_session(token: str) -> str:
-    """Armazena somente o hash do identificador de sessão no banco remoto."""
-    return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
-
-
 def _qg_criar_sessao(username: str) -> str:
-    """Emite um token aleatório que fica apenas na sessão privada do Streamlit."""
-    token = py_secrets.token_urlsafe(32)
-    if _qg_cloud_enabled():
-        with _qg_pg_connection() as conn:
-            conn.execute("""INSERT INTO qg_auth_sessions (session_hash, username, expires_at)
-                VALUES (%s, %s, NOW() + INTERVAL '8 hours')""",
-                (_qg_hash_session(token), normalizar_usuario(username)))
-    return token
+    """Cria um identificador aleatório de sessão mantido pelo Streamlit."""
+    return py_secrets.token_urlsafe(32)
 
 
 def _qg_renovar_sessao(token: str, username: str) -> bool:
     """Renova a sessão ativa por oito horas após uma interação do usuário."""
-    if not token:
-        return False
-    if not _qg_cloud_enabled():
-        return True
-    with _qg_pg_connection() as conn:
-        row = conn.execute("""UPDATE qg_auth_sessions
-            SET expires_at = NOW() + INTERVAL '8 hours'
-            WHERE session_hash = %s AND username = %s AND revoked_at IS NULL AND expires_at > NOW()
-            RETURNING session_hash""",
-            (_qg_hash_session(token), normalizar_usuario(username))).fetchone()
-    return bool(row)
+    return bool(token)
 
 
 def _qg_revogar_sessao(token: str) -> None:
-    """Revoga a sessão no PostgreSQL durante logout ou expiração por inatividade."""
-    if token and _qg_cloud_enabled():
-        with _qg_pg_connection() as conn:
-            conn.execute("UPDATE qg_auth_sessions SET revoked_at = NOW() WHERE session_hash = %s AND revoked_at IS NULL",
-                         (_qg_hash_session(token),))
+    """Encerra a sessão local removendo o token do estado do Streamlit."""
+    return None
 
 
 def _qg_revogar_sessoes_usuario(username: str) -> None:
-    """Invalida sessões antigas depois de uma redefinição de senha."""
-    if username and _qg_cloud_enabled():
-        with _qg_pg_connection() as conn:
-            conn.execute("UPDATE qg_auth_sessions SET revoked_at = NOW() WHERE username = %s AND revoked_at IS NULL",
-                         (normalizar_usuario(username),))
+    """A redefinição local de senha não tem outras sessões centrais a revogar."""
+    return None
 
-
-def _qg_revogar_todas_sessoes() -> None:
-    """Ação administrativa para encerrar todas as sessões de cadetes na nuvem."""
-    if _qg_cloud_enabled():
-        with _qg_pg_connection() as conn:
-            conn.execute("UPDATE qg_auth_sessions SET revoked_at = NOW() WHERE revoked_at IS NULL")
-
-
-def _qg_persistir_sqlite_restaurado() -> None:
-    """Publica imediatamente no PostgreSQL um SQLite restaurado pelo administrador."""
-    if not _qg_cloud_enabled():
-        return
-    state = _qg_sqlite_runtime_state()
-    state["lock"].acquire()
-    try:
-        state["ready"] = True
-        state["database_url"] = _qg_database_url()
-        _qg_upload_sqlite_snapshot(Path("dados_qg.db").resolve(), state)
-    finally:
-        state["lock"].release()
 
 def listar_memorias(username: str, limite: int = 100, materia: str | None = None,
                     busca: str = "", apenas_revisar: bool = False) -> list[dict]:
@@ -749,14 +383,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Verifica a conexão antes de autenticar ou ler dados: com Secrets configurado, o app nunca cai silenciosamente no armazenamento temporário.
-_qg_url_inicial = _qg_database_url()
-if _qg_url_inicial:
-    try:
-        _qg_initialize_cloud_storage(_qg_url_inicial)
-    except Exception:
-        st.error("Não foi possível conectar ao banco persistente. Confira QG_DATABASE_URL em Secrets e a disponibilidade do PostgreSQL.")
-        st.stop()
+# O aplicativo usa o armazenamento local legado.
 
 verificar_bloqueio_manutencao()
 
@@ -1514,10 +1141,7 @@ if st.session_state.usuario_logado is None:
         "a senha precisa ter ao menos 12 caracteres, com letras e números. "
         "As credenciais não são salvas no navegador; a sessão termina após oito horas sem atividade."
     )
-    if _qg_cloud_enabled():
-        st.success("Armazenamento PostgreSQL conectado: contas, progresso, tentativas e sessões são persistidos na nuvem.")
-    else:
-        st.warning("Persistência em nuvem ainda não configurada. Defina QG_DATABASE_URL em Secrets; no modo local, os dados podem sumir após uma reinicialização do servidor.")
+    st.info("Contas e progresso são guardados no armazenamento local deste app.")
 
     tab_entrar, tab_cadastrar = st.tabs(["🔐 Entrar na Conta", "📝 Criar Nova Conta"])
 
@@ -5705,21 +5329,8 @@ elif "módulo 22" in menu.lower() or "configurações" in menu.lower():
                     st.error("As senhas informadas não coincidem ou estão vazias.")
 
         st.markdown("---")
-        st.markdown("##### 📱 Gestão de sessões ativas")
-        st.caption("Revoga sessões em nuvem e limpa registros de autenticação legados:")
-
-        if st.button("🧹 Revogar Todas as Sessões Ativas", key="btn_clear_sessions_master", use_container_width=True):
-            try:
-                _qg_revogar_todas_sessoes()
-                try:
-                    with sqlite3.connect("dados_qg.db") as conn:
-                        conn.execute("DELETE FROM sessoes_usuario")
-                except sqlite3.Error:
-                    pass
-                st.success("✅ As sessões remotas foram revogadas. Cada cadete precisará autenticar novamente.")
-            except Exception as e:
-                st.error(f"Erro ao limpar sessões: {e}")
-            st.rerun()
+        st.markdown("##### 📱 Sessões ativas")
+        st.caption("Cada sessão fica no estado do Streamlit e expira após oito horas sem atividade. Para encerrar a sua, use o botão **Encerrar sessão**.")
 
     # -----------------------------------------------------------------------------
     # ABA 4: BANCO DE DADOS & BACKUPS
@@ -6630,7 +6241,6 @@ elif "módulo 24" in menu.lower():
                                 sidecar.unlink()
                         os.replace(tmp_restore, caminho_db)
                         tmp_restore = None
-                        _qg_persistir_sqlite_restaurado()
                         registrar_log("DB_RESTAURADO", f"Banco restaurado pelo proprietário; cópia anterior: {nome_backup_anterior.name}")
                         st.success(f"Banco restaurado. Cópia anterior salva em {nome_backup_anterior}.")
                         st.rerun()
@@ -6694,22 +6304,8 @@ elif "módulo 24" in menu.lower():
                         time.sleep(1.5)
                         st.rerun()
 
-            with st.expander("Revogar logins persistentes de todas as contas", expanded=False):
-                st.warning("Esta ação desconecta as contas que marcaram para permanecer conectadas.")
-                confirmar_revogacao_sessoes = st.checkbox("Confirmo revogar todas as sessões persistentes", key="confirmar_revogacao_sessoes_admin")
-                if st.button("🧹 Revogar sessões persistentes", key="revogar_sessoes_admin", disabled=not confirmar_revogacao_sessoes):
-                    try:
-                        _qg_revogar_todas_sessoes()
-                        try:
-                            with sqlite3.connect("dados_qg.db", timeout=5) as conn:
-                                conn.execute("DELETE FROM sessoes_usuario")
-                        except sqlite3.Error:
-                            pass
-                        registrar_log("SESSOES_REVOGADAS", "O proprietário revogou as sessões persistentes.")
-                        st.success("Sessões persistentes revogadas.")
-                        st.rerun()
-                    except Exception as erro_sessoes:
-                        st.error(f"Não foi possível revogar as sessões: {erro_sessoes}")
+            with st.expander("ℹ️ Sessões locais", expanded=False):
+                st.info("O modo SQLite não mantém uma lista central de sessões. Cada usuário pode encerrar a própria sessão pelo botão **Encerrar sessão**.")
 
         # =========================================================================
         # ABA 10: INTELIGÊNCIA DO EFETIVO (GRÁFICOS E TABELAS)
@@ -7759,11 +7355,8 @@ elif menu == "📲 Instalar como App":
             st.markdown("1. Abra o QG no Chrome ou Edge.\n2. Abra o menu do navegador.\n3. Use **Criar atalho** ou **Instalar este site como aplicativo**, se aparecer.\n4. Ative a abertura em janela própria, se disponível.")
 
     st.info("Esse atalho abre o QG pelo navegador e facilita o acesso. No Community Cloud, o app Streamlit não controla o manifesto nem o service worker na raiz do site; por isso, a instalação como PWA nativa pode não aparecer. Uma PWA completa exige uma camada web externa configurada para servir esses arquivos no escopo correto.")
-    with st.expander("🔐 Persistência do login e da memória no Community Cloud"):
-        if _qg_cloud_enabled():
-            st.success("PostgreSQL conectado. Cadastros, progresso, sessões e o banco administrativo são sincronizados com a base persistente configurada em Secrets.")
-        else:
-            st.warning("A persistência PostgreSQL ainda não está configurada. Sem QG_DATABASE_URL em Secrets, os arquivos locais podem não sobreviver a reinicializações ou novas instâncias do Community Cloud.")
+    with st.expander("🔐 Persistência do login e da memória"):
+        st.warning("O app usa arquivos locais, incluindo dados_qg.db, usuarios.json e dados_usuarios/. Na hospedagem Community Cloud, esses arquivos podem não sobreviver a reinicializações ou novas instâncias.")
         st.caption("Não coloque senha de banco, token ou chave privada no código nem em um repositório público.")
     st.button("Voltar ao painel", on_click=_navegar_qg, args=("📊 Painel & Rotina Diária",))
 
