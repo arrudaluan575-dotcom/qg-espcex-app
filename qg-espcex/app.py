@@ -33,13 +33,16 @@ _USER_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
 
 
 def normalizar_usuario(valor: str) -> str:
+    """Valida e padroniza o nome de usuário para uso interno."""
     usuario = str(valor or "").strip().casefold()
     return usuario if _USER_RE.fullmatch(usuario) else ""
 
 def senha_forte(senha: str) -> bool:
+    """Verifica se a senha atende aos requisitos mínimos de comprimento e variedade."""
     return len(senha) >= 12 and any(c.isalpha() for c in senha) and any(c.isdigit() for c in senha)
 
 def hash_senha(senha: str) -> str:
+    """Gera um hash PBKDF2 com sal aleatório para armazenar a senha com segurança."""
     salt = os.urandom(16)
     digest = hashlib.pbkdf2_hmac("sha256", senha.encode("utf-8"), salt, _ITERATIONS)
     return f"pbkdf2_sha256${_ITERATIONS}${salt.hex()}${digest.hex()}"
@@ -57,6 +60,7 @@ def verificar_senha(senha: str, armazenada: str) -> bool:
         return False
 
 def carregar_usuarios() -> dict:
+    """Lê do arquivo local a lista de contas cadastradas."""
     try:
         data = json.loads(_USERS_STORE_PATH.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
@@ -74,6 +78,7 @@ def carregar_usuario(username: str) -> dict:
     return conta if isinstance(conta, dict) else {}
 
 def salvar_usuarios(usuarios: dict) -> None:
+    """Salva as contas de forma atômica para reduzir o risco de perda de dados."""
     _USERS_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix="usuarios-", suffix=".tmp", dir=str(_USERS_STORE_PATH.parent))
     try:
@@ -94,6 +99,7 @@ def salvar_usuario(username: str, conta: dict) -> None:
     salvar_usuarios(usuarios)
 
 def verificar_credencial(valor: str, armazenada: str) -> bool:
+    """Confere uma senha com os formatos de hash aceitos pelo aplicativo."""
     if armazenada.startswith("pbkdf2_sha256$"):
         return verificar_senha(valor, armazenada)
     if len(armazenada) == 64 and all(c in "0123456789abcdef" for c in armazenada.casefold()):
@@ -101,6 +107,7 @@ def verificar_credencial(valor: str, armazenada: str) -> bool:
     return hmac.compare_digest(str(valor).encode("utf-8"), str(armazenada).encode("utf-8"))
 
 def tempo_bloqueio(chave: str) -> int:
+    """Retorna os segundos restantes de um bloqueio por tentativas de login."""
     try:
         estado = json.loads(_ATTEMPT_FILE.read_text(encoding="utf-8"))
         item = estado.get(str(chave), {})
@@ -110,6 +117,7 @@ def tempo_bloqueio(chave: str) -> int:
         return 0
 
 def registrar_tentativa(chave: str, sucesso: bool) -> None:
+    """Atualiza o registro local de tentativas e aplica uma pausa após erros repetidos."""
     try:
         estado = json.loads(_ATTEMPT_FILE.read_text(encoding="utf-8"))
         if not isinstance(estado, dict):
@@ -146,6 +154,7 @@ SCHEMA_VERSION = 3
 INTERVALOS_REVISAO = (1, 3, 7, 14, 30)
 
 def _arquivo_usuario(username: str) -> Path:
+    """Monta e valida o caminho local de dados de uma conta."""
     user_id = normalizar_usuario(username)
     if not user_id:
         raise ValueError("Identificador de usuário inválido.")
@@ -156,6 +165,7 @@ def _arquivo_usuario(username: str) -> Path:
     return path
 
 def _padrao(edital_factory):
+    """Cria a estrutura inicial de dados pessoais e de estudo."""
     hoje = datetime.date.today()
     return {
         "schema_version": SCHEMA_VERSION, "sessoes": [], "erros": [], "redacoes": [],
@@ -166,6 +176,7 @@ def _padrao(edital_factory):
     }
 
 def carregar_dados_usuario(username: str, edital_factory) -> dict:
+    """Carrega os dados locais da conta e completa campos de versões anteriores."""
     path = _arquivo_usuario(username)
     dados = _padrao(edital_factory)
     fonte = path
@@ -198,6 +209,7 @@ def carregar_dados_usuario(username: str, edital_factory) -> dict:
     return dados
 
 def salvar_dados_usuario(username: str, dados: dict) -> None:
+    """Salva os dados de estudo da conta em um arquivo JSON local."""
     path = _arquivo_usuario(username)
     payload = dict(dados)
     payload["schema_version"] = SCHEMA_VERSION
@@ -237,6 +249,7 @@ def _qg_revogar_sessoes_usuario(username: str) -> None:
 
 def listar_memorias(username: str, limite: int = 100, materia: str | None = None,
                     busca: str = "", apenas_revisar: bool = False) -> list[dict]:
+    """Filtra as anotações de estudo e as revisões pendentes de uma conta."""
     dados = carregar_dados_usuario(username, lambda: [])
     itens = [x for x in dados.get("memorias", []) if isinstance(x, dict)]
     hoje = datetime.date.today()
@@ -251,6 +264,7 @@ def listar_memorias(username: str, limite: int = 100, materia: str | None = None
     return itens[:max(1, min(int(limite), 500))]
 
 def _data(valor) -> datetime.date:
+    """Converte um valor em data e usa a data atual se o valor não for válido."""
     try:
         return datetime.date.fromisoformat(str(valor)[:10])
     except (TypeError, ValueError):
@@ -258,6 +272,7 @@ def _data(valor) -> datetime.date:
 
 def adicionar_memoria(username: str, texto: str, materia: str = "Geral", tipo: str = "Anotação",
                       tags: list[str] | None = None, prioridade: str = "Média") -> str:
+    """Cria uma anotação de estudo e agenda a próxima revisão."""
     texto = str(texto).strip()
     if not texto or len(texto) > 3000:
         raise ValueError("A anotação deve ter entre 1 e 3000 caracteres.")
@@ -276,6 +291,7 @@ def adicionar_memoria(username: str, texto: str, materia: str = "Geral", tipo: s
     return memoria_id
 
 def registrar_revisao(username: str, memoria_id: str, lembrou: bool) -> None:
+    """Registra o resultado de uma revisão e atualiza as estatísticas da anotação."""
     dados = carregar_dados_usuario(username, lambda: [])
     hoje = datetime.date.today()
     for item in dados.get("memorias", []):
@@ -294,6 +310,7 @@ def registrar_revisao(username: str, memoria_id: str, lembrou: bool) -> None:
     salvar_dados_usuario(username, dados)
 
 def alternar_memoria_fixada(username: str, memoria_id: str) -> None:
+    """Marca ou desmarca uma anotação como fixada."""
     dados = carregar_dados_usuario(username, lambda: [])
     for item in dados.get("memorias", []):
         if isinstance(item, dict) and item.get("id") == memoria_id:
@@ -302,11 +319,13 @@ def alternar_memoria_fixada(username: str, memoria_id: str) -> None:
     salvar_dados_usuario(username, dados)
 
 def remover_memoria(username: str, memoria_id: str) -> None:
+    """Remove uma anotação de estudo e salva a lista atualizada."""
     dados = carregar_dados_usuario(username, lambda: [])
     dados["memorias"] = [x for x in dados.get("memorias", []) if not isinstance(x, dict) or x.get("id") != memoria_id]
     salvar_dados_usuario(username, dados)
 
 def estatisticas_memoria(username: str) -> dict:
+    """Calcula indicadores de anotações, acertos e revisões da conta."""
     dados = carregar_dados_usuario(username, lambda: [])
     itens = [x for x in dados.get("memorias", []) if isinstance(x, dict)]
     hoje = datetime.date.today()
@@ -326,18 +345,48 @@ def estatisticas_memoria(username: str) -> dict:
 # =============================================================================
 pio.templates["qg_enterprise"] = go.layout.Template(layout=go.Layout(
     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-    font={"family": "Inter, Manrope, sans-serif", "color": "#dbe9f7", "size": 12},
-    title={"font": {"size": 18, "color": "#f1f7ff"}, "x": 0.02, "xanchor": "left"},
-    margin={"t": 54, "r": 24, "b": 44, "l": 48},
-    hoverlabel={"bgcolor": "#0b1725", "bordercolor": "rgba(99,229,220,.4)", "font": {"color": "#eef5ff", "family": "Inter, sans-serif"}},
-    colorway=["#59e1d2", "#5d91ff", "#a88cff", "#f3bf62", "#ff7c9c", "#73d6a5"],
-    xaxis={"gridcolor": "rgba(141,181,212,.10)", "zerolinecolor": "rgba(141,181,212,.18)", "linecolor": "rgba(141,181,212,.18)", "tickfont": {"color": "#9aacc0"}},
-    yaxis={"gridcolor": "rgba(141,181,212,.10)", "zerolinecolor": "rgba(141,181,212,.18)", "linecolor": "rgba(141,181,212,.18)", "tickfont": {"color": "#9aacc0"}},
-    legend={"bgcolor": "rgba(0,0,0,0)", "font": {"color": "#b8c9d9"}},
+    font={"family": "Inter, Manrope, sans-serif", "color": "#e4edf3", "size": 14},
+    title={"font": {"size": 20, "color": "#f5f8fa"}, "x": 0.02, "xanchor": "left"},
+    margin={"t": 58, "r": 24, "b": 48, "l": 54},
+    hoverlabel={"bgcolor": "#071724", "bordercolor": "#35bddf", "font": {"color": "#f4f8fa", "family": "Inter, sans-serif", "size": 14}},
+    colorway=["#19c987", "#36c2e8", "#f1c34b", "#6e9cff", "#ef777d", "#9ad8bb"],
+    xaxis={"gridcolor": "rgba(174,201,219,.14)", "zerolinecolor": "rgba(174,201,219,.24)", "linecolor": "rgba(174,201,219,.3)", "tickfont": {"color": "#c2d0da", "size": 13}, "title": {"font": {"color": "#dbe5ec", "size": 14}}},
+    yaxis={"gridcolor": "rgba(174,201,219,.14)", "zerolinecolor": "rgba(174,201,219,.24)", "linecolor": "rgba(174,201,219,.3)", "tickfont": {"color": "#c2d0da", "size": 13}, "title": {"font": {"color": "#dbe5ec", "size": 14}}},
+    scene={"bgcolor": "rgba(0,0,0,0)", "xaxis": {"gridcolor": "rgba(174,201,219,.14)", "tickfont": {"color": "#c2d0da", "size": 12}}, "yaxis": {"gridcolor": "rgba(174,201,219,.14)", "tickfont": {"color": "#c2d0da", "size": 12}}, "zaxis": {"gridcolor": "rgba(174,201,219,.14)", "tickfont": {"color": "#c2d0da", "size": 12}}},
+    legend={"bgcolor": "rgba(0,0,0,0)", "font": {"color": "#d1dde5", "size": 13}},
 ))
 pio.templates.default = "qg_enterprise"
 
+_qg_plotly_chart_original = st.plotly_chart
+
+def _qg_plotly_chart(fig, *args, **kwargs):
+    """Centraliza títulos e rótulos numéricos sem mudar os dados do gráfico."""
+    if hasattr(fig, "update_layout"):
+        if getattr(fig.layout, "title", None) and fig.layout.title.text:
+            fig.update_layout(title_x=0.5, title_xanchor="center")
+        fig.update_layout(transition={"duration": 320, "easing": "cubic-in-out"})
+        for trace in getattr(fig, "data", ()):
+            trace_type = getattr(trace, "type", "")
+            if trace_type == "bar":
+                horizontal = getattr(trace, "orientation", None) == "h"
+                value_axis = getattr(trace, "x", None) if horizontal else getattr(trace, "y", None)
+                if getattr(trace, "text", None) is None and getattr(trace, "texttemplate", None) is None and value_axis is not None:
+                    trace.text = list(value_axis)
+                    trace.texttemplate = "%{x}" if horizontal else "%{y}"
+                trace.textposition = "inside"
+                trace.insidetextanchor = "middle"
+                trace.textfont = {"color": "#f4f8fa", "size": 13}
+            elif trace_type == "pie":
+                if getattr(trace, "textinfo", None) not in ("none", "label+percent"):
+                    trace.textinfo = "label+percent"
+                trace.textposition = "inside"
+                trace.textfont = {"color": "#f4f8fa", "size": 13}
+            elif trace_type in ("scatter", "scatter3d") and getattr(trace, "text", None) is not None:
+                trace.textposition = "middle center"
+    return _qg_plotly_chart_original(fig, *args, **kwargs)
+
 def verificar_bloqueio_manutencao():
+    """Consulta a configuração local e exibe o estado de manutenção."""
     try:
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
@@ -357,6 +406,7 @@ def verificar_bloqueio_manutencao():
         pass
 
 def registrar_acesso_usuario(nome_usuario):
+    """Registra o acesso de uma conta no banco de dados local."""
     try:
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
@@ -876,6 +926,8 @@ hr { border-color:rgba(143,190,220,.15) !important; }
 }
 </style>""", unsafe_allow_html=True)
 
+
+
 st.markdown("""<style>
 
 /* Identidade visual alinhada ao painel de referência: azul-marinho, dourado e verde militar. */
@@ -930,88 +982,19 @@ hr { border-color: rgba(73, 137, 177, .28) !important; }
 
 </style>""", unsafe_allow_html=True)
 components.html("""<script>
+// Coordena a inclinação 3D dos cartões e os efeitos de ponteiro do cabeçalho.
 (() => {
   try {
     const doc = window.parent.document;
     const root = doc.documentElement;
-    if (root.dataset.qgTiltInstalled === "1") return;
-    root.dataset.qgTiltInstalled = "1";
+    if (root.dataset.qgDepthEffectsInstalled === "2") return;
+    root.dataset.qgDepthEffectsInstalled = "2";
 
-    // Partículas leves no fundo da aplicação; o canvas nunca captura cliques.
-    const installParticles = () => {
-      const app = doc.querySelector(".stApp");
-      if (!app || app.querySelector(".qg-particle-field")) return;
-      const canvas = doc.createElement("canvas");
-      canvas.className = "qg-particle-field";
-      canvas.setAttribute("aria-hidden", "true");
-      canvas.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;z-index:0;pointer-events:none;opacity:.72";
-      app.prepend(canvas);
-      const context = canvas.getContext("2d", { alpha: true });
-      if (!context) return;
-      const motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
-      const colors = ["99,229,220", "120,165,255", "176,154,255"];
-      let width = 0, height = 0, points = [], frame = 0, previousFrame = 0;
-      const resize = () => {
-        const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
-        width = window.innerWidth;
-        height = window.innerHeight;
-        canvas.width = Math.round(width * ratio);
-        canvas.height = Math.round(height * ratio);
-        context.setTransform(ratio, 0, 0, ratio, 0, 0);
-        const count = Math.min(64, Math.max(22, Math.round(width / 25)));
-        points = Array.from({ length: count }, () => ({
-          x: Math.random() * width, y: Math.random() * height,
-          vx: (Math.random() - .5) * .22, vy: (Math.random() - .5) * .22,
-          radius: .7 + Math.random() * 1.5, color: colors[Math.floor(Math.random() * colors.length)],
-        }));
-        paint(0, false);
-      };
-      const paint = (time, animate) => {
-        context.clearRect(0, 0, width, height);
-        for (let i = 0; i < points.length; i++) {
-          const point = points[i];
-          if (animate) {
-            point.x += point.vx; point.y += point.vy;
-            if (point.x < -8 || point.x > width + 8) point.vx *= -1;
-            if (point.y < -8 || point.y > height + 8) point.vy *= -1;
-          }
-          const pulse = animate ? .46 + (Math.sin(time / 1000 + i) + 1) * .19 : .66;
-          context.beginPath();
-          context.arc(point.x, point.y, point.radius, 0, Math.PI * 2);
-          context.fillStyle = `rgba(${point.color},${pulse})`;
-          context.shadowBlur = 10;
-          context.shadowColor = `rgba(${point.color},.55)`;
-          context.fill();
-          context.shadowBlur = 0;
-          for (let j = i + 1; j < points.length; j++) {
-            const other = points[j];
-            const dx = point.x - other.x, dy = point.y - other.y;
-            const distance = Math.sqrt(dx * dx + dy * dy);
-            if (distance < 112) {
-              context.beginPath();
-              context.moveTo(point.x, point.y); context.lineTo(other.x, other.y);
-              context.strokeStyle = `rgba(111,190,218,${(1 - distance / 112) * .095})`;
-              context.lineWidth = .7; context.stroke();
-            }
-          }
-        }
-      };
-      const tick = (time) => {
-        if (doc.hidden || motionPreference.matches) return;
-        if (time - previousFrame >= 33) { paint(time, true); previousFrame = time; }
-        frame = window.requestAnimationFrame(tick);
-      };
-      resize();
-      window.addEventListener("resize", resize, { passive: true });
-      doc.addEventListener("visibilitychange", () => {
-        if (doc.hidden) window.cancelAnimationFrame(frame);
-        else if (!motionPreference.matches) frame = window.requestAnimationFrame(tick);
-      });
-      if (!motionPreference.matches) frame = window.requestAnimationFrame(tick);
-    };
-    installParticles();
-
-    const attachTilt = () => {
+    // O fundo de partículas foi retirado para manter a página limpa e sem ruído visual.
+    // Esta função move reflexos discretos sem alterar a posição ou a nitidez do conteúdo.
+    const attachDepthEffects = () => {
+      // O ponteiro aplica inclinação somente em computadores; telas touch usam o relevo estático.
+      if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
       doc.querySelectorAll('.qg-hero-auth').forEach((hero) => {
         if (hero.dataset.qgParallax === "1") return;
         hero.dataset.qgParallax = "1";
@@ -1029,10 +1012,10 @@ components.html("""<script>
         }, { passive: true });
       });
 
-      // Dá inclinação 3D discreta aos cartões ao acompanhar o ponteiro, sem alterar seu conteúdo ou funcionamento.
-      doc.querySelectorAll('[data-testid="stMetric"], .routine-card, .qg-sidebar-profile, .qg-sidebar-brand-mark, .qg-start-card').forEach((card) => {
-        if (card.dataset.qgTilt === "1") return;
-        card.dataset.qgTilt = "1";
+      // Move um reflexo suave pela superfície; o conteúdo não recebe rotação nem escala.
+      doc.querySelectorAll('[data-testid="stMetric"], .routine-card, .qg-sidebar-profile, .qg-sidebar-brand-mark, .qg-start-card, [data-testid="stPlotlyChart"], [data-testid="stGraph"], [data-testid="stDataFrame"], [data-testid="stTable"]').forEach((card) => {
+        if (card.dataset.qgLight === "1") return;
+        card.dataset.qgLight = "1";
         let scheduled = false;
         let lastEvent = null;
         card.addEventListener("pointermove", (event) => {
@@ -1043,23 +1026,27 @@ components.html("""<script>
             scheduled = false;
             if (!lastEvent) return;
             const box = card.getBoundingClientRect();
-            const x = (lastEvent.clientX - box.left) / Math.max(box.width, 1) - .5;
-            const y = (lastEvent.clientY - box.top) / Math.max(box.height, 1) - .5;
-            // Reduz o ângulo do cartão: mantém o relevo visual sem inclinar demais as letras.
-            card.style.transform = `perspective(1200px) rotateX(${(-y * 1.4).toFixed(2)}deg) rotateY(${(x * 1.6).toFixed(2)}deg) translateY(-2px)`;
+            const x = (lastEvent.clientX - box.left) / Math.max(box.width, 1);
+            const y = (lastEvent.clientY - box.top) / Math.max(box.height, 1);
+            card.style.setProperty("--qg-pointer-x", `${Math.round(x * 100)}%`);
+            card.style.setProperty("--qg-pointer-y", `${Math.round(y * 100)}%`);
           });
         }, { passive: true });
-        card.addEventListener("pointerleave", () => { card.style.transform = ""; }, { passive: true });
+        card.addEventListener("pointerleave", () => {
+          card.style.removeProperty("--qg-pointer-x");
+          card.style.removeProperty("--qg-pointer-y");
+        }, { passive: true });
       });
     };
-    attachTilt();
+    attachDepthEffects();
     let scanPending = false;
+    // Reaplica o relevo 3D aos componentes que o Streamlit redesenha.
     new MutationObserver(() => {
       if (scanPending) return;
       scanPending = true;
       requestAnimationFrame(() => {
         scanPending = false;
-        attachTilt();
+        attachDepthEffects();
       });
     }).observe(doc.body, { childList: true, subtree: true });
   } catch (_error) {
@@ -1094,6 +1081,7 @@ MATERIAS_TECNICAS_EFA = [
 ]
 
 def get_edital_espcex():
+    """Retorna a estrutura de tópicos do edital da EsPCEx."""
     return [
         {"Dia": "1º Dia", "Matéria": "Português", "Tópico": "Compreensão e Interpretação de Texto", "Status": "Não Iniciado", "Prioridade": "Alta"},
         {"Matéria": "Português", "Dia": "1º Dia", "Tópico": "Morfologia e Classes Gramaticais", "Status": "Não Iniciado", "Prioridade": "Alta"},
@@ -1231,171 +1219,175 @@ if st.session_state.usuario_logado is not None:
         st.session_state.auth_ultima_atividade = agora_sessao
 
 if st.session_state.usuario_logado is None:
-    # Tela de inicialização pública: apresenta identidade, visão dos módulos e dicas de acesso antes dos formulários.
-    st.markdown("""
-    <section class="qg-hero qg-hero-auth">
-      <div class="qg-auth-orbits" aria-hidden="true"><i></i><i></i><i></i><span></span></div>
-      <div class="qg-cube-wrap"><div class="qg-cube">
-        <div class="qg-cube-face qg-cube-front">QG</div><div class="qg-cube-face qg-cube-back">🛡️</div>
-        <div class="qg-cube-face qg-cube-right">⚔️</div><div class="qg-cube-face qg-cube-left">🎯</div>
-        <div class="qg-cube-face qg-cube-top">✦</div><div class="qg-cube-face qg-cube-bottom">✦</div>
-      </div></div>
-      <div class="qg-hero-copy"><div class="qg-hero-kicker">QG EsPCEx · acesso seguro</div>
-        <div class="qg-hero-title">Central de preparação</div>
-        <div class="qg-hero-subtitle">Entre na sua conta ou crie seu perfil para continuar.</div>
-      </div><div class="qg-live">SISTEMA ATIVO</div>
-    </section>
-    """, unsafe_allow_html=True)
+    login_apresentacao, login_acesso = st.columns([1.08, 0.92], gap="large")
+    with login_apresentacao:
+        # Tela de inicialização pública: apresenta identidade, visão dos módulos e dicas de acesso antes dos formulários.
+        st.markdown("""
+        <section class="qg-hero qg-hero-auth">
+          <div class="qg-auth-orbits" aria-hidden="true"><i></i><i></i><i></i><span></span></div>
+          <div class="qg-cube-wrap"><div class="qg-cube">
+            <div class="qg-cube-face qg-cube-front">QG</div><div class="qg-cube-face qg-cube-back">🛡️</div>
+            <div class="qg-cube-face qg-cube-right">⚔️</div><div class="qg-cube-face qg-cube-left">🎯</div>
+            <div class="qg-cube-face qg-cube-top">✦</div><div class="qg-cube-face qg-cube-bottom">✦</div>
+          </div></div>
+          <div class="qg-hero-copy"><div class="qg-hero-kicker">QG EsPCEx · acesso seguro</div>
+            <div class="qg-hero-title">Central de preparação</div>
+            <div class="qg-hero-subtitle">Entre na sua conta ou crie seu perfil para continuar.</div>
+          </div><div class="qg-live">SISTEMA ATIVO</div>
+        </section>
+        """, unsafe_allow_html=True)
 
-    # Cartões informativos fixos: resumem os recursos principais sem consultar ou expor dados pessoais.
-    # Para editar a apresentação, ajuste os títulos e descrições abaixo; o CSS qg-start-* controla cores, relevo e resposta móvel.
-    st.markdown("""
-    <section class="qg-start-overview" aria-label="Apresentação dos recursos do QG EsPCEx">
-      <header class="qg-start-heading">
-        <div class="qg-start-kicker">Central de preparação · visão geral</div>
-        <h2>Seu próximo passo começa aqui</h2>
-        <p>Entre para abrir sua área pessoal. Estes são alguns dos recursos disponíveis no QG.</p>
-      </header>
-      <div class="qg-start-grid">
-        <article class="qg-start-card">
-          <div class="qg-start-card-top"><span class="qg-start-icon" aria-hidden="true">📚</span><span class="qg-start-index">01 / ESTUDO</span></div>
-          <h3>Estudo organizado</h3>
-          <p>Plano semanal, edital verticalizado, questões e simulados em um só lugar.</p>
-        </article>
-        <article class="qg-start-card">
-          <div class="qg-start-card-top"><span class="qg-start-icon" aria-hidden="true">🎯</span><span class="qg-start-index">02 / ROTINA</span></div>
-          <h3>Rotina e foco</h3>
-          <p>Missões diárias, cronômetro de foco e acompanhamento da preparação física.</p>
-        </article>
-        <article class="qg-start-card">
-          <div class="qg-start-card-top"><span class="qg-start-icon" aria-hidden="true">🧠</span><span class="qg-start-index">03 / MEMÓRIA</span></div>
-          <h3>Revisão contínua</h3>
-          <p>Guarde anotações, registre erros e programe revisões espaçadas.</p>
-        </article>
-        <article class="qg-start-card">
-          <div class="qg-start-card-top"><span class="qg-start-icon" aria-hidden="true">🛡️</span><span class="qg-start-index">04 / PERFIL</span></div>
-          <h3>Seu espaço pessoal</h3>
-          <p>Personalize o painel e acompanhe seus registros depois de entrar na conta.</p>
-        </article>
-      </div>
-      <div class="qg-start-foot"><strong>COMO COMEÇAR</strong><span>Use <b>Entrar na Conta</b> se já tem cadastro. No primeiro acesso, abra <b>Criar Nova Conta</b> e escolha uma senha forte.</span></div>
-    </section>
-    """, unsafe_allow_html=True)
+        # Cartões informativos fixos: resumem os recursos principais sem consultar ou expor dados pessoais.
+        # Para editar a apresentação, ajuste os títulos e descrições abaixo; o CSS qg-start-* controla cores, relevo e resposta móvel.
+        st.markdown("""
+        <section class="qg-start-overview" aria-label="Apresentação dos recursos do QG EsPCEx">
+          <header class="qg-start-heading">
+            <div class="qg-start-kicker">Central de preparação · visão geral</div>
+            <h2>Seu próximo passo começa aqui</h2>
+            <p>Entre para abrir sua área pessoal. Estes são alguns dos recursos disponíveis no QG.</p>
+          </header>
+          <div class="qg-start-grid">
+            <article class="qg-start-card">
+              <div class="qg-start-card-top"><span class="qg-start-icon" aria-hidden="true">📚</span><span class="qg-start-index">01 / ESTUDO</span></div>
+              <h3>Estudo organizado</h3>
+              <p>Plano semanal, edital verticalizado, questões e simulados em um só lugar.</p>
+            </article>
+            <article class="qg-start-card">
+              <div class="qg-start-card-top"><span class="qg-start-icon" aria-hidden="true">🎯</span><span class="qg-start-index">02 / ROTINA</span></div>
+              <h3>Rotina e foco</h3>
+              <p>Missões diárias, cronômetro de foco e acompanhamento da preparação física.</p>
+            </article>
+            <article class="qg-start-card">
+              <div class="qg-start-card-top"><span class="qg-start-icon" aria-hidden="true">🧠</span><span class="qg-start-index">03 / MEMÓRIA</span></div>
+              <h3>Revisão contínua</h3>
+              <p>Guarde anotações, registre erros e programe revisões espaçadas.</p>
+            </article>
+            <article class="qg-start-card">
+              <div class="qg-start-card-top"><span class="qg-start-icon" aria-hidden="true">🛡️</span><span class="qg-start-index">04 / PERFIL</span></div>
+              <h3>Seu espaço pessoal</h3>
+              <p>Personalize o painel e acompanhe seus registros depois de entrar na conta.</p>
+            </article>
+          </div>
+          <div class="qg-start-foot"><strong>COMO COMEÇAR</strong><span>Use <b>Entrar na Conta</b> se já tem cadastro. No primeiro acesso, abra <b>Criar Nova Conta</b> e escolha uma senha forte.</span></div>
+        </section>
+        """, unsafe_allow_html=True)
 
-    st.info(
-        "Primeiro acesso? Abra **Criar Nova Conta**. O usuário deve ter de 3 a 32 caracteres; "
-        "a senha precisa ter ao menos 12 caracteres, com letras e números. "
-        "As credenciais não são salvas no navegador; a sessão termina após oito horas sem atividade."
-    )
-    st.info("Contas e progresso são guardados no armazenamento local deste app.")
+        st.info(
+            "Primeiro acesso? Abra **Criar Nova Conta**. Use um nome de usuário de 3 a 32 caracteres e uma senha com 12 ou mais caracteres, incluindo letras e números. "
+            "As credenciais não são salvas no navegador; os dados ficam no armazenamento local e a sessão termina após oito horas sem atividade."
+        )
 
-    tab_entrar, tab_cadastrar = st.tabs(["🔐 Entrar na Conta", "📝 Criar Nova Conta"])
+    with login_acesso:
+        st.markdown("### Acesse o QG")
+        st.caption("Entre para acompanhar seus estudos, missões e progresso.")
+        tab_entrar, tab_cadastrar = st.tabs(["🔐 Entrar na Conta", "📝 Criar Nova Conta"])
 
-    with tab_entrar:
-        st.subheader("Login do Cadete")
-        login_user = st.text_input("Utilizador / Nome de Guerra", key="input_login_user")
-        login_pass = st.text_input("Senha", type="password", key="input_login_pass")
+        with tab_entrar:
+            st.subheader("Login do Cadete")
+            login_user = st.text_input("Nome de usuário / nome de guerra", key="input_login_user", placeholder="Digite seu nome de guerra")
+            mostrar_senha_login = st.checkbox("Mostrar senha", key="qg_mostrar_senha_login")
+            login_pass = st.text_input("Senha", type="default" if mostrar_senha_login else "password", key="input_login_pass", placeholder="Digite sua senha")
 
-        if st.button("🔑 Entrar no QG"):
-            u_clean = normalizar_usuario(login_user)
-            chave_login = u_clean or "__login_invalido__"
-            espera = tempo_bloqueio(chave_login)
-            if espera:
-                st.error(f"Muitas tentativas. Aguarde {espera}s antes de tentar novamente.")
-            else:
-                conta_login = carregar_usuario(u_clean)
-                if conta_login and verificar_senha(login_pass, conta_login.get("senha", "")):
-                    registrar_tentativa(chave_login, True)
-                    if not str(conta_login.get("senha", "")).startswith("pbkdf2_sha256$"):
-                        conta_login["senha"] = hash_senha(login_pass)
-                        salvar_usuario(u_clean, conta_login)
+            if st.button("🔑 Entrar no QG", type="primary", use_container_width=True):
+                u_clean = normalizar_usuario(login_user)
+                chave_login = u_clean or "__login_invalido__"
+                espera = tempo_bloqueio(chave_login)
+                if espera:
+                    st.error(f"Muitas tentativas. Aguarde {espera}s antes de tentar novamente.")
+                else:
+                    conta_login = carregar_usuario(u_clean)
+                    if conta_login and verificar_senha(login_pass, conta_login.get("senha", "")):
+                        registrar_tentativa(chave_login, True)
+                        if not str(conta_login.get("senha", "")).startswith("pbkdf2_sha256$"):
+                            conta_login["senha"] = hash_senha(login_pass)
+                            salvar_usuario(u_clean, conta_login)
                     
-                    st.session_state.usuario_logado = u_clean
-                    st.session_state.nome_exibicao = conta_login.get("nome", login_user)
-                    st.session_state.auth_session_token = _qg_criar_sessao(u_clean)
-                    st.session_state.auth_ultima_atividade = time.time()
-                    st.success(f"Bem-vindo, Cadete {st.session_state.nome_exibicao}!")
-                    st.rerun()
-                else:
-                    registrar_tentativa(chave_login, False)
-                    st.error("Utilizador ou senha incorretos.")
-
-        with st.expander("🔑 Esqueceu sua senha?"):
-            st.caption("Redefina sua senha com seu utilizador e a chave de recuperação do responsável pelo sistema.")
-            try:
-                chave_recuperacao_configurada = str(st.secrets.get("QG_PASSWORD_RESET_KEY", "")).strip()
-            except Exception:
-                chave_recuperacao_configurada = ""
-            if not chave_recuperacao_configurada:
-                chave_recuperacao_configurada = os.environ.get("QG_PASSWORD_RESET_KEY", "").strip()
-    
-            recuperacao_ativa = len(chave_recuperacao_configurada) >= 32
-            if not recuperacao_ativa:
-                st.info("A recuperação ainda não foi ativada. Configure QG_PASSWORD_RESET_KEY em Secrets.")
-    
-            with st.form("form_recuperacao_senha", clear_on_submit=True):
-                usuario_recuperacao = st.text_input("Utilizador / Nome de Guerra", key="recuperacao_usuario")
-                chave_recuperacao = st.text_input("Chave de recuperação", type="password", key="recuperacao_chave")
-                nova_senha_recuperacao = st.text_input("Nova senha", type="password", key="recuperacao_nova_senha")
-                confirmar_senha_recuperacao = st.text_input("Confirmar nova senha", type="password", key="recuperacao_confirmar_senha")
-                solicitar_recuperacao = st.form_submit_button(
-                    "Redefinir senha", type="primary", use_container_width=True,
-                    disabled=not recuperacao_ativa,
-                )
-    
-            if solicitar_recuperacao:
-                usuario_recuperacao_limpo = normalizar_usuario(usuario_recuperacao)
-                chave_tentativa_recuperacao = f"recuperacao:{usuario_recuperacao_limpo or '__invalido__'}"
-                espera_recuperacao = tempo_bloqueio(chave_tentativa_recuperacao)
-                if espera_recuperacao:
-                    st.error(f"Muitas tentativas. Aguarde {espera_recuperacao}s antes de tentar novamente.")
-                elif not senha_forte(nova_senha_recuperacao):
-                    st.error("Use uma senha com pelo menos 12 caracteres, incluindo letras e números.")
-                elif nova_senha_recuperacao != confirmar_senha_recuperacao:
-                    st.error("As senhas não coincidem.")
-                else:
-                    conta_recuperacao = carregar_usuario(usuario_recuperacao_limpo)
-                    chave_informada_ok = hmac.compare_digest(
-                        str(chave_recuperacao).encode("utf-8"),
-                        chave_recuperacao_configurada.encode("utf-8"),
-                    )
-                    if isinstance(conta_recuperacao, dict) and chave_informada_ok:
-                        conta_recuperacao["senha"] = hash_senha(nova_senha_recuperacao)
-                        salvar_usuario(usuario_recuperacao_limpo, conta_recuperacao)
-                        _qg_revogar_sessoes_usuario(usuario_recuperacao_limpo)
-                        registrar_tentativa(chave_tentativa_recuperacao, True)
-                        st.success("Senha redefinida. Agora você já pode entrar com a nova senha.")
+                        st.session_state.usuario_logado = u_clean
+                        st.session_state.nome_exibicao = conta_login.get("nome", login_user)
+                        st.session_state.auth_session_token = _qg_criar_sessao(u_clean)
+                        st.session_state.auth_ultima_atividade = time.time()
+                        st.success(f"Bem-vindo, Cadete {st.session_state.nome_exibicao}!")
+                        st.rerun()
                     else:
-                        registrar_tentativa(chave_tentativa_recuperacao, False)
-                        st.error("Não foi possível validar a conta e a chave de recuperação.")
-    
-    with tab_cadastrar:
-        st.subheader("Cadastro de Novo Cadete")
-        cad_nome = st.text_input("Nome Completo / Guerra", key="input_cad_nome")
-        cad_user = st.text_input("Nome de Utilizador (3–32 caracteres: letras, números, . _ -)", key="input_cad_user")
-        cad_pass = st.text_input("Criar Senha", type="password", key="input_cad_pass")
-        cad_conf = st.text_input("Confirmar Senha", type="password", key="input_cad_conf")
+                        registrar_tentativa(chave_login, False)
+                        st.error("Nome de usuário ou senha incorretos.")
 
-        if st.button("📝 Criar Minha Conta"):
-            u_clean = normalizar_usuario(cad_user)
-            if not u_clean or not cad_pass:
-                st.warning("Preencha todos os campos.")
-            elif len(u_clean) < 3:
-                st.error("O nome de usuário precisa ter ao menos 3 caracteres.")
-            elif carregar_usuario(u_clean):
-                st.error("Nome de utilizador já existe.")
-            elif not senha_forte(cad_pass):
-                st.error("Use uma senha com pelo menos 12 caracteres, incluindo letras e números.")
-            elif cad_pass != cad_conf:
-                st.error("Senhas não coincidem.")
-            else:
-                nova_conta = {
-                    "nome": cad_nome if cad_nome else cad_user,
-                    "senha": hash_senha(cad_pass),
-                    "criado_em": str(datetime.date.today())
-                }
-                salvar_usuario(u_clean, nova_conta)
-                st.success("Conta criada! Acesse a aba 'Entrar na Conta'.")
+            with st.expander("🔑 Esqueceu sua senha?"):
+                st.caption("Redefina sua senha com seu utilizador e a chave de recuperação do responsável pelo sistema.")
+                try:
+                    chave_recuperacao_configurada = str(st.secrets.get("QG_PASSWORD_RESET_KEY", "")).strip()
+                except Exception:
+                    chave_recuperacao_configurada = ""
+                if not chave_recuperacao_configurada:
+                    chave_recuperacao_configurada = os.environ.get("QG_PASSWORD_RESET_KEY", "").strip()
+    
+                recuperacao_ativa = len(chave_recuperacao_configurada) >= 32
+                if not recuperacao_ativa:
+                    st.info("A recuperação ainda não foi ativada. Configure QG_PASSWORD_RESET_KEY em Secrets.")
+    
+                with st.form("form_recuperacao_senha", clear_on_submit=True):
+                    usuario_recuperacao = st.text_input("Nome de usuário / nome de guerra", key="recuperacao_usuario")
+                    chave_recuperacao = st.text_input("Chave de recuperação", type="password", key="recuperacao_chave")
+                    nova_senha_recuperacao = st.text_input("Nova senha", type="password", key="recuperacao_nova_senha")
+                    confirmar_senha_recuperacao = st.text_input("Confirmar nova senha", type="password", key="recuperacao_confirmar_senha")
+                    solicitar_recuperacao = st.form_submit_button(
+                        "Redefinir senha", type="primary", use_container_width=True,
+                        disabled=not recuperacao_ativa,
+                    )
+    
+                if solicitar_recuperacao:
+                    usuario_recuperacao_limpo = normalizar_usuario(usuario_recuperacao)
+                    chave_tentativa_recuperacao = f"recuperacao:{usuario_recuperacao_limpo or '__invalido__'}"
+                    espera_recuperacao = tempo_bloqueio(chave_tentativa_recuperacao)
+                    if espera_recuperacao:
+                        st.error(f"Muitas tentativas. Aguarde {espera_recuperacao}s antes de tentar novamente.")
+                    elif not senha_forte(nova_senha_recuperacao):
+                        st.error("Use uma senha com pelo menos 12 caracteres, incluindo letras e números.")
+                    elif nova_senha_recuperacao != confirmar_senha_recuperacao:
+                        st.error("As senhas não coincidem.")
+                    else:
+                        conta_recuperacao = carregar_usuario(usuario_recuperacao_limpo)
+                        chave_informada_ok = hmac.compare_digest(
+                            str(chave_recuperacao).encode("utf-8"),
+                            chave_recuperacao_configurada.encode("utf-8"),
+                        )
+                        if isinstance(conta_recuperacao, dict) and chave_informada_ok:
+                            conta_recuperacao["senha"] = hash_senha(nova_senha_recuperacao)
+                            salvar_usuario(usuario_recuperacao_limpo, conta_recuperacao)
+                            _qg_revogar_sessoes_usuario(usuario_recuperacao_limpo)
+                            registrar_tentativa(chave_tentativa_recuperacao, True)
+                            st.success("Senha redefinida. Agora você já pode entrar com a nova senha.")
+                        else:
+                            registrar_tentativa(chave_tentativa_recuperacao, False)
+                            st.error("Não foi possível validar a conta e a chave de recuperação.")
+    
+        with tab_cadastrar:
+            st.subheader("Cadastro de Novo Cadete")
+            cad_nome = st.text_input("Nome Completo / Guerra", key="input_cad_nome")
+            cad_user = st.text_input("Nome de usuário (3–32 caracteres: letras, números, . _ -)", key="input_cad_user")
+            cad_pass = st.text_input("Criar Senha", type="password", key="input_cad_pass")
+            cad_conf = st.text_input("Confirmar Senha", type="password", key="input_cad_conf")
+
+            if st.button("📝 Criar Minha Conta", type="primary", use_container_width=True):
+                u_clean = normalizar_usuario(cad_user)
+                if not u_clean or not cad_pass:
+                    st.warning("Preencha todos os campos.")
+                elif len(u_clean) < 3:
+                    st.error("O nome de usuário precisa ter ao menos 3 caracteres.")
+                elif carregar_usuario(u_clean):
+                    st.error("Nome de usuário já existe.")
+                elif not senha_forte(cad_pass):
+                    st.error("Use uma senha com pelo menos 12 caracteres, incluindo letras e números.")
+                elif cad_pass != cad_conf:
+                    st.error("Senhas não coincidem.")
+                else:
+                    nova_conta = {
+                        "nome": cad_nome if cad_nome else cad_user,
+                        "senha": hash_senha(cad_pass),
+                        "criado_em": str(datetime.date.today())
+                    }
+                    salvar_usuario(u_clean, nova_conta)
+                    st.success("Conta criada! Acesse a aba 'Entrar na Conta'.")
 
     st.stop()
 
@@ -1411,6 +1403,7 @@ if "acesso_plataforma_notificado" not in st.session_state:
     registrar_acesso_usuario(user_atual)
 
 def _eventos_proximos(dias=7):
+    """Lê os próximos eventos do calendário local, quando disponíveis."""
     try:
         conn = sqlite3.connect("dados_qg.db")
         exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='calendario_qg'").fetchone()
@@ -1452,6 +1445,47 @@ QG_MODULOS_NAVEGACAO = [
     "🛡️ Módulo 24 · Central Administrativa",
 ]
 
+QG_ORDEM_NAV_PRIORITARIA = (
+    "📊 Painel & Rotina Diária",
+    "🛰️ Módulo 26 · Central de Desafios EsPCEx",
+    "🎯 Missões Diárias",
+    "📖 Diário de Bordo",
+    "📝 Registro de Questões",
+    "🧩 Quiz Diário Adaptativo",
+    "🎯 Simulados (1º e 2º Dia)",
+    "🏋️ Treino TAF + Spotify",
+    "🏃 Módulo 13: Pacer TAF",
+    "📅 Cronograma Dinâmico",
+    "📅 Calendário Tático",
+    "🗓️ Plano Semanal Automático",
+    "📋 Edital Verticalizado EsPCEx",
+    "🧠 Memória Avançada",
+    "📕 Caderno de Bizus & Erros",
+    "👤 Meu Perfil",
+    "🔥 Habit Tracker",
+    "⏱️ Pomodoro Tático (com Alarme)",
+    "🎯 Modo Foco",
+)
+_qg_ordem_nav = {nome: i for i, nome in enumerate(QG_ORDEM_NAV_PRIORITARIA)}
+QG_MODULOS_NAVEGACAO.sort(key=lambda nome: _qg_ordem_nav.get(nome, len(_qg_ordem_nav)))
+del _qg_ordem_nav
+
+QG_ROTULOS_NAV_UI = {
+    "📌 Módulo 10 - Quadro Tático (Kanban)": "📌 Quadro Tático · Kanban",
+    "🏃 Módulo 13: Pacer TAF": "🏃 Pacer TAF",
+    "🛰️ Módulo 26 · Central de Desafios EsPCEx": "🛰️ Módulo 26 · Desafios EsPCEx",
+    "🛡️ Módulo 24 · Central Administrativa": "🛡️ Central Administrativa",
+    "💰 Controlo Financeiro": "💰 Controle Financeiro",
+    "🌾 Calc. Agropecuária": "🌾 Cálculos Agropecuários",
+    "📲 Instalar como App": "📲 Instalar o QG",
+    "🎮 Mini Jogo de Pontos": "🎮 Jogo de Pontos",
+    "📝 Registro de Questões": "📝 Questões",
+    "⏱️ Pomodoro Tático (com Alarme)": "⏱️ Pomodoro Tático",
+}
+def _qg_rotulo_modulo_navegacao(nome: str) -> str:
+    """Obtém o nome curto usado para exibir um módulo na navegação."""
+    return QG_ROTULOS_NAV_UI.get(nome, nome)
+
 QG_ADMIN_MODULOS_INTERNOS = [
     "🛡️ Módulo 24 · Ajustes Privados", "🎮 Admin · Discord Bot", "📈 Admin · Relatórios",
     "📥 Admin · Importação", "💻 Admin · Console SQL", "📜 Admin · Logs",
@@ -1463,6 +1497,7 @@ QG_ROTAS_ADMIN_LEGADAS = set(["🛡️ Módulo 24 - Painel do Administrador", "�
 
 
 def _salvar_check_missao(username, data_iso, tarefa_id, widget_key):
+    """Salva o estado de conclusão de uma tarefa da missão diária."""
     estado = carregar_dados_usuario(username, get_edital_espcex)
     missoes = estado.get("missoes_diarias", {})
     if not isinstance(missoes, dict): missoes = {}
@@ -1562,6 +1597,7 @@ for _periodo, _categoria, _minutos, _pontos, _titulos in _QG_MISSOES_SEMENTES:
 QG_MISSOES_POR_ID = {missao["id"]: missao for missao in QG_MISSOES}
 
 def _render_missao_diaria():
+    """Monta o cartão da missão diária e registra as interações."""
     hoje = datetime.date.today().isoformat()
     missao_config = db.get("config_missoes_diarias", {})
     if not isinstance(missao_config, dict): missao_config = {}
@@ -1637,6 +1673,7 @@ st.markdown(f"""
 # BARRA LATERAL (SIDEBAR)
 # =============================================================================
 def _navegar_sidebar_qg(modulo: str) -> None:
+    """Atualiza a tela selecionada pelo menu lateral."""
     if modulo in QG_MODULOS_NAVEGACAO:
         st.session_state["qg_nav_menu"] = modulo
 
@@ -1687,7 +1724,7 @@ if st.session_state.get("qg_nav_menu") not in modulos_qg:
 st.sidebar.subheader("Módulos do QG")
 busca_modulo_qg = st.sidebar.text_input("Buscar módulo", placeholder="Digite para localizar...", key="qg_nav_search", label_visibility="collapsed")
 menu_atual_qg = st.session_state.get("qg_nav_menu", "📊 Painel & Rotina Diária")
-modulos_filtrados_qg = [m for m in modulos_qg if busca_modulo_qg.strip().casefold() in m.casefold()]
+modulos_filtrados_qg = [m for m in modulos_qg if busca_modulo_qg.strip().casefold() in m.casefold() or busca_modulo_qg.strip().casefold() in _qg_rotulo_modulo_navegacao(m).casefold()]
 
 if busca_modulo_qg.strip() and not modulos_filtrados_qg:
     st.sidebar.caption("Nenhum módulo encontrado. A tela atual continua aberta.")
@@ -1695,7 +1732,7 @@ if busca_modulo_qg.strip() and not modulos_filtrados_qg:
 elif menu_atual_qg not in modulos_filtrados_qg:
     modulos_filtrados_qg = [menu_atual_qg] + modulos_filtrados_qg
 
-menu = st.sidebar.radio("Central de Operações", modulos_filtrados_qg, key="qg_nav_menu", label_visibility="collapsed")
+menu = st.sidebar.radio("Central de Operações", modulos_filtrados_qg, key="qg_nav_menu", label_visibility="collapsed", format_func=_qg_rotulo_modulo_navegacao)
 
 # Cabeçalho compartilhado inspirado no Módulo 14: painel animado, identificação da plataforma e relógio do navegador.
 # Ele dá às telas autenticadas a mesma abertura visual sem trocar os controles ou os dados próprios de cada módulo.
@@ -1734,12 +1771,14 @@ html,body{width:100%;height:100%;margin:0;padding:0;overflow:hidden;background:t
 </style>
 <script>
 // Atualiza o relógio dentro do cabeçalho sem provocar reruns do Streamlit.
-(()=>{const clock=document.getElementById("qg-enterprise-clock");if(!clock)return;const render=()=>{clock.textContent="⏱️ "+new Date().toLocaleTimeString("pt-BR")+" · SISTEMA ATIVO"};render();window.setInterval(render,1000)})();
+(()=>{const clock=document.getElementById("qg-enterprise-clock");if(!clock)return;// Atualiza o relógio do painel local sem disparar uma nova execução do Streamlit.
+const render=()=>{clock.textContent="⏱️ "+new Date().toLocaleTimeString("pt-BR")+" · SISTEMA ATIVO"};render();window.setInterval(render,1000)})();
 </script>
 """, height=108, scrolling=False)
 
 # Navegação rápida para celular: replica a seleção atual do menu lateral em um seletor compacto.
 def _navegar_mobile_qg() -> None:
+    """Atualiza a tela selecionada pelo menu de navegação móvel."""
     modulo = st.session_state.get("qg_mobile_nav_selection")
     if modulo in QG_MODULOS_NAVEGACAO:
         st.session_state["qg_nav_menu"] = modulo
@@ -1750,6 +1789,7 @@ with st.container(key="qg_mobile_navigation"):
     st.selectbox(
         "Acessar módulo",
         options=QG_MODULOS_NAVEGACAO,
+        format_func=_qg_rotulo_modulo_navegacao,
         index=QG_MODULOS_NAVEGACAO.index(menu),
         key="qg_mobile_nav_selection",
         on_change=_navegar_mobile_qg,
@@ -1918,6 +1958,13 @@ if menu == "👤 Meu Perfil":
 elif menu == "📊 Painel & Rotina Diária":
     st.title(f"📊 QG EsPCEx - Painel de Prontidão de {nome_cadete}")
     st.caption("Visão integrada dos estudos noturnos, treino físico da madrugada, trabalho no campo e realização da AMSP.")
+    st.button(
+        "🎯 Abrir missão do dia",
+        on_click=_navegar_qg,
+        args=("🛰️ Módulo 26 · Central de Desafios EsPCEx",),
+        type="primary",
+        key="qg_dashboard_acao_principal_missao",
+    )
     
     if not db.get("guia_inicial_concluido", False):
         with st.container():
@@ -1945,9 +1992,9 @@ elif menu == "📊 Painel & Rotina Diária":
         "Horas de estudo", "Questões respondidas", "Taxa de acerto", "Treinos TAF",
         "Dias até a prova", "AMSP pendentes", "Revisões pendentes", "Progresso do edital",
     ]
-    indicadores_salvos = painel_config.get("indicadores", opcoes_indicadores[:5])
+    indicadores_salvos = painel_config.get("indicadores", opcoes_indicadores[:4])
     if not isinstance(indicadores_salvos, list):
-        indicadores_salvos = opcoes_indicadores[:5]
+        indicadores_salvos = opcoes_indicadores[:4]
         
     with st.expander("🎛️ Personalizar indicadores do painel", expanded=False):
         with st.form("form_indicadores_painel"):
@@ -1979,12 +2026,15 @@ elif menu == "📊 Painel & Rotina Diária":
     
     indicadores_ativos = [item for item in indicadores_salvos if item in dados_indicadores]
     
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.subheader("Seu progresso")
     if indicadores_ativos:
-        metric_cols = st.columns(min(len(indicadores_ativos), 6))
-        for indice, item in enumerate(indicadores_ativos):
-            rotulo, valor = dados_indicadores[item]
-            metric_cols[indice % len(metric_cols)].metric(rotulo, valor)
+        # Mostra no máximo quatro cartões por linha; os demais seguem na linha seguinte.
+        for inicio_indicadores in range(0, len(indicadores_ativos), 4):
+            itens_linha_indicadores = indicadores_ativos[inicio_indicadores:inicio_indicadores + 4]
+            metric_cols = st.columns(len(itens_linha_indicadores))
+            for coluna_indicador, item in zip(metric_cols, itens_linha_indicadores):
+                rotulo, valor = dados_indicadores[item]
+                coluna_indicador.metric(rotulo, valor)
     else:
         st.info("Selecione pelo menos um indicador no cartão de personalização acima.")
 
@@ -2138,7 +2188,7 @@ elif menu == "📊 Painel & Rotina Diária":
             )
             # Adicionando grid mais suave para dar profundidade
             fig_mat.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255,255,255,0.1)')
-            st.plotly_chart(fig_mat, use_container_width=True)
+            _qg_plotly_chart(fig_mat, use_container_width=True)
         else:
             st.info("Nenhuma bateria de questões registrada.")
 
@@ -2157,90 +2207,29 @@ elif menu == "📊 Painel & Rotina Diária":
                 "Revisado / Dominado": "#10b981"
             }
             
-            # Prepara os dados para o JavaScript do Highcharts 3D
-            data_for_hc = []
-            for _, row in df_status.iterrows():
-                # O item "Revisado / Dominado" fica levemente destacado
-                is_sliced = row["Status"] == "Revisado / Dominado"
-                data_for_hc.append({
-                    "name": row["Status"],
-                    "y": int(row["Quantidade"]),
-                    "color": cores_map.get(row["Status"], "#888888"),
-                    "sliced": is_sliced,
-                    "selected": is_sliced
-                })
-            
-            # Injeta o Highcharts 3D via HTML/JS (Gráfico de Rosca/Donut Premium)
-            hc_html = f"""
-            <html>
-            <head>
-                <script src="https://code.highcharts.com/highcharts.js"></script>
-                <script src="https://code.highcharts.com/highcharts-3d.js"></script>
-                <style>
-                    body {{ 
-                        background-color: transparent; 
-                        margin: 0; 
-                        padding: 0; 
-                        font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; 
-                    }}
-                    #container {{ height: 350px; width: 100%; }}
-                </style>
-            </head>
-            <body>
-                <div id="container"></div>
-                <script>
-                    Highcharts.chart('container', {{
-                        chart: {{
-                            type: 'pie',
-                            options3d: {{
-                                enabled: true,
-                                alpha: 45,
-                                beta: 0
-                            }},
-                            backgroundColor: 'transparent'
-                        }},
-                        title: {{
-                            text: null
-                        }},
-                        tooltip: {{
-                            pointFormat: '<b>{{point.percentage:.1f}}%</b><br>({{point.y}} itens)',
-                            backgroundColor: 'rgba(15, 23, 42, 0.9)',
-                            style: {{ color: '#e2e8f0' }},
-                            borderWidth: 1,
-                            borderColor: '#334155'
-                        }},
-                        plotOptions: {{
-                            pie: {{
-                                allowPointSelect: true,
-                                cursor: 'pointer',
-                                depth: 45,
-                                innerSize: '30%', /* Cria o efeito Donut 3D */
-                                dataLabels: {{
-                                    enabled: true,
-                                    format: '<b>{{point.name}}</b>',
-                                    color: '#e2e8f0',
-                                    style: {{ 
-                                        textOutline: 'none', 
-                                        fontSize: '13px',
-                                        fontWeight: '600'
-                                    }}
-                                }}
-                            }}
-                        }},
-                        series: [{{
-                            name: 'Progresso',
-                            data: {json.dumps(data_for_hc)}
-                        }}],
-                        credits: {{
-                            enabled: false
-                        }}
-                    }});
-                </script>
-            </body>
-            </html>
-            """
-            
-            components.html(hc_html, height=360)
+            # Usa o Plotly do próprio app para que o gráfico continue disponível sem internet.
+            status_labels = df_status["Status"].astype(str).tolist()
+            status_values = df_status["Quantidade"].astype(int).tolist()
+            status_colors = [cores_map.get(label, "#7b8fa3") for label in status_labels]
+            fig_status_edital = go.Figure(go.Pie(
+                labels=status_labels,
+                values=status_values,
+                hole=0.52,
+                sort=False,
+                marker={"colors": status_colors, "line": {"color": "#061321", "width": 3}},
+                textinfo="label+percent",
+                textposition="outside",
+                hovertemplate="%{label}<br>%{value} tópicos<br>%{percent}<extra></extra>",
+            ))
+            fig_status_edital.update_layout(
+                height=360,
+                margin=dict(l=18, r=18, t=18, b=18),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#e8f1f7", size=14),
+                showlegend=False,
+            )
+            _qg_plotly_chart(fig_status_edital, use_container_width=True, config={"displayModeBar": False})
         else:
             st.info("Edital não importado ainda.")
             
@@ -2337,7 +2326,8 @@ elif menu == "🦉 Portal Estratégia Militares":
         key="portal_abrir_hub_links",
     )
     st.subheader("🌐 Visualização em Tela da Plataforma")
-    components.iframe("https://militares.estrategia.com", height=650, scrolling=True)
+    st.info("A plataforma Estratégia é um serviço externo e exige internet. O QG, seus dados e os módulos locais continuam disponíveis sem conexão.")
+    st.link_button("Abrir plataforma Estratégia (requer internet)", "https://militares.estrategia.com", use_container_width=True)
 
 # -----------------------------------------------------------------------------
 # MÓDULO 3: Treino TAF + Player de Música Spotify
@@ -2444,18 +2434,21 @@ elif menu == "🏋️ Treino TAF + Spotify":
                     x="Data", y="Distância (m)", markers=True,
                     template="qg_enterprise",
                 )
-                st.plotly_chart(fig_corrida_taf, use_container_width=True)
+                _qg_plotly_chart(fig_corrida_taf, use_container_width=True)
             st.markdown("#### Histórico salvo")
             st.dataframe(df_historico_taf, use_container_width=True, hide_index=True)
 
     with aba_spotify_taf:
         st.markdown("#### 🎵 Player de treino")
         st.caption("O player é fornecido pelo Spotify e pode solicitar autenticação ou abrir o aplicativo Spotify.")
-        components.iframe(
-            "https://open.spotify.com/embed/playlist/37i9dQZF1DX76Wlfdnj7bg?utm_source=generator&theme=0",
-            height=430,
-            scrolling=True,
+        st.info("O Spotify exige internet. Para ouvir sem conexão, selecione um arquivo de áudio que esteja salvo no seu dispositivo.")
+        audio_taf_offline = st.file_uploader(
+            "Áudio local para o treino",
+            type=["mp3", "wav", "ogg", "m4a", "aac"],
+            key="qg_taf_audio_offline",
         )
+        if audio_taf_offline:
+            st.audio(audio_taf_offline)
 
 # -----------------------------------------------------------------------------
 # MÓDULO 4: Alternância EFA & AMSP (15/15) - Disciplinas da EFA
@@ -2470,6 +2463,7 @@ elif menu == "🌾 Alternância EFA & AMSP (15/15)":
 
     # 1. Garante a criação das tabelas no SQLite local
     def init_db_efa():
+        """Cria as tabelas locais usadas pelo módulo de ciclos EFA."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         
@@ -2667,9 +2661,11 @@ elif menu == "🌾 Alternância EFA & AMSP (15/15)":
 # -----------------------------------------------------------------------------
 elif menu == "⏱️ Pomodoro Tático (com Alarme)":
     def tocar_alarme_sonoro():
+        """Reproduz no navegador um aviso sonoro gerado localmente, sem carregar áudio da internet."""
         components.html("""
             <script>
             const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            // Gera um sinal curto com o oscilador local do navegador.
             function playBeep(freq, duration) {
                 const osc = audioCtx.createOscillator();
                 const gain = audioCtx.createGain();
@@ -2801,7 +2797,7 @@ elif menu == "✍️ Módulo de Redação":
             fig_red = px.line(df_red, x="Tema", y="Nota", markers=True, title="Evolução de Notas")
             fig_red.add_hline(y=50.0, line_dash="dash", line_color="red", annotation_text="Mínimo 50 pts")
             fig_red.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="#e0e6ed")
-            st.plotly_chart(fig_red, use_container_width=True)
+            _qg_plotly_chart(fig_red, use_container_width=True)
             st.dataframe(df_red, use_container_width=True)
         else:
             st.info("Nenhuma redação cadastrada ainda.")
@@ -2824,6 +2820,7 @@ elif menu == "📋 Edital Verticalizado EsPCEx":
 
     # 1. Garante a criação da tabela no SQLite local
     def init_db_edital():
+        """Cria as tabelas locais para acompanhar o progresso do edital."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute('''
@@ -2949,6 +2946,7 @@ elif menu == "📝 Registro de Questões":
 
     # 1. Garante a criação da tabela no SQLite local
     def init_db_questoes():
+        """Cria as tabelas locais de baterias de questões e resultados."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute('''
@@ -3058,6 +3056,7 @@ elif "bizu" in menu.lower() or "erros" in menu.lower():
 
     # 1. Garante a criação da tabela no SQLite local
     def init_db_erros():
+        """Cria as tabelas locais para registrar erros e revisá-los."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute('''
@@ -3153,6 +3152,7 @@ elif menu == "📌 Módulo 10 - Quadro Tático (Kanban)":
 
     # 1. Cria a tabela no SQLite local se não existir
     def init_db_kanban():
+        """Cria as tabelas locais das tarefas do quadro Kanban."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute("""
@@ -3654,6 +3654,7 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
     # MOTOR DE RENDERIZAÇÃO: VELOCÍMETRO TÁTICO (GAUGE CHART UNIFICADO)
     # ==============================================================================
     def criar_velocimetro(valor, max_valor, titulo, cor_barra, limiar=None):
+        """Gera um indicador visual tipo velocímetro para um valor de progresso."""
         fig = go.Figure(go.Indicator(
             mode="gauge+number",
             value=valor,
@@ -3790,14 +3791,14 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
             if bateria_residual < 40: cor_velocimetro = "#00f2fe"
             if bateria_residual < 15: cor_velocimetro = "#ff2b6d"
         with col_o2:
-            st.plotly_chart(criar_velocimetro(bateria_residual, 100, "🔋 BATERIA RESIDUAL (%)", cor_velocimetro), use_container_width=True)
+            _qg_plotly_chart(criar_velocimetro(bateria_residual, 100, "🔋 BATERIA RESIDUAL (%)", cor_velocimetro), use_container_width=True)
             
         st.markdown("---")
         x_m = np.linspace(-5, 5, 40); y_m = np.linspace(-5, 5, 40); X_m, Y_m = np.meshgrid(x_m, y_m)
         Z_m = np.exp(-(X_m**2 + Y_m**2)/10) * (inclinacao_terreno * 2) + np.random.normal(0, 0.5, X_m.shape)
         fig_b = go.Figure(data=[go.Surface(z=Z_m, x=X_m, y=Y_m, colorscale='Viridis', opacity=0.95, lighting=dict(roughness=0.9))])
         fig_b.update_layout(scene=dict(xaxis_title='Vetor X', yaxis_title='Vetor Y', zaxis_title='Altímetro (m)', xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), camera=dict(eye=dict(x=1.8, y=-1.8, z=0.5))), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=500)
-        st.plotly_chart(fig_b, use_container_width=True, theme=None)
+        _qg_plotly_chart(fig_b, use_container_width=True, theme=None)
 
     # ==============================================================================
     # ABA 2: CORRIDA PACER
@@ -3809,13 +3810,13 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
             tamanho_pista = st.number_input("Tamanho da Pista (m)", 100, 1000, 400, 50, key="c2")
             vel_media_kmh = (distancia_meta / 1000) / (12.0 / 60)
         with col2:
-            st.plotly_chart(criar_velocimetro(vel_media_kmh, 22, "🔥 VELOCIDADE MÉDIA (KM/H)", "#00f2fe", 12.25), use_container_width=True)
+            _qg_plotly_chart(criar_velocimetro(vel_media_kmh, 22, "🔥 VELOCIDADE MÉDIA (KM/H)", "#00f2fe", 12.25), use_container_width=True)
             
         st.markdown("---")
         sx = np.arange(1, 9); dy = min(2000, distancia_meta - 450) + (((distancia_meta + 100 - min(2000, distancia_meta - 450)) / 7) * (sx - 1)); vz = (dy / 1000) / (12 / 60)
         fig_p = go.Figure(data=[go.Scatter3d(x=sx, y=dy, z=vz, mode='lines+markers', marker=dict(size=12, color=vz, colorscale='Teal', opacity=1.0, line=dict(color='white', width=2)), line=dict(color='rgba(0, 242, 254, 0.8)', width=8))])
         fig_p.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), camera=dict(eye=dict(x=1.8, y=-1.8, z=0.5))), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=500)
-        st.plotly_chart(fig_p, use_container_width=True, theme=None)
+        _qg_plotly_chart(fig_p, use_container_width=True, theme=None)
 
     # ==============================================================================
     # ABA 3: BARRA E ABDOMINAL
@@ -3824,16 +3825,16 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
         col_f1, col_f2 = st.columns(2)
         with col_f1: 
             barras = st.number_input("Barras Máximas Realizadas", 0, 30, 8)
-            st.plotly_chart(criar_velocimetro(barras, 20, "💪 BARRAS (REPS)", "#00ff88", 3), use_container_width=True)
+            _qg_plotly_chart(criar_velocimetro(barras, 20, "💪 BARRAS (REPS)", "#00ff88", 3), use_container_width=True)
         with col_f2: 
             abdominais = st.number_input("Abdominais (1 min)", 0, 100, 45)
-            st.plotly_chart(criar_velocimetro(abdominais, 80, "🛡️ ABDOMINAIS (REPS)", "#00f2fe", 30), use_container_width=True)
+            _qg_plotly_chart(criar_velocimetro(abdominais, 80, "🛡️ ABDOMINAIS (REPS)", "#00f2fe", 30), use_container_width=True)
 
         st.markdown("---")
         xf, yf = np.meshgrid(np.linspace(1, 6, 20), np.linspace(1, 8, 20)); zf = np.clip(15 + (xf ** 1.9) * 6 - (np.log(yf + 1) * 12), 0, 100)
         fig_f = go.Figure(data=[go.Surface(z=zf, x=xf, y=yf, colorscale='Teal', opacity=1.0, lighting=dict(roughness=0.1, specular=1.5))])
         fig_f.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117")), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=400)
-        st.plotly_chart(fig_f, use_container_width=True, theme=None)
+        _qg_plotly_chart(fig_f, use_container_width=True, theme=None)
 
     # ==============================================================================
     # ABA 4: MECÂNICA
@@ -3845,13 +3846,13 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
             peso_flex = st.number_input("Seu Peso Corporal (kg)", 40.0, 120.0, 68.0)
             tonelagem = ((peso_flex * 0.64) * flexoes) / 1000
         with col_flex2:
-            st.plotly_chart(criar_velocimetro(tonelagem, 5, "💥 TONELAGEM MOVIMENTADA (TONS)", "#ff2b6d"), use_container_width=True)
+            _qg_plotly_chart(criar_velocimetro(tonelagem, 5, "💥 TONELAGEM MOVIMENTADA (TONS)", "#ff2b6d"), use_container_width=True)
 
         st.markdown("---")
         reps_x = np.arange(1, flexoes + 1) if flexoes > 0 else np.array([0]); cadencia_y = np.linspace(1, 1.5, len(reps_x)); esforco_z = reps_x * cadencia_y
         fig_fl = go.Figure(data=[go.Scatter3d(x=reps_x, y=cadencia_y, z=esforco_z, mode='markers', marker=dict(size=10, color=esforco_z, colorscale='Electric', opacity=0.9, symbol='diamond'))])
         fig_fl.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117")), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=400)
-        st.plotly_chart(fig_fl, use_container_width=True, theme=None)
+        _qg_plotly_chart(fig_fl, use_container_width=True, theme=None)
 
     # ==============================================================================
     # ABA 5: NATAÇÃO
@@ -3862,13 +3863,13 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
             tempo_natacao = st.slider("Tempo em Natação 50m (Segundos)", 20, 120, 50)
         with col_n2:
             cor_natacao = "#00ff88" if tempo_natacao <= 55 else "#ff2b6d"
-            st.plotly_chart(criar_velocimetro(tempo_natacao, 120, "⏱️ TEMPO (SEGUNDOS)", cor_natacao, 55), use_container_width=True)
+            _qg_plotly_chart(criar_velocimetro(tempo_natacao, 120, "⏱️ TEMPO (SEGUNDOS)", cor_natacao, 55), use_container_width=True)
 
         st.markdown("---")
         xn, yn = np.meshgrid(np.linspace(0, 10, 40), np.linspace(0, 10, 40)); zn = np.sin(xn + (tempo_natacao/10)) * np.cos(yn) * (tempo_natacao/15) 
         fig_n = go.Figure(data=[go.Surface(z=zn, x=xn, y=yn, colorscale='Blues', opacity=0.9, lighting=dict(specular=2.0))])
         fig_n.update_layout(scene=dict(xaxis=dict(showgrid=False, backgroundcolor="#0d1117"), yaxis=dict(showgrid=False, backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117")), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=400)
-        st.plotly_chart(fig_n, use_container_width=True, theme=None)
+        _qg_plotly_chart(fig_n, use_container_width=True, theme=None)
 
     # ==============================================================================
     # ABA 6: ZONAS VAM
@@ -3879,13 +3880,13 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
             vam = st.slider("Sua Velocidade Aeróbica Máxima (km/h)", 10.0, 22.0, 15.0, 0.5)
             limiar = vam * 0.85
         with col_v2:
-            st.plotly_chart(criar_velocimetro(limiar, 25, "🫀 LIMIAR ANAERÓBICO (KM/H)", "#ff2b6d", 15), use_container_width=True)
+            _qg_plotly_chart(criar_velocimetro(limiar, 25, "🫀 LIMIAR ANAERÓBICO (KM/H)", "#ff2b6d", 15), use_container_width=True)
 
         st.markdown("---")
         xv, yv = np.meshgrid(np.linspace(8, 20, 30), np.linspace(0, 15, 30)); zv = (0.2 * (xv * 16.6667)) + (0.9 * (xv * 16.6667) * (yv/100)) + 3.5
         fig_v = go.Figure(data=[go.Surface(z=zv, x=xv, y=yv, colorscale='Inferno', opacity=1.0)])
         fig_v.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117")), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=400)
-        st.plotly_chart(fig_v, use_container_width=True, theme=None)
+        _qg_plotly_chart(fig_v, use_container_width=True, theme=None)
 
     # ==============================================================================
     # ABA 7: MARCHA TÁTICA
@@ -3897,13 +3898,13 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
             carga_mochila = st.slider("Peso da Mochila (kg)", 5.0, 30.0, 15.0, 1.0)
             carga_tatica = dist_marcha * carga_mochila
         with col_m2:
-            st.plotly_chart(criar_velocimetro(carga_tatica, 600, "🎒 CARGA TÁTICA (KG/KM)", "#FFD700"), use_container_width=True)
+            _qg_plotly_chart(criar_velocimetro(carga_tatica, 600, "🎒 CARGA TÁTICA (KG/KM)", "#FFD700"), use_container_width=True)
             
         st.markdown("---")
         xt, yt = np.meshgrid(np.linspace(0, dist_marcha, 40), np.linspace(-2, 2, 40)); zt = np.sin(xt * 1.5) * np.cos(yt * 2) * (carga_mochila / 10) + np.random.normal(0, 0.1, xt.shape)
         fig_m = go.Figure(data=[go.Surface(z=zt, x=xt, y=yt, colorscale='Earth', opacity=1.0, lighting=dict(roughness=0.8, specular=0.2))])
         fig_m.update_layout(scene=dict(xaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), yaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), zaxis=dict(gridcolor="#1e2430", backgroundcolor="#0d1117"), camera=dict(eye=dict(x=1.5, y=-1.5, z=0.8))), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=400)
-        st.plotly_chart(fig_m, use_container_width=True, theme=None)
+        _qg_plotly_chart(fig_m, use_container_width=True, theme=None)
 
     # ==============================================================================
     # ABA 8: SISTEMA DE CLEARANCE ESPCEX
@@ -3924,7 +3925,7 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
         if prontidao_global >= 80: clearance_cor_grafico = 'aggrnyl'; cor_vel = "#00ff88"
         if prontidao_global >= 95: clearance_cor_grafico = 'Wistia'; cor_vel = "#FFD700"
         with col_t2:
-            st.plotly_chart(criar_velocimetro(prontidao_global, 100, "🎯 ÍNDICE DE PRONTIDÃO GLOBAL (%)", cor_vel, 80), use_container_width=True)
+            _qg_plotly_chart(criar_velocimetro(prontidao_global, 100, "🎯 ÍNDICE DE PRONTIDÃO GLOBAL (%)", cor_vel, 80), use_container_width=True)
 
         st.markdown("---")
         u = np.linspace(0, 2 * np.pi, 120); v = np.linspace(0, 2 * np.pi, 60); U, V = np.meshgrid(u, v)
@@ -3932,57 +3933,21 @@ elif menu == "🏃 Módulo 13: Pacer TAF":
         Matriz_Cores = np.where(U <= ((prontidao_global/100) * 2 * np.pi), 1, 0)
         fig_d = go.Figure(data=[go.Surface(x=X_t, y=Y_t, z=Z_t, surfacecolor=Matriz_Cores, colorscale=clearance_cor_grafico, cmin=0, cmax=1, showscale=False, opacity=1.0, lighting=dict(ambient=0.5, diffuse=0.8, specular=1.5, roughness=0.1), contours=dict(x=dict(show=False), y=dict(show=False), z=dict(show=False)))])
         fig_d.update_layout(scene=dict(xaxis=dict(showgrid=False, showticklabels=False, backgroundcolor="#0d1117", title=""), yaxis=dict(showgrid=False, showticklabels=False, backgroundcolor="#0d1117", title=""), zaxis=dict(showgrid=False, showticklabels=False, backgroundcolor="#0d1117", title=""), camera=dict(eye=dict(x=0, y=-1.5, z=1.8))), margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=450)
-        st.plotly_chart(fig_d, use_container_width=True, theme=None)
+        _qg_plotly_chart(fig_d, use_container_width=True, theme=None)
 
    # ==============================================================================
     # ABA 9: ÁUDIO TFM (SPOTIFY NATIVO ISOLADO)
     # ==============================================================================
     with tabs[8]:
-        import streamlit.components.v1 as components
-        
-        codigo_spotify = """
-        <style>
-        body { 
-            background-color: transparent; 
-            margin: 0; 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-        }
-        .spotify-ultra-container {
-            background: linear-gradient(135deg, rgba(29, 185, 84, 0.1) 0%, rgba(5, 8, 15, 0.95) 100%);
-            border: 1px solid rgba(29, 185, 84, 0.3);
-            border-top: 3px solid #1DB954;
-            border-radius: 24px;
-            padding: 30px;
-            text-align: center;
-        }
-        .spotify-title { 
-            color: #fff; 
-            font-size: 2.2rem; 
-            font-weight: 900; 
-            margin: 0 0 10px 0; 
-            text-shadow: 0 0 20px rgba(29, 185, 84, 0.6); 
-        }
-        .spotify-title span { color: #1DB954; }
-        .spotify-desc { color: #b3b3b3; font-size: 1rem; margin-bottom: 25px; }
-        .spotify-iframe-wrapper { 
-            border-radius: 20px; 
-            overflow: hidden; 
-            border: 2px solid rgba(29, 185, 84, 0.4); 
-            box-shadow: 0 15px 50px rgba(0,0,0,0.9); 
-        }
-        </style>
-
-        <div class="spotify-ultra-container">
-            <h2 class="spotify-title"><span>🎧</span> SPOTIFY TÁTICO</h2>
-            <p class="spotify-desc">Sincronização Ativa. Faça o login direto no terminal abaixo para aceder à sua biblioteca sem sair do sistema.</p>
-            <div class="spotify-iframe-wrapper">
-                <iframe src="https://open.spotify.com/embed/playlist/37i9dQZF1DX76Wlfdnj7bg?utm_source=generator&theme=0" width="100%" height="700" frameBorder="0" allowfullscreen="" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="lazy"></iframe>
-            </div>
-        </div>
-        """
-        
-        # Carrega o HTML de forma isolada e segura, prevenindo o erro do React
-        components.html(codigo_spotify, height=900, scrolling=False)
+        st.markdown("#### 🎧 Áudio local para foco")
+        st.info("O Spotify precisa de internet. Para continuar offline, carregue um arquivo de áudio salvo no dispositivo.")
+        audio_tfm_offline = st.file_uploader(
+            "Selecionar áudio para esta sessão",
+            type=["mp3", "wav", "ogg", "m4a", "aac"],
+            key="qg_audio_tfm_offline",
+        )
+        if audio_tfm_offline:
+            st.audio(audio_tfm_offline)
    
 # ====================================================
 # MÓDULO 14: NUTRIÇÃO & CALORIAS
@@ -4173,13 +4138,13 @@ elif menu == "🥗 Nutrição & Calorias":
             textinfo='percent', textfont=dict(size=14, color='white', family="Arial Black")
         )])
         fig_donut_gasto.update_layout(
-            template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            template="qg_enterprise", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             margin=dict(l=0, r=0, b=0, t=10), height=350,
             showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5)
         )
         # Adiciona a anotação central com texto iluminado
         fig_donut_gasto.add_annotation(text=f"<span style='font-size:32px; font-weight:900; color:#92FE9D;'>{gasto_total:.0f}</span><br>KCAL", x=0.5, y=0.5, showarrow=False)
-        st.plotly_chart(fig_donut_gasto, use_container_width=True)
+        _qg_plotly_chart(fig_donut_gasto, use_container_width=True)
 
     # =====================================================================
     # 🥑 ABA 2: BANCO DE DADOS (CATÁLOGO FILTRÁVEL)
@@ -4255,6 +4220,7 @@ elif menu == "🥗 Nutrição & Calorias":
         
         # Função Auxiliar 1: Conversão de datas gravadas como String (ISO) de volta para Datetime
         def _qg_data_hidratacao(registro):
+            """Interpreta a data de um registro de hidratação no fuso selecionado."""
             try:
                 dt = datetime.datetime.fromisoformat(str(registro.get("data_hora", "")).replace("Z", "+00:00"))
                 if dt.tzinfo is None: dt = dt.replace(tzinfo=fuso_hidratacao)
@@ -4263,6 +4229,7 @@ elif menu == "🥗 Nutrição & Calorias":
 
         # Função Auxiliar 2: Insere o log de água na lista, limita a 1500 logs, e salva no banco de dados principal
         def _qg_registrar_hidratacao(volume_ml):
+            """Adiciona uma ingestão de água ao histórico local de hidratação."""
             registros_hidratacao.append({"data_hora": datetime.datetime.now(fuso_hidratacao).isoformat(timespec="seconds"), "ml": int(volume_ml), "origem": "Sistema"})
             hidratacao_qg["registros"] = registros_hidratacao[-1500:] # Mantém apenas as últimas 1500 entradas para salvar memória
             db["nutricao_hidratacao"] = hidratacao_qg
@@ -4354,8 +4321,8 @@ elif menu == "🥗 Nutrição & Calorias":
                     'threshold': {'line': {'color': "white", 'width': 4}, 'thickness': 1, 'value': meta_salva_ml}
                 }
             ))
-            fig_gauge.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=350, margin=dict(l=20, r=20, b=20, t=20))
-            st.plotly_chart(fig_gauge, use_container_width=True)
+            fig_gauge.update_layout(template="qg_enterprise", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=350, margin=dict(l=20, r=20, b=20, t=20))
+            _qg_plotly_chart(fig_gauge, use_container_width=True)
 
         with graf2:
             st.markdown("#### 📊 Histórico de 7 Dias")
@@ -4367,10 +4334,10 @@ elif menu == "🥗 Nutrição & Calorias":
             fig_barras.add_hline(y=meta_salva_ml, line_dash="dash", line_color="#92FE9D", annotation_text=" META", annotation_position="top right", annotation_font_color="#92FE9D")
             fig_barras.update_traces(textposition='outside', marker_line_color='rgba(0,0,0,0)', marker_line_width=0)
             fig_barras.update_layout(
-                template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=350, margin=dict(l=0, r=0, b=0, t=10),
+                template="qg_enterprise", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=350, margin=dict(l=0, r=0, b=0, t=10),
                 xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.1)"), coloraxis_showscale=False
             )
-            st.plotly_chart(fig_barras, use_container_width=True)
+            _qg_plotly_chart(fig_barras, use_container_width=True)
 
         st.markdown("---")
         
@@ -4504,8 +4471,8 @@ elif menu == "🔥 Habit Tracker":
     total_cumprido = sum([h1, h2, h3, h4, h5])
     progresso = total_cumprido / 5.0
 
-    st.progress(progresso)
-    st.write(f"**Progresso Diário:** {total_cumprido} de 5 metas concluídas ({int(progresso * 100)}%)")
+    st.progress(progresso, text=f"Progresso diário · {total_cumprido} de 5 metas concluídas · {int(progresso * 100)}%")
+
 
     if total_cumprido == 5:
         st.balloons()
@@ -4696,7 +4663,8 @@ elif menu == "🎮 Mini Jogo de Pontos":
       @media(prefers-reduced-motion:reduce){{*,*:before,*:after{{animation:none!important;transition:none!important}}}}
     </style>
     <script>
-      (function(){{const node=document.getElementById('qg-staff-points');if(!node)return;const finalValue={pontos_totais_staff};const start=performance.now();const duration=900;function frame(now){{const t=Math.min(1,(now-start)/duration);const eased=1-Math.pow(1-t,3);node.textContent=Math.round(finalValue*eased).toLocaleString('pt-BR');if(t<1)requestAnimationFrame(frame)}}requestAnimationFrame(frame)}})();
+      (function(){{const node=document.getElementById('qg-staff-points');if(!node)return;const finalValue={pontos_totais_staff};const start=performance.now();const duration=900;// Anima a contagem de pontos do painel sem alterar os dados salvos.
+      function frame(now){{const t=Math.min(1,(now-start)/duration);const eased=1-Math.pow(1-t,3);node.textContent=Math.round(finalValue*eased).toLocaleString('pt-BR');if(t<1)requestAnimationFrame(frame)}}requestAnimationFrame(frame)}})();
     </script>
     """
     with st.container(border=True):
@@ -4957,7 +4925,7 @@ elif menu == "🎮 Mini Jogo de Pontos":
             font=dict(color="#dceafb"), xaxis_title=None, yaxis_title="XP",
             yaxis=dict(gridcolor="rgba(151,184,214,.12)", rangemode="tozero"),
         )
-        st.plotly_chart(grafico_staff, use_container_width=True, config={"displayModeBar": False})
+        _qg_plotly_chart(grafico_staff, use_container_width=True, config={"displayModeBar": False})
 
     with aba_conquistas_staff:
         st.subheader("Coleção de conquistas")
@@ -5090,6 +5058,7 @@ elif menu == "🎯 Simulados (1º e 2º Dia)":
 
     # 1. Garante a criação da tabela no SQLite local
     def init_db_simulados():
+        """Cria as tabelas locais para simulados e seus resultados."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute("""
@@ -5228,6 +5197,7 @@ elif menu == "📖 Diário de Bordo":
             st.session_state[chave] = valor
 
     def _persistir_rascunho_diario():
+        """Salva automaticamente o rascunho atual do diário de estudos."""
         estado_fresco = carregar_dados_usuario(user_atual, get_edital_espcex)
         estado_fresco["diario_rascunho"] = {
             "data": str(st.session_state[draft_prefix + "data"]),
@@ -5243,6 +5213,7 @@ elif menu == "📖 Diário de Bordo":
         salvar_dados_usuario(user_atual, estado_fresco)
 
     def _registrar_diario_callback():
+        """Registra a entrada do diário e atualiza os dados de acompanhamento."""
         estado_fresco = carregar_dados_usuario(user_atual, get_edital_espcex)
         resumo = str(st.session_state[draft_prefix + "resumo"]).strip()
         aprendizado = str(st.session_state[draft_prefix + "aprendizado"]).strip()
@@ -5301,7 +5272,7 @@ elif menu == "📖 Diário de Bordo":
         if not df_diario.empty:
             fig_diario = px.bar(df_diario, x="Data", y="Horas", color="Matéria", barmode="stack", title="Horas registradas · últimos 30 registros")
             fig_diario.update_layout(height=320, margin=dict(t=50, b=15, l=10, r=10), xaxis_title="", yaxis_title="Horas")
-            st.plotly_chart(fig_diario, use_container_width=True)
+            _qg_plotly_chart(fig_diario, use_container_width=True)
         st.markdown("### Histórico recente")
         busca_diario = st.text_input("Filtrar por matéria ou conteúdo", key="filtro_diario_bordo")
         termo_diario = busca_diario.casefold().strip()
@@ -5337,21 +5308,19 @@ elif menu == "🎧 Player de Áudio":
     st.header("🎧 Módulo 21: Central de Áudio Tático")
     st.markdown("Músicas de marcha para os treinos do TAF e frequências para concentração profunda.")
 
-    p_col1, p_col2 = st.columns(2)
-
-    with p_col1:
-        st.subheader("🎺 Canções e Marchas Militares (TAF)")
-        st.markdown("**Hino da Infantaria**")
-        st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3")
-        st.markdown("**Fibra de Herói**")
-        st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3")
-
-    with p_col2:
-        st.subheader("🧠 Áudios para Estudo e Foco Profundo")
-        st.markdown("**Ruído Branco / Foco LDI**")
-        st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3")
-        st.markdown("**Ondas Binaurais (Alfa - Leitura NIP)**")
-        st.audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3")
+    st.info("Este player funciona offline. Selecione arquivos de áudio que já estejam salvos no seu dispositivo.")
+    arquivos_audio_offline = st.file_uploader(
+        "Selecionar músicas ou áudios de estudo",
+        type=["mp3", "wav", "ogg", "m4a", "aac"],
+        accept_multiple_files=True,
+        key="qg_player_audios_offline",
+    )
+    if arquivos_audio_offline:
+        for indice_audio, arquivo_audio in enumerate(arquivos_audio_offline):
+            st.markdown(f"**{indice_audio + 1}. {arquivo_audio.name}**")
+            st.audio(arquivo_audio)
+    else:
+        st.caption("Nenhum arquivo selecionado. Seus módulos de estudo continuam funcionando normalmente.")
 # ====================================================
 # #MODULO_22_CENTRAL_DE_CONFIGURACOES
 # ====================================================
@@ -5372,6 +5341,7 @@ elif "módulo 22" in menu.lower() or "configurações" in menu.lower():
     # 1. INFRAESTRUTURA DE CONFIGURAÇÕES NO SQLITE
     # -----------------------------------------------------------------------------
     def init_db_config():
+        """Cria a tabela local de configuração geral do QG."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute("""
@@ -5386,6 +5356,7 @@ elif "módulo 22" in menu.lower() or "configurações" in menu.lower():
     init_db_config()
 
     def set_config(chave, valor):
+        """Salva um valor de configuração geral no SQLite."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute("INSERT OR REPLACE INTO config_qg (chave, valor) VALUES (?, ?)", (chave, str(valor)))
@@ -5393,6 +5364,7 @@ elif "módulo 22" in menu.lower() or "configurações" in menu.lower():
         conn.close()
 
     def get_config(chave, padrao=""):
+        """Lê um valor de configuração geral ou retorna o padrão informado."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute("SELECT valor FROM config_qg WHERE chave = ?", (chave,))
@@ -5401,6 +5373,7 @@ elif "módulo 22" in menu.lower() or "configurações" in menu.lower():
         return res[0] if res else padrao
 
     def get_all_configs():
+        """Retorna os pares de configuração geral que foram salvos."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute("SELECT chave, valor FROM config_qg")
@@ -5614,6 +5587,7 @@ elif "módulo 23" in menu.lower() or "calendário" in menu.lower():
     # 1. INFRAESTRUTURA DE BANCO DE DADOS LOCAL (SQLITE)
     # -----------------------------------------------------------------------------
     def init_db_calendario():
+        """Cria a tabela local de eventos do calendário."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute("""
@@ -5634,6 +5608,7 @@ elif "módulo 23" in menu.lower() or "calendário" in menu.lower():
     init_db_calendario()
 
     def adicionar_evento(data_e, hora_e, titulo, categoria, desc, prioridade):
+        """Adiciona um evento ao calendário local."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute("""
@@ -5644,6 +5619,7 @@ elif "módulo 23" in menu.lower() or "calendário" in menu.lower():
         conn.close()
 
     def atualizar_status_evento(id_evento, novo_status):
+        """Atualiza o estado de um evento do calendário."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute("UPDATE calendario_qg SET status = ? WHERE id = ?", (novo_status, id_evento))
@@ -5651,6 +5627,7 @@ elif "módulo 23" in menu.lower() or "calendário" in menu.lower():
         conn.close()
 
     def deletar_evento(id_evento):
+        """Remove um evento do calendário local."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute("DELETE FROM calendario_qg WHERE id = ?", (id_evento,))
@@ -5658,6 +5635,7 @@ elif "módulo 23" in menu.lower() or "calendário" in menu.lower():
         conn.close()
 
     def carregar_eventos():
+        """Carrega os eventos locais em uma tabela de dados."""
         conn = sqlite3.connect("dados_qg.db")
         df = pd.read_sql_query("SELECT * FROM calendario_qg ORDER BY data_evento ASC, hora_evento ASC", conn)
         conn.close()
@@ -5815,6 +5793,7 @@ elif "módulo 24" in menu.lower():
     # 1. INFRAESTRUTURA DE BANCO DE DADOS, LOGS E DISPAROS
     # -----------------------------------------------------------------------------
     def init_db_admin_completo():
+        """Cria as tabelas locais de configuração, registros e administração."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute("CREATE TABLE IF NOT EXISTS config_qg (chave TEXT PRIMARY KEY, valor TEXT)")
@@ -5826,6 +5805,7 @@ elif "módulo 24" in menu.lower():
     init_db_admin_completo()
 
     def get_config_adm(chave, padrao=""):
+        """Lê uma opção administrativa salva localmente."""
         try:
             conn = sqlite3.connect("dados_qg.db")
             c = conn.cursor()
@@ -5836,6 +5816,7 @@ elif "módulo 24" in menu.lower():
         except Exception: return padrao
 
     def set_config_adm(chave, valor):
+        """Salva uma opção administrativa no SQLite."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute("INSERT OR REPLACE INTO config_qg (chave, valor) VALUES (?, ?)", (chave, str(valor)))
@@ -5843,6 +5824,7 @@ elif "módulo 24" in menu.lower():
         conn.close()
 
     def registrar_log(acao, detalhe=""):
+        """Adiciona uma atividade ao histórico local de administração."""
         try:
             conn = sqlite3.connect("dados_qg.db")
             c = conn.cursor()
@@ -5853,6 +5835,7 @@ elif "módulo 24" in menu.lower():
         except Exception: pass
 
     def get_total_registros_adm(tabela):
+        """Conta os registros de uma tabela para exibir estatísticas administrativas."""
         try:
             conn = sqlite3.connect("dados_qg.db")
             c = conn.cursor()
@@ -5863,6 +5846,7 @@ elif "módulo 24" in menu.lower():
         except Exception: return 0
 
     def enviar_discord_webhook(webhook_url, titulo, mensagem, cor=0x2e7d32, campos=None):
+        """Envia uma notificação opcional ao Discord quando há conexão com a internet."""
         try:
             if not webhook_url: return False, "Webhook não configurado."
             payload = {
@@ -6007,6 +5991,7 @@ elif "módulo 24" in menu.lower():
             const locale='pt-BR';
             const optionsTime={timeZone:'America/Sao_Paulo',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false};
             const optionsDate={timeZone:'America/Sao_Paulo',weekday:'short',day:'2-digit',month:'short',year:'numeric'};
+            // Atualiza o horário e a data mostrados no painel administrativo.
             function updateClock(){
               const now=new Date();
               timeNode.textContent=new Intl.DateTimeFormat(locale,optionsTime).format(now);
@@ -6143,7 +6128,7 @@ elif "módulo 24" in menu.lower():
                     st.markdown("#### 📊 Distribuição de Eventos no Sistema")
                     fig = px.pie(df_logs, names='acao', hole=0.4, color_discrete_sequence=px.colors.sequential.Greens_r)
                     fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), paper_bgcolor="rgba(0,0,0,0)")
-                    st.plotly_chart(fig, use_container_width=True)
+                    _qg_plotly_chart(fig, use_container_width=True)
             except: pass
 
         # =========================================================================
@@ -6729,6 +6714,7 @@ elif "módulo 25" in menu.lower() or "finanças" in menu.lower() or "financeiro"
     # 1. INFRAESTRUTURA DE BANCO DE DADOS E METAS
     # -----------------------------------------------------------------------------
     def init_db_financas_pessoais():
+        """Cria as tabelas locais de despesas e metas financeiras."""
         conn = sqlite3.connect("dados_qg.db")
         c = conn.cursor()
         c.execute("""
@@ -6755,12 +6741,14 @@ elif "módulo 25" in menu.lower() or "finanças" in menu.lower() or "financeiro"
     init_db_financas_pessoais()
 
     def carregar_financas():
+        """Carrega os lançamentos financeiros locais em uma tabela de dados."""
         conn = sqlite3.connect("dados_qg.db")
         df = pd.read_sql_query("SELECT * FROM financas_pessoais ORDER BY id DESC", conn)
         conn.close()
         return df
 
     def get_meta_mes(mes_ano):
+        """Lê a meta financeira definida para determinado mês."""
         try:
             conn = sqlite3.connect("dados_qg.db")
             c = conn.cursor()
@@ -6847,43 +6835,49 @@ elif "módulo 25" in menu.lower() or "finanças" in menu.lower() or "financeiro"
                 
                 st.markdown(f'<div class="insight-box">{texto_insight}</div><br>', unsafe_allow_html=True)
 
-            col_graf1, col_graf2 = st.columns([1, 2])
-            
-            with col_graf1:
-                st.markdown("**Saúde Financeira (Consumo %)**")
+            _, col_gauge_central, _ = st.columns([1, 2, 1])
+            with col_gauge_central:
+                st.markdown("**Saúde financeira · gastos sobre a receita**")
                 fig_gauge = go.Figure(go.Indicator(
-                    mode = "gauge+number",
-                    value = perc_gasto,
-                    number = {'suffix': "%"},
-                    domain = {'x': [0, 1], 'y': [0, 1]},
-                    gauge = {
-                        'axis': {'range': [None, 100], 'tickwidth': 1},
-                        'bar': {'color': "rgba(0,0,0,0)"}, 
-                        'steps': [
-                            {'range': [0, 50], 'color': "#4CAF50"},
-                            {'range': [50, 80], 'color': "#FFEB3B"},
-                            {'range': [80, 100], 'color': "#F44336"}
+                    mode="gauge+number",
+                    value=perc_gasto,
+                    number={"suffix": "%", "font": {"size": 34, "color": "#f4f8fa"}},
+                    domain={"x": [0, 1], "y": [0, 1]},
+                    gauge={
+                        "axis": {"range": [None, 100], "tickwidth": 1, "tickfont": {"color": "#c7d3dc"}},
+                        "bar": {"color": "rgba(0,0,0,0)"},
+                        "steps": [
+                            {"range": [0, 50], "color": "#13794f"},
+                            {"range": [50, 80], "color": "#b58d28"},
+                            {"range": [80, 100], "color": "#a9434c"},
                         ],
-                        'threshold': {'line': {'color': "white", 'width': 3}, 'thickness': 0.75, 'value': perc_gasto}
-                    }))
-                fig_gauge.update_layout(margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor="rgba(0,0,0,0)", height=200)
-                st.plotly_chart(fig_gauge, use_container_width=True)
+                        "threshold": {"line": {"color": "#f4f8fa", "width": 3}, "thickness": 0.75, "value": perc_gasto},
+                    },
+                ))
+                fig_gauge.update_layout(margin=dict(t=18, b=10, l=12, r=12), paper_bgcolor="rgba(0,0,0,0)", height=250)
+                _qg_plotly_chart(fig_gauge, use_container_width=True)
 
-            with col_graf2:
-                st.markdown("**Fluxo de Saídas por Categoria**")
-                df_cat = df_saidas.groupby('categoria')['valor'].sum().reset_index().sort_values(by='valor', ascending=True)
-                fig_bar = px.bar(df_cat, x='valor', y='categoria', orientation='h', text='valor', color='valor', color_continuous_scale="Reds")
-                fig_bar.update_traces(texttemplate='R$ %{text:.2f}', textposition='outside')
-                fig_bar.update_layout(margin=dict(t=0, b=0, l=0, r=0), paper_bgcolor="rgba(0,0,0,0)", coloraxis_showscale=False)
-                st.plotly_chart(fig_bar, use_container_width=True)
+            st.markdown("**Fluxo de saídas por categoria**")
+            df_cat = df_saidas.groupby('categoria')['valor'].sum().reset_index().sort_values(by='valor', ascending=True)
+            fig_bar = px.bar(df_cat, x='valor', y='categoria', orientation='h', text='valor', color='valor', color_continuous_scale="Reds")
+            fig_bar.update_traces(
+                texttemplate='R$ %{text:.2f}', textposition='inside', insidetextanchor='middle',
+                textfont=dict(color="#ffffff", size=14),
+            )
+            fig_bar.update_layout(
+                height=360, margin=dict(t=28, b=28, l=24, r=24), paper_bgcolor="rgba(0,0,0,0)",
+                coloraxis_showscale=False, xaxis_title="Valor (R$)", yaxis_title=None,
+            )
+            fig_bar.update_xaxes(tickprefix="R$ ", tickformat=",.2f")
+            _qg_plotly_chart(fig_bar, use_container_width=True)
 
-            # Timeline de gastos (Gráfico de Linha/Barra de evolução)
-            st.markdown("**Evolução de Gastos Diários (Timeline)**")
+            st.markdown("**Evolução diária de gastos**")
             df_timeline = df_saidas.groupby('Dia')['valor'].sum().reset_index()
             fig_time = px.line(df_timeline, x='Dia', y='valor', markers=True, line_shape='spline')
-            fig_time.update_traces(line_color="#FF9800", marker=dict(size=8, color="white"))
-            fig_time.update_layout(margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor="rgba(0,0,0,0)", yaxis_title="Reais (R$)")
-            st.plotly_chart(fig_time, use_container_width=True)
+            fig_time.update_traces(line_color="#f1a33c", marker=dict(size=9, color="#f4f8fa", line=dict(width=2, color="#0a2538")))
+            fig_time.update_layout(margin=dict(t=30, b=25, l=20, r=20), paper_bgcolor="rgba(0,0,0,0)", yaxis_title="Valor (R$)", xaxis_title="Dia")
+            fig_time.update_yaxes(tickprefix="R$ ", tickformat=",.2f")
+            _qg_plotly_chart(fig_time, use_container_width=True)
             
         else:
             st.info("Nenhuma movimentação registrada no período selecionado.")
@@ -6998,6 +6992,7 @@ elif "módulo 25" in menu.lower() or "finanças" in menu.lower() or "financeiro"
             df_exibicao = df_exibicao.rename(columns={'data_registo': 'Data', 'fluxo': 'Tipo', 'categoria': 'Categoria', 'descricao': 'Descrição'})
             
             def cor_linha(row):
+                """Retorna o estilo de uma linha conforme ela represente entrada ou despesa."""
                 if row['Tipo'] == 'Entrada': return ['background-color: rgba(76, 175, 80, 0.15)'] * len(row)
                 else: return ['background-color: rgba(244, 67, 54, 0.15)'] * len(row)
             
@@ -7120,7 +7115,7 @@ elif menu == "🧠 Memória Avançada":
                 st.markdown("#### Distribuição por matéria")
                 fig_memoria = px.bar(df_memoria.sort_values("Registros"), x="Registros", y="Matéria", orientation="h", text="Registros")
                 fig_memoria.update_traces(marker_color="#59e1d2", textposition="outside", cliponaxis=False)
-                st.plotly_chart(fig_memoria, use_container_width=True)
+                _qg_plotly_chart(fig_memoria, use_container_width=True)
             with g2:
                 st.markdown("#### Ritmo de retenção")
                 fig_retencao = go.Figure(go.Indicator(
@@ -7133,7 +7128,7 @@ elif menu == "🧠 Memória Avançada":
                                      {"range": [80, 100], "color": "rgba(89,225,210,.15)"}]}
                 ))
                 fig_retencao.update_layout(height=280, margin=dict(t=40, b=15, l=20, r=20))
-                st.plotly_chart(fig_retencao, use_container_width=True)
+                _qg_plotly_chart(fig_retencao, use_container_width=True)
 
 elif menu == "🗓️ Plano Semanal Automático":
     st.title("🗓️ Plano Semanal Automático")
@@ -7398,8 +7393,11 @@ const soundEventId="__SOUND_EVENT__", soundKind="__SOUND_KIND__", soundPreferenc
 let focusAudio=null, pendingFocusTone=null;
 const clockEl=document.getElementById("focus-clock"), ringEl=document.getElementById("focus-ring-progress"), captionEl=document.getElementById("focus-clock-caption"), hintEl=document.getElementById("focus-audio-hint"), soundButton=document.getElementById("focus-audio-enable");
 const ringLength=2*Math.PI*96;
+// Lê uma preferência de áudio guardada apenas neste navegador.
 function storageRead(key){try{return window.localStorage.getItem(key)}catch(_error){return null}}
+// Guarda uma preferência local sem interromper o temporizador se o navegador a bloquear.
 function storageWrite(key,value){try{window.localStorage.setItem(key,value)}catch(_error){}}
+// Emite as notas curtas de início ou fim do bloco de foco.
 function tone(kind){
   if(!focusAudio||focusAudio.state!=="running"){pendingFocusTone=kind;hintEl.textContent="Toque em Ativar som para liberar o sinal";return}
   const notes=kind==="pausa"?[440]:[660,880];
@@ -7407,10 +7405,12 @@ function tone(kind){
   if(soundEventId)storageWrite("qg_focus_sound_seen_"+soundEventId,"1");
   pendingFocusTone=null;hintEl.textContent="Som leve ativado";
 }
+// Solicita ao navegador a permissão necessária para os sinais de áudio locais.
 async function unlockFocusAudio(){
   try{const AudioAPI=window.AudioContext||window.webkitAudioContext;if(!AudioAPI){hintEl.textContent="Áudio não suportado neste navegador";return}if(!focusAudio)focusAudio=new AudioAPI();await focusAudio.resume();storageWrite(soundPreferenceKey,"1");soundButton.textContent="✓ Som ativado";if(pendingFocusTone)tone(pendingFocusTone);else hintEl.textContent="Som leve ativado"}catch(_error){hintEl.textContent="O navegador bloqueou o áudio; tente ativar novamente"}
 }
 soundButton.addEventListener("click",unlockFocusAudio);
+// Atualiza o contador e o anel de progresso no relógio de foco.
 function updateFocusClock(){let left=focusActive?Math.max(0,Math.ceil((focusEndMs-Date.now())/1000)):focusInitial;const minutes=Math.floor(left/60),seconds=left%60;clockEl.textContent=String(minutes).padStart(2,"0")+":"+String(seconds).padStart(2,"0");const ratio=focusTotal?Math.max(0,Math.min(1,left/focusTotal)):0;ringEl.style.strokeDasharray=ringLength;ringEl.style.strokeDashoffset=ringLength*(1-ratio);if(left===0){ringEl.style.stroke="#f3bf62";captionEl.textContent="BLOCO CONCLUÍDO · VOLTE AO APP PARA REGISTRAR";clockEl.style.color="#f3bf62"}}
 updateFocusClock();window.setInterval(updateFocusClock,250);
 if(soundEventId&&storageRead("qg_focus_sound_seen_"+soundEventId)!=="1"){
@@ -7725,6 +7725,7 @@ elif menu == "🧩 Quiz Diário Adaptativo":
                 cartoes_objetivos.append(cartao)
 
         def _prioridade_diaria(cartao):
+            """Calcula a prioridade de uma anotação conforme atraso e resultado das revisões."""
             revisao = str(cartao.get("revisao_em", ""))[:10]
             vencido = not revisao or revisao <= hoje_quiz
             acertos = int(cartao.get("acertos", 0) or 0)
@@ -8079,7 +8080,7 @@ elif menu == "🎯 Missões Diárias":
                 color="Pontos", title="Suas 10 missões mais concluídas", template="qg_enterprise",
             )
             fig_missoes.update_layout(height=430, margin=dict(t=55, b=30, l=10, r=20), showlegend=False)
-            st.plotly_chart(fig_missoes, use_container_width=True)
+            _qg_plotly_chart(fig_missoes, use_container_width=True)
         st.dataframe(ranking_df, use_container_width=True, hide_index=True, height=520)
         st.download_button(
             "📥 Baixar meu ranking em CSV",
@@ -8110,6 +8111,7 @@ elif menu == "🛰️ Módulo 26 · Central de Desafios EsPCEx":
     _qg_estado.setdefault("missoes", [])
 
     def _qg_gravar_desafio(tipo, titulo, pontos=0, detalhes=None):
+        """Salva um desafio concluído e seus pontos no progresso da conta."""
         registro = {
             "data": _qg_datetime.now().strftime("%Y-%m-%d %H:%M"),
             "tipo": str(tipo), "titulo": str(titulo),
@@ -8374,7 +8376,7 @@ elif menu == "🛰️ Módulo 26 · Central de Desafios EsPCEx":
                 _qg_col_taf = st.selectbox("Indicador para visualizar", ["distancia_m", "flexoes", "abdominais", "tempo_min"], format_func=lambda x: {"distancia_m":"Distância (m)","flexoes":"Flexões","abdominais":"Abdominais","tempo_min":"Tempo (min)"}[x], key=f"qg26_grafico_taf_{user_atual}")
                 _qg_fig_taf = px.line(_qg_df_taf_plot, x="data", y=_qg_col_taf, markers=True, title="Seu histórico de treino", template="qg_enterprise")
                 _qg_fig_taf.update_layout(height=330, margin=dict(t=55,b=25,l=10,r=10))
-                st.plotly_chart(_qg_fig_taf, use_container_width=True)
+                _qg_plotly_chart(_qg_fig_taf, use_container_width=True)
         else:
             st.info("Nenhum treino registrado ainda. Salve o primeiro para começar seu histórico.")
 
@@ -8437,464 +8439,148 @@ else:
         "As demais telas disponíveis continuam acessíveis pelo menu lateral."
     )
 
-# Acabamento final: garante que o tema 3D também prevaleça sobre estilos de módulos.
-st.markdown("""<style>
-.stApp {
-  background:radial-gradient(ellipse at 12% 0%,rgba(27,112,139,.22),transparent 36%),radial-gradient(ellipse at 88% 13%,rgba(73,80,163,.23),transparent 35%),linear-gradient(145deg,#050b14 0%,#081523 46%,#0c1022 100%) !important;
-}
-/* Entrada suave compartilhada: mantém a mesma abertura visual do Módulo 14 em cada tela. */
-@keyframes qgM14PageEntrance { from { opacity:0; transform:translateY(10px) scale(.995); } to { opacity:1; transform:translateY(0) scale(1); } }
-/* O container padrão conserva o layout largo do Módulo 14 e anima apenas ao carregar a tela. */
-.block-container { animation:qgM14PageEntrance .55s ease-out both; }
-[data-testid="stVerticalBlockBorderWrapper"] > div,
-[data-testid="stExpander"], [data-testid="stForm"], [data-testid="stTabs"] {
-  border-color:rgba(123,196,222,.23) !important;
-  border-radius:19px !important;
-  background:linear-gradient(145deg,rgba(17,39,59,.79),rgba(7,18,32,.91)) !important;
-  box-shadow:0 17px 40px rgba(0,0,0,.33),inset 0 1px rgba(255,255,255,.07),inset 0 -1px rgba(0,0,0,.22) !important;
-  backdrop-filter:blur(15px); -webkit-backdrop-filter:blur(15px);
-  transform-style:preserve-3d;
-}
-[data-testid="stMetric"] {
-  border:1px solid rgba(99,229,220,.32) !important; border-radius:18px !important;
-  background:radial-gradient(ellipse at 18% 0%,rgba(99,229,220,.17),transparent 55%),linear-gradient(145deg,rgba(21,52,76,.98),rgba(7,18,32,.99)) !important;
-  box-shadow:0 17px 34px rgba(0,0,0,.39),inset 0 2px rgba(255,255,255,.10),inset 0 -2px rgba(0,0,0,.27) !important;
-  padding:15px !important; transform-style:preserve-3d;
-  animation:qgM14MetricFloat 4s ease-in-out infinite;
-  transition:transform .3s ease,border-color .3s ease,box-shadow .3s ease !important;
-}
-/* Elevação leve e contínua das métricas, inspirada nos cartões flutuantes do Módulo 14. */
-@keyframes qgM14MetricFloat { 0%,100% { translate:0 0; } 50% { translate:0 -5px; } }
-[data-testid="stMetric"]:hover {
-  transform:perspective(800px) scale(1.035) rotateX(2deg) !important;
-  border-color:#92fe9d !important;
-  box-shadow:0 12px 30px rgba(0,201,255,.22),0 0 17px rgba(146,254,157,.13),inset 0 2px rgba(255,255,255,.12) !important;
-}
-[data-testid="stMetricValue"] { color:#7cf5e6 !important; text-shadow:0 0 20px rgba(99,229,220,.31) !important; }
-[data-testid="stMetricLabel"] { color:#a9bdd0 !important; }
-.stButton > button, .stFormSubmitButton > button, [data-testid="stDownloadButton"] > button {
-  border:1px solid rgba(99,229,220,.48) !important; border-radius:12px !important;
-  color:#f1ffff !important; background:linear-gradient(45deg,rgba(0,0,0,.38),rgba(0,201,255,.17),rgba(146,254,157,.12)) !important;
-  box-shadow:0 5px 0 #074b5a,0 14px 27px rgba(24,143,177,.25),inset 0 1px rgba(255,255,255,.24) !important;
-  transition:transform .2s ease,filter .2s ease,box-shadow .2s ease !important;
-}
-.stButton > button:hover, .stFormSubmitButton > button:hover, [data-testid="stDownloadButton"] > button:hover {
-  transform:perspective(700px) translateY(-4px) rotateX(4deg) scale(1.02) !important; filter:brightness(1.16) !important;
-  border-color:#92fe9d !important;
-  box-shadow:0 8px 0 #074b5a,0 22px 38px rgba(24,143,177,.35),0 0 24px rgba(99,229,220,.20) !important;
-}
-[data-baseweb="input"] > div, [data-baseweb="select"] > div, [data-baseweb="textarea"] > div, textarea, input {
-  border-color:rgba(99,229,220,.29) !important; border-radius:12px !important;
-  background:rgba(5,16,27,.88) !important; box-shadow:inset 0 3px 9px rgba(0,0,0,.38),0 3px 9px rgba(0,0,0,.12) !important;
-}
-[data-baseweb="input"] > div:focus-within, [data-baseweb="select"] > div:focus-within, textarea:focus, input:focus {
-  border-color:#63e5dc !important; box-shadow:0 0 0 2px rgba(99,229,220,.14),0 0 22px rgba(99,229,220,.23) !important;
-}
-[data-testid="stPlotlyChart"], [data-testid="stGraph"], [data-testid="stDataFrame"], [data-testid="stTable"] {
-  border-radius:17px !important; filter:drop-shadow(0 15px 25px rgba(0,0,0,.20));
-  transition:transform .3s ease,filter .3s ease !important;
-}
-[data-testid="stPlotlyChart"]:hover, [data-testid="stGraph"]:hover, [data-testid="stDataFrame"]:hover {
-  transform:perspective(1100px) translateY(-4px) rotateX(1.5deg) !important;
-  filter:drop-shadow(0 22px 30px rgba(39,177,199,.20)) !important;
-}
-[data-testid="stSidebar"] {
-  background:radial-gradient(ellipse at 0 0,rgba(26,129,143,.19),transparent 42%),linear-gradient(180deg,#071320,#040811) !important;
-  border-right:1px solid rgba(99,229,220,.23) !important; box-shadow:22px 0 70px rgba(0,0,0,.48) !important;
-}
-/* O seletor móvel fica oculto em telas grandes e aparece como acesso rápido em celulares/tablets. */
-.st-key-qg_mobile_navigation { display:none; }
-@media(max-width:768px) {
-  .st-key-qg_mobile_navigation { display:block !important; margin:.35rem 0 1rem; padding:10px 13px 2px; border:1px solid rgba(99,229,220,.25); border-radius:15px; background:linear-gradient(145deg,rgba(17,39,59,.88),rgba(7,18,32,.96)); box-shadow:0 12px 28px rgba(0,0,0,.28),inset 0 1px rgba(255,255,255,.08); }
-  .st-key-qg_mobile_navigation [data-testid="stWidgetLabel"] { color:#91eee2 !important; font-size:.78rem; font-weight:750; letter-spacing:.04em; }
-  .st-key-qg_mobile_navigation [data-baseweb="select"] { min-height:46px; }
-}
-[data-testid="stAlert"], [data-testid="stToast"] { border-radius:15px !important; box-shadow:0 15px 34px rgba(0,0,0,.27) !important; backdrop-filter:blur(14px); }
-[data-testid="stProgress"] > div > div { background:linear-gradient(90deg,#63e5dc,#78a5ff,#b09aff) !important; box-shadow:0 0 20px rgba(99,229,220,.31) !important; }
-.routine-card { border-color:rgba(99,229,220,.35) !important; background:radial-gradient(ellipse at 90% 0%,rgba(120,165,255,.16),transparent 47%),linear-gradient(145deg,#14354d,#06111f) !important; box-shadow:12px 17px 32px rgba(0,0,0,.43),inset 2px 2px rgba(255,255,255,.09) !important; }
-.qg-hero { border-color:rgba(99,229,220,.47) !important; box-shadow:0 28px 66px rgba(0,0,0,.48),inset 0 2px rgba(255,255,255,.14),0 0 38px rgba(66,202,220,.10) !important; }
-hr { border-color:rgba(99,229,220,.18) !important; }
-@media (prefers-reduced-motion:reduce) { *,*::before,*::after { transition-duration:.01ms !important; animation-duration:.01ms !important; animation-iteration-count:1 !important; } }
-</style>""", unsafe_allow_html=True)
-
-# Nitidez tipográfica: usa fontes presentes no dispositivo, remove brilhos sobre os glifos
-# e deixa o relevo nos cartões e fundos, onde ele não interfere na leitura.
-st.markdown("""<style>
-.stApp {
-  font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif !important;
-  -webkit-font-smoothing:antialiased;
-  -moz-osx-font-smoothing:grayscale;
-  text-rendering:optimizeLegibility;
-}
-.stApp [data-testid="stMarkdownContainer"] *,
-.stApp [data-testid="stCaptionContainer"],
-.stApp [data-testid="stWidgetLabel"] *,
-.stApp [data-testid="stMetric"] *,
-.stApp [data-testid="stDataFrame"] *,
-.stApp [data-testid="stTable"] *,
-.stApp button, .stApp input, .stApp textarea, .stApp select {
-  text-shadow:none !important;
-  -webkit-font-smoothing:antialiased;
-  text-rendering:optimizeLegibility;
-}
-/* Títulos ficam planos e definidos; o cubo, a luz e as sombras das superfícies continuam em 3D. */
-.stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4,
-.qg-hero-title, .qg-hero-auth .qg-hero-title,
-.qg-hero-auth .qg-hero-kicker, .qg-hero-auth .qg-hero-subtitle,
-.routine-card h4, [data-testid="stMetricValue"] {
-  text-shadow:none !important;
-}
-/* O texto dos cartões permanece no plano de leitura, mesmo quando a superfície ganha perspectiva. */
-.qg-hero-auth .qg-hero-copy,
-.qg-start-card h3, .qg-start-card p {
-  transform:none !important;
-}
-/* Faz os títulos de todos os módulos seguirem o título premium do Módulo 14. */
-@keyframes qgM14TitleGradient { 0%,100% { background-position:0% 50%; } 50% { background-position:100% 50%; } }
-[data-testid="stMain"] [data-testid="stHeading"] h1,
-[data-testid="stMain"] [data-testid="stHeading"] h2,
-[data-testid="stMain"] .premium-title {
-  color:#8df2dc !important;
-  background:linear-gradient(100deg,#00c9ff 0%,#92fe9d 48%,#00c9ff 100%);
-  background-size:200% 200%;
-  background-clip:text;
-  -webkit-background-clip:text;
-  -webkit-text-fill-color:transparent;
-  font-weight:800 !important;
-  letter-spacing:.035em;
-  text-transform:uppercase;
-  text-shadow:none !important;
-  animation:qgM14TitleGradient 7s ease-in-out infinite;
-}
-/* Alinha o espaço dos títulos para que cada página comece com a mesma hierarquia visual. */
-[data-testid="stMain"] [data-testid="stHeading"] { margin-top:.35rem; margin-bottom:.75rem; }
-@media(prefers-reduced-motion:reduce) { [data-testid="stMain"] [data-testid="stHeading"] h1, [data-testid="stMain"] [data-testid="stHeading"] h2, [data-testid="stMain"] .premium-title { animation:none !important; } }
-</style>""", unsafe_allow_html=True)
-
-# Camada de identidade visual inspirada no painel de referência.
-# Mantém módulos, dados e fluxos existentes; altera somente a apresentação.
+# Sistema visual único: módulos mantêm seus estilos locais; esta camada define os padrões compartilhados.
 st.markdown("""<style>
 :root {
-  --qg-ink:#f2f7fc; --qg-dim:#9bb0c3; --qg-night:#020a13;
-  --qg-navy:#061627; --qg-panel:#081d30; --qg-blue:#1caee5;
-  --qg-blue-line:rgba(39,180,232,.48); --qg-green:#13c982;
-  --qg-green-light:#55e5a6; --qg-gold:#f3c746;
+  color-scheme:dark;
+  --qg-page:#030d16; --qg-panel:#081d2c; --qg-panel-raised:#0d2a3d;
+  --qg-text:#f2f6f8; --qg-muted:#bfccd5; --qg-cyan:#36c2e8;
+  --qg-green:#19c987; --qg-gold:#f1c34b; --qg-edge:#28566c;
+  --qg-depth:0 7px 0 #01070d,0 14px 22px rgba(0,0,0,.36),inset 0 1px rgba(255,255,255,.14);
 }
-.stApp {
-  color:var(--qg-ink) !important;
-  background:radial-gradient(ellipse at 50% -15%,rgba(11,78,115,.26),transparent 48%),radial-gradient(ellipse at 100% 38%,rgba(8,61,84,.14),transparent 36%),linear-gradient(155deg,#020914 0%,#041323 48%,#020a13 100%) !important;
+html { font-size:16px !important; }
+body,.stApp { color:var(--qg-text) !important; background:var(--qg-page) !important; font-family:Inter,"Segoe UI",Arial,sans-serif !important; }
+.stApp { background:linear-gradient(155deg,#061522 0%,#030d16 58%,#04121c 100%) !important; }
+.stApp *, .stApp *::before, .stApp *::after { backdrop-filter:none !important; -webkit-backdrop-filter:none !important; }
+[data-testid="stHeader"] { background:#030d16 !important; border-bottom:1px solid #1d3c50 !important; }
+.main .block-container { width:100% !important; max-width:1500px !important; padding:1rem 1.25rem 3rem !important; }
+/* Espaço e superfícies: colunas organizam conteúdo; cartões aparecem só nos elementos de conteúdo. */
+.stApp [data-testid="stHorizontalBlock"] { gap:1rem !important; align-items:stretch !important; }
+.stApp [data-testid="stHorizontalBlock"]>[data-testid="stColumn"] { min-width:0 !important; padding:0 !important; border:0 !important; border-radius:0 !important; background:transparent !important; box-shadow:none !important; transform:none !important; }
+[data-testid="stVerticalBlockBorderWrapper"]>div,[data-testid="stForm"],[data-testid="stExpander"],[data-testid="stTabs"] {
+  border:1px solid var(--qg-edge) !important; border-radius:14px !important;
+  background:linear-gradient(150deg,#0b293d,#071b2a 65%,#051522) !important;
+  box-shadow:var(--qg-depth) !important; transform:none !important; filter:none !important; backface-visibility:visible !important;
 }
-[data-testid="stAppViewContainer"],[data-testid="stMain"] {background:transparent !important}
-[data-testid="stMain"] {overflow-x:hidden !important}
-.main .block-container {max-width:1740px !important;padding-top:1.15rem !important}
-[data-testid="stHeader"] {background:rgba(2,10,19,.76) !important;border-bottom:1px solid rgba(36,150,195,.18);backdrop-filter:blur(16px)}
-[data-testid="stMain"] [data-testid="stHeading"] h1,
-[data-testid="stMain"] [data-testid="stHeading"] h2,
-[data-testid="stMain"] .premium-title,
-[data-testid="stMain"] .stMarkdown h1,
-[data-testid="stMain"] .stMarkdown h2,
-[data-testid="stMain"] .stMarkdown h3 {
-  color:#f2f7fc !important;background:none !important;background-image:none !important;
-  -webkit-background-clip:border-box !important;-webkit-text-fill-color:#f2f7fc !important;
-  text-shadow:0 2px 18px rgba(0,0,0,.42) !important;letter-spacing:-.015em !important;
-  text-transform:none !important;animation:none !important;
+[data-testid="stMetric"],.routine-card,.qg-start-card {
+  border:1px solid #2b6078 !important; border-radius:13px !important;
+  background:radial-gradient(ellipse at var(--qg-pointer-x,50%) var(--qg-pointer-y,0%),rgba(54,194,232,.11),transparent 58%),linear-gradient(145deg,#0c2e43,#082236 62%,#051624) !important;
+  box-shadow:0 8px 0 #01070d,0 15px 21px rgba(0,0,0,.37),inset 0 1px rgba(255,255,255,.15),inset 0 -1px rgba(0,0,0,.5) !important;
+  transform:none !important; animation:none !important; filter:none !important; backface-visibility:visible !important;
+  transition:border-color .18s ease,box-shadow .18s ease !important;
 }
-[data-testid="stMain"] [data-testid="stHeading"] h1 {font-weight:820 !important}
-[data-testid="stMain"] [data-testid="stHeading"] h2 {font-weight:780 !important}
-[data-testid="stCaptionContainer"],[data-testid="stWidgetLabel"] {color:#a9bfd1 !important}
-[data-testid="stMarkdownContainer"] a {color:#59d2ff !important}
-[data-testid="stSidebar"] {
-  background:radial-gradient(ellipse at 10% 0%,rgba(14,90,117,.22),transparent 38%),linear-gradient(180deg,#061626 0%,#03101d 58%,#020914 100%) !important;
-  border-right:1px solid rgba(35,163,212,.34) !important;box-shadow:18px 0 52px rgba(0,0,0,.43) !important;
+[data-testid="stMetric"]:hover,.routine-card:hover,.qg-start-card:hover,
+[data-testid="stPlotlyChart"]:hover,[data-testid="stGraph"]:hover,[data-testid="stDataFrame"]:hover,[data-testid="stTable"]:hover,
+[data-testid="stVerticalBlockBorderWrapper"]>div:hover,[data-testid="stExpander"]:hover {
+  border-color:#36c992 !important; box-shadow:0 9px 0 #01070d,0 17px 24px rgba(0,0,0,.4),inset 0 1px rgba(255,255,255,.18) !important;
 }
-[data-testid="stSidebar"] h1,[data-testid="stSidebar"] h2,[data-testid="stSidebar"] h3,[data-testid="stSidebar"] label {color:#e7f2fa !important}
-[data-testid="stSidebar"] [role="radiogroup"] label {border:1px solid transparent !important;border-radius:9px !important;transition:background .18s ease,border-color .18s ease,transform .18s ease !important}
-[data-testid="stSidebar"] [role="radiogroup"] label:hover {background:rgba(13,87,104,.28) !important;border-color:rgba(38,183,218,.30) !important;transform:translateX(2px)}
-[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {background:linear-gradient(105deg,rgba(13,125,81,.9),rgba(5,74,70,.88)) !important;border-color:rgba(59,226,157,.62) !important;box-shadow:0 5px 0 rgba(0,0,0,.30),0 0 16px rgba(19,201,130,.15) !important}
-.qg-sidebar-brand-mark,.qg-sidebar-avatar {border-color:rgba(243,199,70,.74) !important;color:#fff0ad !important;background:linear-gradient(145deg,#126a55,#0b3450 62%,#101e35) !important;box-shadow:0 6px 0 rgba(0,0,0,.38),0 0 20px rgba(21,188,135,.16),inset 0 1px rgba(255,255,255,.3) !important}
-.qg-sidebar-online {background:var(--qg-green-light) !important;box-shadow:0 0 11px var(--qg-green) !important}
-[data-testid="stVerticalBlockBorderWrapper"] > div,[data-testid="stForm"],[data-testid="stExpander"],[data-testid="stTabs"],[data-testid="stMetric"],[data-testid="stDataFrame"],[data-testid="stTable"] {
-  border-color:var(--qg-blue-line) !important;background-color:rgba(5,21,36,.94) !important;
-  box-shadow:0 8px 0 rgba(1,7,13,.58),0 18px 34px rgba(0,0,0,.35),inset 0 1px rgba(255,255,255,.065) !important;
+.qg-start-overview { border:1px solid #31576b !important; border-radius:16px !important; background:linear-gradient(145deg,#0b2638,#071927) !important; box-shadow:0 8px 0 #01070d,0 16px 24px rgba(0,0,0,.38),inset 0 1px rgba(255,255,255,.13) !important; }
+.qg-start-grid { grid-template-columns:repeat(4,minmax(0,1fr)) !important; gap:14px !important; }
+.qg-start-card { min-height:136px !important; padding:16px !important; }
+.qg-start-card h3 { font-size:16px !important; }
+.qg-start-card p { font-size:14px !important; }
+/* Hierarquia tipográfica compartilhada; tabelas e rótulos continuam legíveis. */
+[data-testid="stMain"] [data-testid="stHeading"] h1,[data-testid="stMarkdownContainer"] h1 { color:#f4f8fa !important; font-size:clamp(1.8rem,2.6vw,2.35rem) !important; line-height:1.2 !important; text-shadow:0 2px 0 #0a2938 !important; animation:none !important; }
+[data-testid="stMain"] [data-testid="stHeading"] h2,[data-testid="stMarkdownContainer"] h2 { color:#f0f5f7 !important; font-size:clamp(1.4rem,1.9vw,1.7rem) !important; line-height:1.25 !important; text-shadow:0 1px 0 #0a2938 !important; animation:none !important; }
+[data-testid="stMarkdownContainer"] :is(p,li,span:not(.material-icons):not(.material-symbols-rounded),small,label,td,th) { font-size:max(14px,1em) !important; line-height:1.5 !important; color:inherit; }
+[data-testid="stCaptionContainer"] { color:var(--qg-muted) !important; font-size:14px !important; line-height:1.5 !important; }
+[data-testid="stWidgetLabel"] { color:#dce6ec !important; font-size:15px !important; }
+[data-testid="stMetricValue"] { color:#f5f9fb !important; font-size:1.75rem !important; font-weight:800 !important; text-shadow:none !important; }
+[data-testid="stMetricLabel"] { color:#cfdae1 !important; font-size:14px !important; }
+[data-testid="stDataFrame"] td,[data-testid="stDataFrame"] th,[data-testid="stTable"] td,[data-testid="stTable"] th { font-size:14px !important; line-height:1.4 !important; }
+[data-testid="stMarkdownContainer"] :is(h1,h2,h3,h4,p,li,span,small,label,td,th,strong,b,em),[data-testid="stMain"] [data-testid="stHeading"] :is(h1,h2,h3,h4) { transform:none !important; filter:none !important; backface-visibility:visible !important; text-rendering:optimizeLegibility !important; }
+/* Gráficos e tabelas: mesma moldura, sem transformar a camada de texto ou os eixos. */
+[data-testid="stPlotlyChart"],[data-testid="stGraph"],[data-testid="stDataFrame"],[data-testid="stTable"] { border:1px solid #28566c !important; border-radius:12px !important; box-shadow:0 7px 0 #01070d,0 14px 20px rgba(0,0,0,.34) !important; transform:none !important; filter:none !important; backface-visibility:visible !important; }
+[data-testid="stDataFrame"],[data-testid="stTable"] { overflow-x:auto !important; }
+/* Botões nítidos com relevo curto e consistente; o texto fica sempre sem brilho ou filtro. */
+.stApp .stButton>button,.stApp .stFormSubmitButton>button,[data-testid="stDownloadButton"]>button,
+[data-testid="stLinkButton"] a,.stApp .focus-bottom button {
+  min-height:46px !important; padding:.62rem 1rem !important; border:1px solid #42d9a5 !important; border-bottom:3px solid #03452f !important; border-radius:10px !important;
+  color:#f5fffa !important; background:linear-gradient(180deg,#168b62 0%,#0d704e 100%) !important;
+  box-shadow:0 3px 0 #022c21,0 6px 9px rgba(0,0,0,.22),inset 0 1px 0 rgba(255,255,255,.2) !important;
+  transform:translateY(0) !important; filter:none !important; text-shadow:none !important; -webkit-text-fill-color:currentColor !important;
+  font-size:15px !important; font-weight:720 !important; letter-spacing:.01em !important; touch-action:manipulation !important;
+  transition:transform .14s ease,box-shadow .14s ease,border-color .14s ease,background .14s ease !important;
 }
-[data-testid="stVerticalBlockBorderWrapper"] > div,[data-testid="stForm"],[data-testid="stExpander"],[data-testid="stMetric"],.routine-card,.qg-start-card,.qg-hero,.qg-start-overview {transform-style:preserve-3d;transition:transform .22s ease,border-color .22s ease,box-shadow .22s ease !important}
-[data-testid="stVerticalBlockBorderWrapper"] > div:hover,[data-testid="stMetric"]:hover,.routine-card:hover,.qg-start-card:hover {
-  transform:perspective(1100px) translateY(-3px) rotateX(1deg) !important;border-color:rgba(65,202,244,.70) !important;
-  box-shadow:0 10px 0 rgba(1,7,13,.52),0 24px 42px rgba(0,0,0,.42),0 0 22px rgba(20,164,214,.12) !important;
+.stApp .stButton>button[kind="secondary"],.stApp .stFormSubmitButton>button[kind="secondary"] {
+  border-color:#47748b !important; border-bottom-color:#010b13 !important; color:#edf5f8 !important;
+  background:linear-gradient(180deg,#173a50 0%,#0b2638 100%) !important;
+  box-shadow:0 3px 0 #010b13,0 6px 9px rgba(0,0,0,.2),inset 0 1px 0 rgba(255,255,255,.14) !important;
 }
-[data-testid="stMetric"] {overflow:hidden !important;border-radius:14px !important;background:linear-gradient(145deg,rgba(10,39,58,.98),rgba(4,19,33,.99)) !important}
-[data-testid="stMetric"]::after {content:"";position:absolute;left:9%;right:9%;bottom:0;height:2px;background:linear-gradient(90deg,transparent,var(--qg-green),var(--qg-blue),transparent);box-shadow:0 0 13px rgba(28,174,229,.28)}
-[data-testid="stMetricValue"] {color:#f1f8fc !important;font-weight:820 !important;text-shadow:0 0 14px rgba(35,179,219,.14) !important}
-[data-testid="stMetricLabel"] {color:#9bb4c8 !important}
-[data-testid="stTabs"] {border-radius:15px !important;background:linear-gradient(145deg,rgba(6,25,42,.94),rgba(3,14,25,.98)) !important}
-[data-testid="stTabs"] [role="tablist"] {gap:7px !important;border-color:rgba(51,156,191,.24) !important}
-[data-testid="stTabs"] [role="tab"] {border-radius:9px !important;color:#b8c9d7 !important}
-[data-testid="stTabs"] [role="tab"][aria-selected="true"] {color:#effff7 !important;background:linear-gradient(145deg,rgba(15,119,78,.96),rgba(7,65,65,.96)) !important;box-shadow:0 4px 0 rgba(0,0,0,.42),inset 0 1px rgba(255,255,255,.16) !important}
-[data-baseweb="input"] > div,[data-baseweb="select"] > div,[data-baseweb="textarea"] > div,[data-testid="stTextInput"] input,[data-testid="stTextArea"] textarea,[data-testid="stNumberInput"] input {
-  border:1px solid rgba(48,142,178,.46) !important;border-radius:9px !important;color:#eff6fb !important;
-  background:linear-gradient(180deg,#061626,#081c2d) !important;box-shadow:inset 0 3px 8px rgba(0,0,0,.34),0 2px 0 rgba(0,0,0,.2) !important;
+.stApp .stButton>button[aria-pressed="true"] { border-color:var(--qg-gold) !important; border-bottom-color:#765c14 !important; }
+.stApp .stButton>button:hover,.stApp .stFormSubmitButton>button:hover,[data-testid="stDownloadButton"]>button:hover,
+[data-testid="stLinkButton"] a:hover,.stApp .focus-bottom button:hover {
+  border-color:var(--qg-gold) !important; transform:translateY(-1px) !important;
+  box-shadow:0 4px 0 #03452f,0 8px 11px rgba(0,0,0,.25),inset 0 1px 0 rgba(255,255,255,.24) !important;
 }
-[data-baseweb="input"] > div:focus-within,[data-baseweb="select"] > div:focus-within,[data-baseweb="textarea"] > div:focus-within,[data-testid="stTextInput"] input:focus,[data-testid="stTextArea"] textarea:focus {
-  border-color:var(--qg-green) !important;box-shadow:0 0 0 2px rgba(19,201,130,.16),0 0 18px rgba(19,201,130,.12),inset 0 2px 7px rgba(0,0,0,.25) !important;
+.stApp .stButton>button[kind="secondary"]:hover,.stApp .stFormSubmitButton>button[kind="secondary"]:hover {
+  border-color:var(--qg-cyan) !important; border-bottom-color:#010b13 !important;
+  background:linear-gradient(180deg,#1b455d 0%,#0e2d40 100%) !important;
+  box-shadow:0 4px 0 #010b13,0 8px 11px rgba(0,0,0,.24),inset 0 1px 0 rgba(255,255,255,.17) !important;
 }
-.stButton > button,.stFormSubmitButton > button,[data-testid="stDownloadButton"] > button {
-  border:1px solid rgba(72,215,157,.55) !important;border-radius:9px !important;color:#f2fff8 !important;
-  background:linear-gradient(180deg,#0b875c,#05633f) !important;box-shadow:0 5px 0 #033b2d,0 12px 22px rgba(0,0,0,.30),inset 0 1px rgba(255,255,255,.22) !important;
-  font-weight:760 !important;transition:transform .18s ease,filter .18s ease,box-shadow .18s ease !important;
+.stApp .stButton>button:active,.stApp .stFormSubmitButton>button:active,[data-testid="stDownloadButton"]>button:active,
+[data-testid="stLinkButton"] a:active,.stApp .focus-bottom button:active {
+  border-bottom-width:1px !important; transform:translateY(2px) !important;
+  box-shadow:0 1px 0 #022c21,0 2px 4px rgba(0,0,0,.2),inset 0 1px 2px rgba(0,0,0,.18) !important;
 }
-.stButton > button:hover,.stFormSubmitButton > button:hover,[data-testid="stDownloadButton"] > button:hover {transform:translateY(-2px) !important;filter:brightness(1.12) !important;border-color:rgba(115,245,185,.82) !important;box-shadow:0 7px 0 #033b2d,0 17px 28px rgba(0,0,0,.36),0 0 18px rgba(19,201,130,.16) !important}
-.stButton > button:active,.stFormSubmitButton > button:active {transform:translateY(3px) !important;box-shadow:0 2px 0 #033b2d,0 5px 9px rgba(0,0,0,.28) !important}
-.stButton > button[kind="secondary"],.stFormSubmitButton > button[kind="secondary"] {color:#e5f3fb !important;border-color:rgba(50,164,209,.48) !important;background:linear-gradient(145deg,#12334b,#0a2035) !important;box-shadow:0 5px 0 #061522,0 11px 20px rgba(0,0,0,.28),inset 0 1px rgba(255,255,255,.14) !important}
-[data-testid="stProgress"] > div > div {background:linear-gradient(90deg,#11a86e,#20d58d,#35bce8) !important;box-shadow:0 0 16px rgba(19,201,130,.22) !important}
-[data-testid="stAlert"],[data-testid="stToast"] {border:1px solid rgba(45,167,204,.34) !important;border-radius:12px !important;background:rgba(6,26,43,.96) !important;box-shadow:0 10px 24px rgba(0,0,0,.28) !important}
-[data-testid="stPlotlyChart"],[data-testid="stGraph"],[data-testid="stDataFrame"],[data-testid="stTable"] {border:1px solid rgba(37,162,207,.35) !important;border-radius:12px !important;filter:drop-shadow(0 12px 20px rgba(0,0,0,.24))}
-hr {border-color:rgba(42,148,188,.27) !important}
-
-/* Login premium: relevo, brilho verde e filetes dourados. */
-.qg-hero-auth {
-  border-color:rgba(40,183,228,.72) !important;border-radius:19px !important;
-  background:radial-gradient(ellipse at 15% 8%,rgba(16,151,106,.20),transparent 38%),radial-gradient(ellipse at 87% 85%,rgba(243,199,70,.11),transparent 30%),linear-gradient(125deg,#06192a 0%,#08243a 52%,#071624 100%) !important;
-  box-shadow:0 12px 0 #020811,0 34px 68px rgba(0,0,0,.54),inset 0 2px rgba(255,255,255,.12),inset 0 -5px 14px rgba(0,0,0,.30),0 0 34px rgba(21,155,201,.12) !important;
+.stApp button:focus-visible,.stApp a:focus-visible,.stApp input:focus-visible,.stApp textarea:focus-visible,.stApp select:focus-visible,.stApp [role="tab"]:focus-visible,.stApp [role="radio"]:focus-visible,.stApp [role="checkbox"]:focus-visible { outline:3px solid var(--qg-gold) !important; outline-offset:3px !important; }
+.stApp button:disabled,.stApp [aria-disabled="true"] { opacity:.62 !important; cursor:not-allowed !important; transform:none !important; box-shadow:0 1px 0 #010910 !important; }
+[data-baseweb="input"]>div,[data-baseweb="select"]>div,[data-baseweb="textarea"]>div,[data-testid="stTextInput"] input,[data-testid="stTextArea"] textarea,[data-testid="stNumberInput"] input {
+  min-height:46px !important; border:1px solid #31566b !important; border-radius:9px !important; color:#f4f8fb !important;
+  background:#041521 !important; box-shadow:inset 0 3px 7px rgba(0,0,0,.44),0 3px 0 #010910 !important; transform:none !important; font-size:15px !important;
 }
-.qg-hero-auth::before {background-image:radial-gradient(circle at var(--qg-light-x,82%) var(--qg-light-y,48%),rgba(45,190,221,.16),transparent 36%),linear-gradient(rgba(70,157,185,.10) 1px,transparent 1px),linear-gradient(90deg,rgba(70,157,185,.10) 1px,transparent 1px) !important;background-size:auto,28px 28px,28px 28px !important}
-.qg-hero-auth .qg-hero-title {color:#fff3c4 !important;-webkit-text-fill-color:#fff3c4 !important;text-shadow:0 2px 0 #6d5b23,0 5px 0 #173448,0 14px 25px rgba(0,0,0,.62) !important}
-.qg-hero-auth .qg-hero-kicker,.qg-start-kicker,.qg-start-index {color:#f2cd56 !important}
-.qg-hero-auth .qg-hero-subtitle {color:#d4e5ef !important}
-.qg-hero-auth .qg-cube-face {border-color:rgba(243,199,70,.88) !important;color:#fff0ae !important;background:linear-gradient(145deg,rgba(15,118,81,.96),rgba(7,41,61,.98) 58%,rgba(6,22,39,.98)) !important;box-shadow:inset 0 2px rgba(255,255,255,.24),inset 0 -7px 13px rgba(0,0,0,.38),0 0 25px rgba(19,201,130,.18) !important}
-.qg-auth-orbits {border-color:rgba(49,190,221,.28) !important;filter:drop-shadow(0 0 14px rgba(20,163,203,.19)) !important}
-.qg-start-overview {border:1px solid rgba(34,163,207,.45) !important;border-radius:16px !important;background:linear-gradient(145deg,rgba(6,26,43,.98),rgba(3,15,27,.99)) !important;box-shadow:0 8px 0 rgba(1,7,13,.62),0 23px 42px rgba(0,0,0,.38),inset 0 1px rgba(255,255,255,.07) !important}
-.qg-start-heading h2 {color:#f1f7fb !important;-webkit-text-fill-color:#f1f7fb !important}
-.qg-start-card {border:1px solid rgba(35,165,206,.40) !important;border-radius:12px !important;background:linear-gradient(145deg,#0a2940,#06182a 72%,#051321) !important;box-shadow:0 7px 0 #020a12,0 17px 27px rgba(0,0,0,.34),inset 0 1px rgba(255,255,255,.09) !important}
-.qg-start-card:hover {border-color:rgba(57,221,159,.68) !important;box-shadow:0 9px 0 #020a12,0 23px 35px rgba(0,0,0,.40),0 0 20px rgba(19,201,130,.13),inset 0 1px rgba(255,255,255,.12) !important}
-.qg-start-icon {border-color:rgba(243,199,70,.68) !important;color:#fff0aa !important;background:linear-gradient(145deg,#147850,#0a3450 68%,#0a1c31) !important;box-shadow:0 5px 0 #03121c,0 10px 17px rgba(0,0,0,.28),inset 0 1px rgba(255,255,255,.24) !important}
-.stApp:has(.qg-hero-auth) [data-testid="stAlert"] {border-color:rgba(39,169,208,.38) !important;background:linear-gradient(145deg,rgba(6,28,46,.96),rgba(4,17,30,.98)) !important}
-.stApp:has(.qg-hero-auth) [data-testid="stTabs"] {border-color:rgba(36,170,207,.48) !important}
-@media (max-width:760px) {
-  .main .block-container {padding:.8rem .75rem 2.5rem !important}
-  .qg-hero-auth {min-height:0 !important;padding:20px !important;transform:none !important}
-  .qg-start-overview {padding:15px !important}
-  [data-testid="stMetric"] {padding:12px !important}
+[data-baseweb="input"]>div:focus-within,[data-baseweb="select"]>div:focus-within,[data-baseweb="textarea"]>div:focus-within { border-color:var(--qg-cyan) !important; box-shadow:0 0 0 2px rgba(54,194,232,.22),inset 0 3px 7px rgba(0,0,0,.4) !important; }
+.stApp input[aria-invalid="true"],.stApp textarea[aria-invalid="true"],[data-baseweb="select"][aria-invalid="true"] { border-color:#f07777 !important; box-shadow:0 0 0 2px rgba(240,119,119,.18) !important; }
+[data-testid="stSidebar"] { background:linear-gradient(180deg,#071b2a,#030d16) !important; border-right:1px solid #24485b !important; box-shadow:8px 0 0 #01070d,13px 0 22px rgba(0,0,0,.32) !important; }
+[data-testid="stSidebar"] h1,[data-testid="stSidebar"] h2,[data-testid="stSidebar"] h3 { color:#f0f5f7 !important; }
+[data-testid="stSidebar"] [role="radiogroup"] label { min-height:40px !important; border-radius:8px !important; color:#d5e0e7 !important; font-size:14px !important; }
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) { border:1px solid #27c58b !important; background:linear-gradient(100deg,#0b6248,#07383b) !important; box-shadow:0 4px 0 #02372a,inset 0 1px rgba(255,255,255,.14) !important; }
+[data-testid="stTabs"] [role="tab"] { min-height:44px !important; padding:.5rem .8rem !important; border-radius:9px !important; color:#c8d5dd !important; transform:none !important; }
+[data-testid="stTabs"] [role="tab"][aria-selected="true"] { color:#f5fff9 !important; background:#0b654b !important; box-shadow:0 4px 0 #03452f,inset 0 1px rgba(255,255,255,.18) !important; }
+[data-testid="stAlert"],[data-testid="stToast"] { border:1px solid #31566b !important; border-left:4px solid var(--qg-cyan) !important; border-radius:11px !important; background:#071d2b !important; box-shadow:0 5px 0 #01070d,0 10px 16px rgba(0,0,0,.28) !important; }
+@keyframes qgFeedbackEnter { from { opacity:0; translate:0 5px; } to { opacity:1; translate:0 0; } }
+[data-testid="stAlert"],[data-testid="stToast"] { animation:qgFeedbackEnter .28s ease-out both; }
+[data-testid="stSpinner"] { color:var(--qg-green) !important; }
+.stApp [aria-busy="true"] { cursor:progress !important; }
+.stApp [aria-invalid="true"] { border-color:#f07777 !important; }
+.stApp [role="checkbox"]:focus-visible,.stApp [role="switch"]:focus-visible { outline:3px solid var(--qg-gold) !important; outline-offset:3px !important; }
+[data-testid="stProgress"]>div { min-height:10px !important; border-radius:999px !important; }
+[data-testid="stProgress"]>div>div { border-radius:999px !important; background:linear-gradient(90deg,#12a96f,#19c987,#36c2e8) !important; box-shadow:none !important; }
+hr { border-color:#24475b !important; }
+/* Login mantém a divisão de apresentação e acesso, com o cubo como único elemento que gira. */
+.stApp:has(.qg-hero-auth) [data-testid="stHorizontalBlock"] { gap:1.1rem !important; align-items:stretch !important; }
+.stApp:has(.qg-hero-auth) [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:first-child { background:transparent !important; box-shadow:none !important; }
+.stApp:has(.qg-hero-auth) [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:last-child { border:1px solid #28566c !important; border-radius:15px !important; padding:1rem !important; background:linear-gradient(150deg,#0a2639,#051522) !important; box-shadow:0 8px 0 #01070d,0 16px 24px rgba(0,0,0,.38),inset 0 1px rgba(255,255,255,.14) !important; }
+.qg-hero-auth { min-height:250px !important; border:1px solid #315f75 !important; border-radius:16px !important; background:linear-gradient(145deg,#0c2b40,#071b2a 64%,#04131e) !important; box-shadow:0 9px 0 #01070d,0 20px 30px rgba(0,0,0,.42),inset 0 1px rgba(255,255,255,.16) !important; transform:none !important; }
+.qg-hero-auth .qg-hero-copy,.qg-hero-auth .qg-hero-title,.qg-hero-auth .qg-hero-subtitle { transform:none !important; filter:none !important; }
+.qg-hero-auth .qg-cube-wrap { width:96px !important; height:96px !important; perspective:900px !important; filter:drop-shadow(0 12px 9px rgba(0,0,0,.42)) !important; }
+.qg-hero-auth .qg-cube-face { border:2px solid rgba(241,195,75,.86) !important; border-radius:12px !important; background:linear-gradient(145deg,#12694d,#0a3850 64%,#061a29) !important; box-shadow:inset 3px 3px 7px rgba(255,255,255,.2),inset -5px -6px 11px rgba(0,0,0,.38) !important; text-shadow:none !important; }
+.qg-hero-auth .qg-hero-title,.qg-hero-auth .qg-hero-subtitle,.qg-hero-auth .qg-hero-kicker { text-shadow:none !important; -webkit-text-fill-color:currentColor !important; }
+.qg-hero-auth .qg-cube-front { transform:translateZ(48px) !important; }.qg-hero-auth .qg-cube-back { transform:rotateY(180deg) translateZ(48px) !important; }
+.qg-hero-auth .qg-cube-right { transform:rotateY(90deg) translateZ(48px) !important; }.qg-hero-auth .qg-cube-left { transform:rotateY(-90deg) translateZ(48px) !important; }
+.qg-hero-auth .qg-cube-top { transform:rotateX(90deg) translateZ(48px) !important; }.qg-hero-auth .qg-cube-bottom { transform:rotateX(-90deg) translateZ(48px) !important; }
+.qg-sidebar-brand-mark,.qg-sidebar-avatar { transform:none !important; box-shadow:0 5px 0 #01070d,0 10px 15px rgba(0,0,0,.34),inset 1px 1px rgba(255,255,255,.22),inset -2px -3px rgba(0,0,0,.3) !important; }
+/* Responsividade: ações tocáveis e leitura vertical sem comprimir cartões. */
+.st-key-qg_mobile_navigation { display:none; }
+@media(max-width:1000px) { .qg-start-grid { grid-template-columns:repeat(2,minmax(0,1fr)) !important; } }
+@media(max-width:768px) {
+  .main .block-container { padding:.75rem .8rem 2.3rem !important; }
+  .stApp [data-testid="stHorizontalBlock"] { gap:.75rem !important; flex-direction:column !important; }
+  .stApp [data-testid="stHorizontalBlock"]>[data-testid="stColumn"] { width:100% !important; max-width:100% !important; flex:1 1 100% !important; }
+  .stApp .stButton>button,.stApp .stFormSubmitButton>button,[data-testid="stDownloadButton"]>button { width:100% !important; }
+  .st-key-qg_mobile_navigation { display:block !important; margin:.4rem 0 1rem; padding:10px 12px 2px; border:1px solid #28566c; border-radius:12px; background:#071d2b; box-shadow:0 5px 0 #01070d,0 10px 16px rgba(0,0,0,.25); }
+  .st-key-qg_mobile_navigation [data-testid="stWidgetLabel"] { font-size:14px !important; }
+  .stApp .stButton>button,.stApp .stFormSubmitButton>button,[data-testid="stDownloadButton"]>button { min-height:48px !important; }
+  .stApp:has(.qg-hero-auth) [data-testid="stHorizontalBlock"] { flex-direction:column !important; }
+  .stApp:has(.qg-hero-auth) [data-testid="stHorizontalBlock"]>[data-testid="stColumn"] { width:100% !important; max-width:100% !important; flex:1 1 100% !important; }
+  .stApp:has(.qg-hero-auth) [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:first-child { order:1; }
+  .stApp:has(.qg-hero-auth) [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:last-child { order:0; }
+  .qg-hero-auth { min-height:0 !important; padding:18px !important; }
+  .qg-hero-auth .qg-cube-wrap { width:72px !important; height:72px !important; }
+  .qg-hero-auth .qg-cube-front { transform:translateZ(36px) !important; }.qg-hero-auth .qg-cube-back { transform:rotateY(180deg) translateZ(36px) !important; }
+  .qg-hero-auth .qg-cube-right { transform:rotateY(90deg) translateZ(36px) !important; }.qg-hero-auth .qg-cube-left { transform:rotateY(-90deg) translateZ(36px) !important; }
+  .qg-hero-auth .qg-cube-top { transform:rotateX(90deg) translateZ(36px) !important; }.qg-hero-auth .qg-cube-bottom { transform:rotateX(-90deg) translateZ(36px) !important; }
 }
-@media (prefers-reduced-motion:reduce) {
-  *,*::before,*::after {scroll-behavior:auto !important;transition-duration:.01ms !important;animation-duration:.01ms !important;animation-iteration-count:1 !important}
-}
-</style>""", unsafe_allow_html=True)
-# Reforço 3D global: superfícies, colunas e controles de todos os módulos.
-st.markdown("""<style>
-/* Grade holográfica atrás do painel inteiro. */
-.stApp::before {
-  background-image:
-    radial-gradient(ellipse at 22% 38%, rgba(22, 119, 145, .11), transparent 48%),
-    linear-gradient(rgba(42, 136, 169, .055) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(42, 136, 169, .055) 1px, transparent 1px) !important;
-  background-size: auto, 42px 42px, 42px 42px !important;
-  mask-image: linear-gradient(120deg, #000 0%, rgba(0,0,0,.5) 62%, transparent 100%);
-}
-/* Cada coluna de conteúdo passa a formar um painel elevado, como os cards do mockup. */
-.stApp [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
-  position: relative !important;
-  isolation: isolate;
-  border: 1px solid rgba(40, 166, 211, .32) !important;
-  border-radius: 14px !important;
-  padding: .48rem !important;
-  background:
-    radial-gradient(ellipse at 100% 0%, rgba(17, 87, 111, .16), transparent 54%),
-    linear-gradient(145deg, rgba(7, 29, 48, .92), rgba(3, 15, 27, .96)) !important;
-  box-shadow:
-    0 7px 0 rgba(1, 7, 13, .72),
-    0 15px 27px rgba(0, 0, 0, .32),
-    inset 0 1px rgba(255, 255, 255, .08),
-    inset 0 -2px rgba(0, 0, 0, .26) !important;
-  transform: perspective(1400px) rotateX(.35deg) translateZ(0);
-  transform-style: preserve-3d;
-  transition: transform .24s ease, border-color .24s ease, box-shadow .24s ease !important;
-}
-.stApp [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:hover {
-  border-color: rgba(57, 191, 232, .62) !important;
-  transform: perspective(1400px) translateY(-3px) rotateX(1.1deg) translateZ(5px) !important;
-  box-shadow: 0 10px 0 rgba(1,7,13,.66), 0 23px 36px rgba(0,0,0,.40), 0 0 19px rgba(28,174,229,.11), inset 0 1px rgba(255,255,255,.10) !important;
-}
-/* Camadas de relevo para painéis, métricas, formulários e navegação. */
-.stApp [data-testid="stVerticalBlockBorderWrapper"] > div,
-.stApp [data-testid="stForm"],
-.stApp [data-testid="stExpander"],
-.stApp [data-testid="stMetric"],
-.stApp [data-testid="stTabs"],
-.stApp [data-testid="stDataFrame"],
-.stApp [data-testid="stTable"],
-.stApp .routine-card,
-.stApp .qg-start-card,
-.stApp .qg-start-overview,
-.stApp .qg-hero {
-  transform-style: preserve-3d !important;
-  backface-visibility: hidden;
-}
-.stApp [data-testid="stVerticalBlockBorderWrapper"] > div {
-  box-shadow: 0 8px 0 rgba(1,7,13,.66), 0 19px 32px rgba(0,0,0,.34), inset 0 1px rgba(255,255,255,.08) !important;
-}
-.stApp [data-testid="stMetric"] {
-  transform: perspective(900px) rotateX(1deg) translateZ(4px) !important;
-  box-shadow: 0 8px 0 #020b13, 0 17px 29px rgba(0,0,0,.42), inset 0 1px rgba(255,255,255,.12), inset 0 -3px rgba(0,0,0,.28) !important;
-}
-.stApp [data-testid="stMetric"]:hover {
-  transform: perspective(900px) translateY(-5px) rotateX(4deg) rotateY(-1.2deg) translateZ(12px) !important;
-  box-shadow: 0 12px 0 #020b13, 0 26px 38px rgba(0,0,0,.46), 0 0 24px rgba(28,174,229,.17), inset 0 1px rgba(255,255,255,.15) !important;
-}
-.stApp [data-testid="stPlotlyChart"],
-.stApp [data-testid="stGraph"],
-.stApp [data-testid="stDataFrame"],
-.stApp [data-testid="stTable"] {
-  transform: perspective(1200px) rotateX(.7deg) translateZ(3px) !important;
-  border: 1px solid rgba(41, 174, 221, .48) !important;
-  box-shadow: 0 8px 0 rgba(1,8,15,.72), 0 19px 31px rgba(0,0,0,.40), inset 0 1px rgba(255,255,255,.07) !important;
-  transition: transform .28s ease, box-shadow .28s ease !important;
-}
-.stApp [data-testid="stPlotlyChart"]:hover,
-.stApp [data-testid="stGraph"]:hover,
-.stApp [data-testid="stDataFrame"]:hover {
-  transform: perspective(1200px) translateY(-4px) rotateX(2deg) rotateY(-.8deg) translateZ(9px) !important;
-  box-shadow: 0 12px 0 rgba(1,8,15,.68), 0 26px 38px rgba(0,0,0,.45), 0 0 22px rgba(28,174,229,.16) !important;
-}
-/* Botões projetados para frente e controles encaixados em molduras rebaixadas. */
-.stApp .stButton > button,
-.stApp .stFormSubmitButton > button,
-.stApp [data-testid="stDownloadButton"] > button {
-  transform: perspective(800px) rotateX(2deg) translateZ(7px) !important;
-  box-shadow: 0 7px 0 #033b2d, 0 15px 24px rgba(0,0,0,.38), inset 0 2px rgba(255,255,255,.25), inset 0 -2px rgba(0,0,0,.18) !important;
-}
-.stApp .stButton > button:hover,
-.stApp .stFormSubmitButton > button:hover,
-.stApp [data-testid="stDownloadButton"] > button:hover {
-  transform: perspective(800px) translateY(-4px) rotateX(7deg) rotateY(-1deg) translateZ(13px) !important;
-  box-shadow: 0 10px 0 #033b2d, 0 22px 31px rgba(0,0,0,.43), 0 0 24px rgba(19,201,130,.20), inset 0 2px rgba(255,255,255,.28) !important;
-}
-.stApp [data-baseweb="input"] > div,
-.stApp [data-baseweb="select"] > div,
-.stApp [data-baseweb="textarea"] > div,
-.stApp [data-testid="stTextInput"] input,
-.stApp [data-testid="stTextArea"] textarea,
-.stApp [data-testid="stNumberInput"] input {
-  transform: perspective(700px) rotateX(1.5deg) translateZ(3px) !important;
-  box-shadow: inset 0 4px 10px rgba(0,0,0,.42), 0 4px 0 rgba(1,8,15,.55), 0 8px 15px rgba(0,0,0,.24) !important;
-}
-.stApp [data-baseweb="input"] > div:focus-within,
-.stApp [data-baseweb="select"] > div:focus-within,
-.stApp [data-baseweb="textarea"] > div:focus-within {
-  transform: perspective(700px) translateY(-1px) translateZ(7px) !important;
-}
-/* Abas, expansores e seletores recebem borda facetada e profundidade. */
-.stApp [data-testid="stTabs"] {
-  transform: perspective(1300px) rotateX(.45deg) translateZ(2px) !important;
-  box-shadow: 0 8px 0 rgba(1,7,13,.65), 0 18px 30px rgba(0,0,0,.36), inset 0 1px rgba(255,255,255,.09) !important;
-}
-.stApp [data-testid="stTabs"] [role="tab"] {
-  box-shadow: 0 3px 0 rgba(1,8,14,.48), inset 0 1px rgba(255,255,255,.08);
-  transform: translateZ(3px);
-}
-.stApp [data-testid="stTabs"] [role="tab"][aria-selected="true"] {
-  box-shadow: 0 5px 0 #04352d, 0 8px 15px rgba(0,0,0,.32), inset 0 1px rgba(255,255,255,.22) !important;
-  transform: translateY(-2px) translateZ(8px) !important;
-}
-.stApp [data-testid="stExpander"] {
-  transform: perspective(1000px) rotateX(.55deg) translateZ(2px);
-  box-shadow: 0 7px 0 rgba(1,7,13,.62), 0 16px 27px rgba(0,0,0,.34), inset 0 1px rgba(255,255,255,.09) !important;
-}
-.stApp [data-testid="stAlert"] {
-  transform: perspective(1000px) rotateX(.65deg) translateZ(3px);
-  box-shadow: 0 6px 0 rgba(1,7,13,.60), 0 14px 23px rgba(0,0,0,.31), inset 0 1px rgba(255,255,255,.10) !important;
-}
-/* Relevo tipográfico e detalhes dourados nas seções e no menu. */
-.stApp [data-testid="stHeading"] h1,
-.stApp [data-testid="stHeading"] h2,
-.stApp .stMarkdown h1,
-.stApp .stMarkdown h2 {
-  text-shadow: 0 1px 0 rgba(123,164,180,.38), 0 3px 0 rgba(9,48,66,.72), 0 8px 18px rgba(0,0,0,.48) !important;
-}
-.stApp [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
-  transform: perspective(700px) translateX(3px) translateZ(7px) !important;
-  box-shadow: 0 5px 0 #032d2b, 0 10px 18px rgba(0,0,0,.35), inset 0 1px rgba(255,255,255,.20) !important;
-}
-.qg-sidebar-brand-mark,
-.qg-sidebar-avatar,
-.qg-start-icon {
-  transform: perspective(500px) rotateY(-9deg) rotateX(5deg) translateZ(10px) !important;
-  box-shadow: 0 7px 0 rgba(1,8,14,.72), 0 13px 20px rgba(0,0,0,.34), inset 0 2px rgba(255,255,255,.30) !important;
-}
-.qg-hero, .qg-hero-auth, .qg-start-overview {
-  transform: perspective(1500px) rotateX(1.1deg) translateZ(6px) !important;
-  box-shadow: 0 12px 0 #020811, 0 30px 56px rgba(0,0,0,.48), inset 0 2px rgba(255,255,255,.15), inset 0 -5px 15px rgba(0,0,0,.30) !important;
-}
-.qg-hero-auth .qg-cube-wrap {filter:drop-shadow(0 23px 19px rgba(0,0,0,.58)) drop-shadow(0 0 25px rgba(19,201,130,.24)) !important}
-.qg-start-card {transform:perspective(850px) rotateX(2deg) translateZ(5px) !important}
-.qg-start-card:hover {transform:perspective(850px) translateY(-7px) rotateX(7deg) rotateY(-2deg) translateZ(15px) !important}
-@media (max-width: 760px) {
-  .stApp [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {transform:none !important;padding:.25rem !important}
-  .stApp [data-testid="stMetric"],.stApp [data-testid="stTabs"],.stApp [data-testid="stExpander"],.qg-hero,.qg-hero-auth,.qg-start-overview {transform:none !important}
-}
-@media (prefers-reduced-motion: reduce) {
-  .stApp [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
-  .stApp [data-testid="stMetric"],.stApp [data-testid="stPlotlyChart"],
-  .stApp [data-testid="stGraph"],.stApp .stButton > button {transform:none !important}
-}
-</style>""", unsafe_allow_html=True)
-# Direção de arte QG: referência azul-marinho, ciano, verde e ouro com relevo 3D.
-st.markdown("""<style>
-:root{--qg-ink:#f3f7fa;--qg-sub:#a9bdcc;--qg-navy:#03111f;--qg-panel:#061b2d;--qg-panel2:#09243a;--qg-cyan:#22b7ea;--qg-green:#12c981;--qg-gold:#f3c743}
-.stApp{color:var(--qg-ink)!important;background:radial-gradient(ellipse at 50% -10%,rgba(10,72,111,.25),transparent 48%),radial-gradient(ellipse at 90% 45%,rgba(5,83,91,.12),transparent 34%),linear-gradient(155deg,#020913,#041525 52%,#020a13)!important}
-[data-testid="stAppViewContainer"],[data-testid="stMain"]{background:transparent!important}
-.main .block-container{max-width:1680px!important;padding-top:.8rem!important;padding-bottom:3rem!important}
-[data-testid="stHeader"]{background:rgba(2,10,18,.86)!important;border-bottom:1px solid rgba(32,167,217,.22);backdrop-filter:blur(14px)}
-.stApp::before{background-image:radial-gradient(ellipse at 28% 40%,rgba(16,121,152,.10),transparent 47%),linear-gradient(rgba(41,137,173,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(41,137,173,.045) 1px,transparent 1px)!important;background-size:auto,44px 44px,44px 44px!important;mask-image:linear-gradient(115deg,#000,rgba(0,0,0,.55) 60%,transparent)}
-/* Títulos limpos como no painel da referência, com pequeno relevo de luz. */
-[data-testid="stMain"] [data-testid="stHeading"] h1,[data-testid="stMain"] [data-testid="stHeading"] h2,[data-testid="stMain"] .premium-title,[data-testid="stMain"] .stMarkdown h1,[data-testid="stMain"] .stMarkdown h2,[data-testid="stMain"] .stMarkdown h3{color:#f2f7fb!important;background:none!important;background-image:none!important;-webkit-background-clip:border-box!important;-webkit-text-fill-color:#f2f7fb!important;text-transform:none!important;animation:none!important;text-shadow:0 1px 0 rgba(128,171,191,.32),0 3px 0 rgba(7,44,62,.65),0 8px 16px rgba(0,0,0,.50)!important;letter-spacing:-.012em!important}
-[data-testid="stMain"] [data-testid="stHeading"] h1{font-size:clamp(1.35rem,2vw,1.8rem)!important;font-weight:850!important}
-[data-testid="stMain"] [data-testid="stHeading"] h2{font-size:clamp(1.08rem,1.55vw,1.35rem)!important;font-weight:790!important}
-[data-testid="stCaptionContainer"],[data-testid="stWidgetLabel"]{color:var(--qg-sub)!important}
-[data-testid="stMarkdownContainer"] a{color:#62d5ff!important}
-[data-testid="stSidebar"]{background:radial-gradient(ellipse at 5% 0%,rgba(12,83,111,.22),transparent 40%),linear-gradient(180deg,#061728,#03101c 70%,#020811)!important;border-right:1px solid rgba(31,170,220,.38)!important;box-shadow:16px 0 44px rgba(0,0,0,.42)!important}
-[data-testid="stSidebar"] h1,[data-testid="stSidebar"] h2,[data-testid="stSidebar"] h3{color:#eff6fa!important}
-[data-testid="stSidebar"] [role="radiogroup"] label{border:1px solid transparent!important;border-radius:8px!important;transition:transform .18s ease,background .18s ease,border-color .18s ease!important}
-[data-testid="stSidebar"] [role="radiogroup"] label:hover{background:rgba(13,83,111,.32)!important;border-color:rgba(38,181,226,.32)!important;transform:translateX(2px)}
-[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked){background:linear-gradient(100deg,rgba(9,123,78,.95),rgba(5,74,68,.94))!important;border-color:rgba(70,226,164,.68)!important;box-shadow:0 4px 0 #022c2a,0 8px 15px rgba(0,0,0,.34),inset 0 1px rgba(255,255,255,.2)!important;transform:translateX(2px) translateZ(5px)}
-.qg-sidebar-brand-mark,.qg-sidebar-avatar{border-color:rgba(243,199,67,.78)!important;color:#fff0ad!important;background:linear-gradient(145deg,#117354,#0b3551 62%,#071b30)!important;box-shadow:0 5px 0 #020c15,0 10px 18px rgba(0,0,0,.36),inset 0 1px rgba(255,255,255,.28)!important}
-/* Leques de profundidade aplicados a cartões, colunas e grupos de módulo. */
-.stApp [data-testid="stHorizontalBlock"]{gap:.68rem!important;align-items:stretch!important;perspective:1400px}
-.stApp [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]{position:relative!important;isolation:isolate;border:1px solid rgba(25,139,184,.45)!important;border-radius:11px!important;padding:.42rem!important;background:radial-gradient(ellipse at 100% 0%,rgba(11,72,98,.16),transparent 53%),linear-gradient(145deg,rgba(7,28,46,.96),rgba(3,15,26,.98))!important;box-shadow:0 6px 0 #020811,0 14px 25px rgba(0,0,0,.34),inset 0 1px rgba(255,255,255,.075),inset 0 -2px rgba(0,0,0,.28)!important;transform:perspective(1200px) rotateX(.55deg) translateZ(2px);transform-style:preserve-3d;transition:transform .22s ease,border-color .22s ease,box-shadow .22s ease!important}
-.stApp [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:hover{border-color:rgba(49,194,235,.68)!important;transform:perspective(1200px) translateY(-3px) rotateX(1.6deg) translateZ(8px)!important;box-shadow:0 9px 0 #020811,0 22px 34px rgba(0,0,0,.42),0 0 18px rgba(34,183,234,.12),inset 0 1px rgba(255,255,255,.11)!important}
-[data-testid="stVerticalBlockBorderWrapper"]>div,[data-testid="stForm"],[data-testid="stExpander"],[data-testid="stMetric"],[data-testid="stTabs"],[data-testid="stDataFrame"],[data-testid="stTable"]{border-color:rgba(26,151,198,.48)!important;background:linear-gradient(145deg,rgba(7,29,48,.97),rgba(3,15,27,.99))!important;box-shadow:0 6px 0 #020912,0 14px 27px rgba(0,0,0,.34),inset 0 1px rgba(255,255,255,.08)!important;transform-style:preserve-3d!important}
-[data-testid="stVerticalBlockBorderWrapper"]>div{border-radius:11px!important}
-[data-testid="stMetric"]{position:relative;overflow:hidden!important;border-radius:10px!important;transform:perspective(900px) rotateX(1deg) translateZ(4px)!important;box-shadow:0 7px 0 #020811,0 15px 25px rgba(0,0,0,.40),inset 0 1px rgba(255,255,255,.11)!important}
-[data-testid="stMetric"]::after{content:"";position:absolute;left:10%;right:10%;bottom:0;height:2px;background:linear-gradient(90deg,transparent,#12c981,#1caee5,transparent);box-shadow:0 0 12px rgba(34,183,234,.28)}
-[data-testid="stMetric"]:hover{transform:perspective(900px) translateY(-4px) rotateX(4deg) rotateY(-1deg) translateZ(12px)!important;box-shadow:0 10px 0 #020811,0 23px 35px rgba(0,0,0,.44),0 0 19px rgba(34,183,234,.15)!important}
-[data-testid="stMetricValue"]{color:#f4f8fa!important;font-weight:850!important;text-shadow:0 0 13px rgba(34,183,234,.16)!important}
-[data-testid="stMetricLabel"]{color:#9fb5c5!important}
-.routine-card,.qg-start-card{border:1px solid rgba(28,156,198,.48)!important;border-radius:11px!important;background:linear-gradient(145deg,#0a2b42,#061829 72%,#04111e)!important;box-shadow:0 7px 0 #020811,0 16px 25px rgba(0,0,0,.38),inset 0 1px rgba(255,255,255,.09)!important;transform:perspective(900px) rotateX(1.7deg) translateZ(4px)!important}
-.routine-card:hover,.qg-start-card:hover{transform:perspective(900px) translateY(-5px) rotateX(5deg) rotateY(-1.5deg) translateZ(13px)!important;border-color:rgba(64,224,159,.65)!important;box-shadow:0 10px 0 #020811,0 23px 34px rgba(0,0,0,.43),0 0 19px rgba(18,201,129,.13)!important}
-.qg-start-icon{border-color:rgba(243,199,67,.76)!important;background:linear-gradient(145deg,#117751,#0a3854 65%,#071a2d)!important;box-shadow:0 5px 0 #020c15,0 10px 17px rgba(0,0,0,.35),inset 0 1px rgba(255,255,255,.25)!important}
-.qg-start-kicker,.qg-start-index{color:#f2cc55!important}
-/* Campos rebaixados, ações verdes extrudadas, navegação facetada. */
-[data-baseweb="input"]>div,[data-baseweb="select"]>div,[data-baseweb="textarea"]>div,[data-testid="stTextInput"] input,[data-testid="stTextArea"] textarea,[data-testid="stNumberInput"] input{border:1px solid rgba(34,139,177,.53)!important;border-radius:8px!important;color:#eff7fa!important;background:linear-gradient(180deg,#041321,#082035)!important;transform:perspective(700px) rotateX(1.3deg) translateZ(3px)!important;box-shadow:inset 0 4px 9px rgba(0,0,0,.42),0 4px 0 #020a12,0 8px 14px rgba(0,0,0,.22)!important}
-[data-baseweb="input"]>div:focus-within,[data-baseweb="select"]>div:focus-within,[data-baseweb="textarea"]>div:focus-within{border-color:#18d38a!important;box-shadow:0 0 0 2px rgba(18,201,129,.16),0 0 16px rgba(18,201,129,.12),inset 0 3px 8px rgba(0,0,0,.34)!important}
-.stApp .stButton>button,.stApp .stFormSubmitButton>button,[data-testid="stDownloadButton"]>button{min-height:2.55rem!important;border:1px solid rgba(77,225,163,.66)!important;border-radius:8px!important;color:#effff6!important;background:linear-gradient(180deg,#0fa66b,#08734e 68%,#07593f)!important;transform:perspective(760px) rotateX(2.5deg) translateZ(6px)!important;box-shadow:0 6px 0 #03402f,0 13px 22px rgba(0,0,0,.36),inset 0 2px rgba(255,255,255,.23),inset 0 -2px rgba(0,0,0,.16)!important;font-weight:800!important}
-.stApp .stButton>button:hover,.stApp .stFormSubmitButton>button:hover,[data-testid="stDownloadButton"]>button:hover{transform:perspective(760px) translateY(-4px) rotateX(7deg) translateZ(12px)!important;filter:brightness(1.1)!important;box-shadow:0 9px 0 #03402f,0 20px 29px rgba(0,0,0,.42),0 0 18px rgba(18,201,129,.17)!important}
-.stApp .stButton>button:active,.stApp .stFormSubmitButton>button:active{transform:translateY(3px)!important;box-shadow:0 2px 0 #03402f,0 4px 8px rgba(0,0,0,.25)!important}
-.stApp .stButton>button[kind="secondary"],.stApp .stFormSubmitButton>button[kind="secondary"]{border-color:rgba(39,158,202,.55)!important;background:linear-gradient(145deg,#123650,#092238)!important;box-shadow:0 5px 0 #03111d,0 11px 19px rgba(0,0,0,.32),inset 0 1px rgba(255,255,255,.15)!important}
-[data-testid="stTabs"]{border-radius:11px!important;transform:perspective(1200px) rotateX(.5deg) translateZ(2px)!important}
-[data-testid="stTabs"] [role="tab"]{border-radius:7px!important;color:#bdd0dd!important;box-shadow:0 3px 0 #020a12,inset 0 1px rgba(255,255,255,.08);transform:translateZ(3px)}
-[data-testid="stTabs"] [role="tab"][aria-selected="true"]{color:#f3fff9!important;background:linear-gradient(145deg,#0c9a62,#07513f)!important;box-shadow:0 5px 0 #033a2c,0 8px 14px rgba(0,0,0,.3),inset 0 1px rgba(255,255,255,.22)!important;transform:translateY(-2px) translateZ(8px)!important}
-[data-testid="stProgress"]>div>div{background:linear-gradient(90deg,#0cae6b,#1bdb8e,#1caee5)!important;box-shadow:0 0 14px rgba(18,201,129,.22)!important}
-[data-testid="stAlert"],[data-testid="stToast"]{border:1px solid rgba(35,156,199,.46)!important;border-radius:9px!important;background:linear-gradient(145deg,rgba(7,30,49,.98),rgba(3,15,27,.99))!important;transform:perspective(900px) rotateX(.8deg) translateZ(3px);box-shadow:0 6px 0 #020811,0 13px 22px rgba(0,0,0,.34),inset 0 1px rgba(255,255,255,.08)!important}
-[data-testid="stPlotlyChart"],[data-testid="stGraph"],[data-testid="stDataFrame"],[data-testid="stTable"]{border:1px solid rgba(25,151,198,.55)!important;border-radius:9px!important;transform:perspective(1200px) rotateX(.8deg) translateZ(3px)!important;box-shadow:0 7px 0 #020811,0 16px 27px rgba(0,0,0,.38)!important;transition:transform .25s ease,box-shadow .25s ease!important}
-[data-testid="stPlotlyChart"]:hover,[data-testid="stGraph"]:hover,[data-testid="stDataFrame"]:hover{transform:perspective(1200px) translateY(-4px) rotateX(2deg) translateZ(9px)!important;box-shadow:0 10px 0 #020811,0 23px 34px rgba(0,0,0,.43),0 0 17px rgba(34,183,234,.15)!important}
-hr{border-color:rgba(30,139,183,.30)!important}
-/* Login com a mesma identidade: painel azul, cubo dourado e formulário verde. */
-.qg-hero-auth{border:1px solid rgba(36,174,221,.70)!important;border-radius:15px!important;background:radial-gradient(ellipse at 12% 10%,rgba(12,121,82,.20),transparent 36%),radial-gradient(ellipse at 88% 82%,rgba(243,199,67,.10),transparent 30%),linear-gradient(120deg,#06192a,#09243a 58%,#061321)!important;transform:perspective(1500px) rotateX(1.4deg) translateZ(7px)!important;box-shadow:0 12px 0 #020811,0 30px 55px rgba(0,0,0,.52),inset 0 2px rgba(255,255,255,.15),inset 0 -5px 16px rgba(0,0,0,.34)!important}
-.qg-hero-auth .qg-hero-title{color:#fff0b0!important;-webkit-text-fill-color:#fff0b0!important;text-shadow:0 2px 0 #68541a,0 5px 0 #17384c,0 14px 26px rgba(0,0,0,.65)!important}
-.qg-hero-auth .qg-hero-kicker,.qg-start-kicker{color:#f3cc55!important}
-.qg-hero-auth .qg-cube-face{border-color:rgba(247,207,78,.9)!important;background:linear-gradient(145deg,#0e8b5e,#0a3651 62%,#071b2d)!important;box-shadow:inset 0 2px rgba(255,255,255,.25),inset 0 -8px 14px rgba(0,0,0,.42),0 0 25px rgba(18,201,129,.22)!important}
-.qg-start-overview{border:1px solid rgba(33,160,204,.48)!important;border-radius:12px!important;background:linear-gradient(145deg,#061b2e,#03111f)!important;box-shadow:0 8px 0 #020811,0 21px 37px rgba(0,0,0,.40),inset 0 1px rgba(255,255,255,.08)!important}
-.qg-start-card{border-radius:9px!important}
-.qg-start-icon{border-color:rgba(243,199,67,.78)!important}
-@media(max-width:760px){.main .block-container{padding:.65rem .65rem 2.4rem!important}.stApp [data-testid="stHorizontalBlock"]{gap:.45rem!important}.stApp [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]{padding:.2rem!important;transform:none!important}.qg-hero-auth,.qg-hero,.qg-start-overview,[data-testid="stMetric"],[data-testid="stTabs"]{transform:none!important}}
-@media(prefers-reduced-motion:reduce){.stApp [data-testid="stHorizontalBlock"]>[data-testid="stColumn"],.stApp [data-testid="stMetric"],.stApp [data-testid="stPlotlyChart"],.stApp [data-testid="stGraph"],.stApp .stButton>button{transform:none!important;transition-duration:.01ms!important;animation-duration:.01ms!important}}
+@media(max-width:560px) { .qg-start-grid { grid-template-columns:minmax(0,1fr) !important; gap:10px !important; }.qg-start-card { min-height:0 !important; } }
+@media(prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto !important; animation:none !important; transition:none !important; } }
 </style>""", unsafe_allow_html=True)
